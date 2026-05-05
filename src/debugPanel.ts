@@ -26,6 +26,11 @@ export class DebugPanel {
     const profile = this.tracker.getProfile();
 
     const fmt = (n: number) => Math.round(n).toLocaleString();
+    const formatStyle = (style: string) => style.charAt(0).toUpperCase() + style.slice(1);
+    const mostCommonLanding = profile.commonLandingZones[0];
+    const lastChange = this.adaptiveNotes.find((n) => n.includes('near landing') || n.includes('near death'))
+      ?? this.adaptiveNotes[1]
+      ?? this.adaptiveNotes[0];
 
     this.panel.innerHTML = `
       <div class="dbg-section">
@@ -37,18 +42,15 @@ export class DebugPanel {
       <div class="dbg-section">
         <div class="dbg-title">PROFILE</div>
         <div class="dbg-row"><span>Total runs</span><span>${profile.totalRuns}</span></div>
-        <div class="dbg-row"><span>Completed</span><span>${profile.completedRuns}</span></div>
-        <div class="dbg-row"><span>Avg jump dist</span><span>${fmt(profile.averageJumpXDistance)}px</span></div>
-        <div class="dbg-row"><span>Avg clear time</span><span>${fmt(profile.averageCompletionTimeMs)}ms</span></div>
-        <div class="dbg-row"><span>Jump style</span><span>${profile.jumpStyle}</span></div>
-        <div class="dbg-row"><span>Landing zones</span><span>${profile.commonLandingZones.map(fmt).join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Completed runs</span><span>${profile.completedRuns}</span></div>
+        <div class="dbg-row"><span>Jump style</span><span>${formatStyle(profile.jumpStyle)}</span></div>
+        <div class="dbg-row"><span>Most common landing</span><span>${mostCommonLanding ? `~${fmt(mostCommonLanding)}px` : '—'}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE</div>
         <div class="dbg-row"><span>Obstacles</span><span>${this.adaptiveObstacleCount || '—'}</span></div>
         <div class="dbg-row"><span>Placements</span><span>${this.adaptivePlacements.map(fmt).join(', ') || '—'}</span></div>
-        <div class="dbg-row"><span>Note 1</span><span>${this.adaptiveNotes[0] ?? '—'}</span></div>
-        <div class="dbg-row"><span>Note 2</span><span>${this.adaptiveNotes[1] ?? '—'}</span></div>
+        <div class="dbg-row"><span>Last change</span><span>${lastChange ?? '—'}</span></div>
       </div>
     `;
   }

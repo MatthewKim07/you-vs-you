@@ -25,12 +25,12 @@ export class Renderer {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  drawLevel(level: LevelData, cameraX: number) {
+  drawLevel(level: LevelData, cameraX: number, placementPulse: number = 0) {
     const { groundY, worldWidth, flagX, obstacles } = level;
     const segments = getGroundSegments(worldWidth, obstacles);
 
     this.drawGround(segments, groundY, cameraX);
-    this.drawObstacles(obstacles, groundY, cameraX);
+    this.drawObstacles(obstacles, groundY, cameraX, placementPulse, level.index > 0);
     this.drawLandingMarkers(level.aiLandingMarkersX ?? [], groundY, cameraX);
     this.drawFlag(flagX - cameraX, groundY);
   }
@@ -41,8 +41,8 @@ export class Renderer {
 
     for (const x of markers) {
       const sx = x - cameraX;
-      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.34)';
+      ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 6]);
       ctx.beginPath();
       ctx.moveTo(sx, groundY - 90);
@@ -50,7 +50,7 @@ export class Renderer {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
       ctx.beginPath();
       ctx.arc(sx, groundY - 96, 4, 0, Math.PI * 2);
       ctx.fill();
@@ -68,13 +68,62 @@ export class Renderer {
     }
   }
 
-  private drawObstacles(obstacles: Obstacle[], groundY: number, cameraX: number) {
-    for (const obs of obstacles) {
+  private drawObstacles(
+    obstacles: Obstacle[],
+    groundY: number,
+    cameraX: number,
+    pulse: number,
+    showAiLabel: boolean,
+  ) {
+    for (let i = 0; i < obstacles.length; i++) {
+      const obs = obstacles[i];
+      if (pulse > 0.02) {
+        this.drawObstaclePulse(obs, groundY, cameraX, pulse);
+        if (i === 0 && showAiLabel) {
+          this.drawAiPlacedLabel(obs, groundY, cameraX, pulse);
+        }
+      }
       if (obs.kind === 'spike') {
         this.drawSpike(obs, groundY, cameraX);
       }
       // gaps are rendered by absence of ground — no drawing needed
     }
+  }
+
+  private drawObstaclePulse(obs: Obstacle, groundY: number, cameraX: number, pulse: number) {
+    const { ctx } = this;
+    const alpha = Math.min(0.42, pulse * 0.42);
+    const sx = obs.x - cameraX;
+
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 225, 120, ${alpha})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 4]);
+    if (obs.kind === 'spike') {
+      const topY = groundY - obs.height - 6;
+      ctx.strokeRect(sx - 6, topY, obs.width + 12, obs.height + 12);
+    } else {
+      const h = 70;
+      ctx.strokeRect(sx - 5, groundY - h, obs.width + 10, h + 8);
+    }
+    ctx.restore();
+  }
+
+  private drawAiPlacedLabel(obs: Obstacle, groundY: number, cameraX: number, pulse: number) {
+    const { ctx } = this;
+    if (pulse < 0.2) return;
+    const sx = obs.x - cameraX + obs.width / 2;
+    const y = groundY - (obs.kind === 'spike' ? obs.height + 26 : 84);
+    const alpha = Math.min(0.9, pulse);
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = `bold 12px sans-serif`;
+    ctx.fillStyle = `rgba(0,0,0,${0.35 * alpha})`;
+    ctx.fillText('AI placed here', sx + 1, y + 1);
+    ctx.fillStyle = `rgba(255,255,255,${0.9 * alpha})`;
+    ctx.fillText('AI placed here', sx, y);
+    ctx.restore();
   }
 
   private drawSpike(obs: Obstacle, groundY: number, cameraX: number) {
@@ -229,6 +278,28 @@ export class Renderer {
     ctx.fillStyle = 'white';
     ctx.font = `${Math.min(20, canvas.width / 19)}px sans-serif`;
     ctx.fillText(`Tap for Level ${nextLevelNum}`, cx, cy + 24);
+  }
+
+  drawAIGameMasterMessage(message: string, alpha: number) {
+    if (!message) return;
+    const { ctx, canvas } = this;
+    const boxW = Math.min(canvas.width - 24, 520);
+    const boxH = 44;
+    const x = (canvas.width - boxW) / 2;
+    const y = 56;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(0,0,0,0.46)';
+    ctx.fillRect(x, y, boxW, boxH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+    ctx.strokeRect(x, y, boxW, boxH);
+
+    ctx.textAlign = 'center';
+    ctx.font = `600 ${Math.min(16, canvas.width / 22)}px sans-serif`;
+    ctx.fillStyle = '#fff';
+    ctx.fillText(message, canvas.width / 2, y + 28);
+    ctx.restore();
   }
 
 }

@@ -6,10 +6,13 @@ import { RunTracker } from './runTracker';
 import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
+import { deathMessage, introMessage, levelCompleteMessage, levelStartMessage } from './aiGameMaster';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
 const SAMPLE_INTERVAL = 0.2;    // seconds between position samples
+const LEVEL_HIGHLIGHT_SECS = 2.4;
+const AI_MESSAGE_SECS = 2.6;
 
 export class Game {
   private player!: Player;
@@ -24,6 +27,10 @@ export class Game {
   private levelIndex = 0;
   private attempts = 1;
   private deathTimer = 0;
+  private levelAgeSec = 0;
+  private aiMessage = '';
+  private aiMessageTimeLeft = 0;
+  private introShown = false;
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
@@ -55,6 +62,14 @@ export class Game {
     this.resetFrameTracking();
     this.tracker.startRun(index, this.attempts);
     this.debugPanel.setAdaptiveSnapshot(this.level);
+    this.levelAgeSec = 0;
+
+    if (!this.introShown && index === 0) {
+      this.showAIMessage(introMessage());
+      this.introShown = true;
+    } else if (index > 0) {
+      this.showAIMessage(levelStartMessage(this.level, this.tracker.getProfile(), index + 1));
+    }
   }
 
   private restartLevel() {
@@ -119,6 +134,11 @@ export class Game {
   };
 
   private update(dt: number) {
+    this.levelAgeSec += dt;
+    if (this.aiMessageTimeLeft > 0) {
+      this.aiMessageTimeLeft = Math.max(0, this.aiMessageTimeLeft - dt);
+    }
+
     switch (this.state) {
       case 'dead':
         this.deathTimer += dt;
@@ -196,6 +216,10 @@ export class Game {
 
     // --- Win check ---
     if (player.pos.x + player.width >= level.flagX) {
+      const currentRun = tracker.getCurrentRun();
+      const landingEvents = currentRun?.landings ?? [];
+      const lastLandingX = landingEvents.length > 0 ? landingEvents[landingEvents.length - 1].x : undefined;
+      this.showAIMessage(levelCompleteMessage(lastLandingX, tracker.getProfile().jumpStyle));
       tracker.finishRun(true);
       this.state = 'levelComplete';
     }
@@ -224,14 +248,23 @@ export class Game {
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
+    this.showAIMessage(deathMessage(reason, deathX, this.tracker.getProfile().jumpStyle));
     this.tracker.finishRun(false, reason, deathX);
     this.state = 'dead';
     this.deathTimer = 0;
   }
 
+  private showAIMessage(text: string) {
+    this.aiMessage = text;
+    this.aiMessageTimeLeft = AI_MESSAGE_SECS;
+  }
+
   private draw() {
     this.renderer.drawBackground();
-    this.renderer.drawLevel(this.level, this.cameraX);
+    const obstaclePulse = this.level.index > 0
+      ? Math.max(0, 1 - this.levelAgeSec / LEVEL_HIGHLIGHT_SECS)
+      : 0;
+    this.renderer.drawLevel(this.level, this.cameraX, obstaclePulse);
     this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead');
     this.renderer.drawHUD(
       this.player.pos.x,
@@ -246,6 +279,11 @@ export class Game {
       this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
     } else if (this.state === 'levelComplete') {
       this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2);
+    }
+
+    if (this.aiMessageTimeLeft > 0) {
+      const fade = Math.min(1, this.aiMessageTimeLeft / 0.4);
+      this.renderer.drawAIGameMasterMessage(this.aiMessage, fade);
     }
 
     this.debugPanel.update();
