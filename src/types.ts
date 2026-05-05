@@ -13,11 +13,3 @@ export interface Obstacle {
 }
 
 export type GameState = 'playing' | 'dead' | 'levelComplete' | 'allComplete';
-
-// AI HOOK (Milestone 3+): RunRecord feeds adaptive level generator
-export interface RunRecord {
-  levelIndex: number;
-  attempts: number;
-  jumps: Array<{ x: number; t: number }>;
-  completionTimeMs: number;
-}
