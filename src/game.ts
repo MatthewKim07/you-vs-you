@@ -66,7 +66,7 @@ export class Game {
     this.cameraX = 0;
     this.state = 'playing';
     this.resetFrameTracking();
-    this.tracker.startRun(index, this.attempts);
+    this.tracker.startRun(index, this.attempts, this.level.obstacles);
     this.debugPanel.setAdaptiveSnapshot(this.level);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
@@ -86,7 +86,7 @@ export class Game {
     this.cameraX = 0;
     this.state = 'playing';
     this.resetFrameTracking();
-    this.tracker.startRun(this.levelIndex, this.attempts);
+    this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles);
   }
 
   private buildLevelForIndex(index: number): LevelData {
@@ -100,7 +100,7 @@ export class Game {
     // Kept in Game state for future generator input extension.
     const _modelForFuture = this.playerModel;
     void _modelForFuture;
-    return generateAdaptiveLevel(runs, profile, index, this.canvas.width);
+    return generateAdaptiveLevel(runs, profile, this.playerModel, index, this.canvas.width);
   }
 
   private refreshPlayerModel() {

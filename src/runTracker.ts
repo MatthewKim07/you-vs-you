@@ -1,10 +1,11 @@
+import { Obstacle } from './types';
 import { RunData, PlayerProfile } from './telemetry';
 
 export class RunTracker {
   private runs: RunData[] = [];
   private current: RunData | null = null;
 
-  startRun(levelIndex: number, attemptNumber: number): void {
+  startRun(levelIndex: number, attemptNumber: number, obstaclesSnapshot?: Obstacle[]): void {
     // Abandon any open run (e.g. level skip before death/complete)
     if (this.current) {
       this.runs.push({ ...this.current, endedAt: performance.now(), completed: false });
@@ -14,6 +15,7 @@ export class RunTracker {
       attemptNumber,
       startedAt: performance.now(),
       completed: false,
+      obstaclesSnapshot: obstaclesSnapshot?.map((o) => ({ ...o })),
       jumps: [],
       landings: [],
       samples: [],

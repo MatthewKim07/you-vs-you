@@ -1,3 +1,5 @@
+import { Obstacle } from './types';
+
 // All telemetry types. No logic here — RunTracker owns collection, buildProfile owns analysis.
 
 export interface JumpEvent {
@@ -31,6 +33,7 @@ export interface RunData {
   startedAt: number;   // performance.now() wall time
   endedAt?: number;
   completed: boolean;
+  obstaclesSnapshot?: Obstacle[];
   deathReason?: 'spike' | 'gap';
   deathX?: number;
   jumps: JumpEvent[];
