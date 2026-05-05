@@ -6,7 +6,14 @@ export interface AdaptiveDebugInfo {
   obstacleCount: number;
   strategy: string;
   patterns: string[];
+  variants: string[];
   density: 'low' | 'medium' | 'high' | 'extreme';
+  antiRepeat: string[];
+  attempted: number;
+  dropped: string[];
+  difficulty: string;
+  safeJumpDistance: number;
+  maxJumpDistance: number;
 }
 
 export interface LevelData {

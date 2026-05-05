@@ -9,6 +9,7 @@ export class DebugPanel {
   private button: HTMLButtonElement;
   private visible = false;
   private aiDebugInfo: AdaptiveDebugInfo | undefined;
+  private currentLevelIndex = 0;
   private playerModel: PlayerModel = {
     prefersJump: true,
     prefersCrouch: false,
@@ -57,18 +58,26 @@ export class DebugPanel {
         <div class="dbg-row"><span>Most common landing</span><span>${mostCommonLanding ? `~${fmt(mostCommonLanding)}px` : '—'}</span></div>
       </div>
       <div class="dbg-section">
-        <div class="dbg-title">ADAPTIVE</div>
+        <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>
+        <div class="dbg-row"><span>Difficulty</span><span>${dbg?.difficulty ?? '—'}</span></div>
+        <div class="dbg-row"><span>Safe jump</span><span>${dbg?.safeJumpDistance ?? '—'}px</span></div>
+        <div class="dbg-row"><span>Max jump</span><span>${dbg?.maxJumpDistance ?? '—'}px</span></div>
         <div class="dbg-row"><span>Strategy</span><span>${dbg?.strategy ?? '—'}</span></div>
         <div class="dbg-row"><span>Density</span><span>${dbg?.density ?? '—'}</span></div>
+        <div class="dbg-row"><span>Attempted</span><span>${dbg?.attempted ?? '—'}</span></div>
+        <div class="dbg-row"><span>Placed</span><span>${dbg?.patterns.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Obstacles</span><span>${dbg?.obstacleCount ?? '—'}</span></div>
-        <div class="dbg-row"><span>Placements</span><span>${dbg?.placementXs.map(fmt).join(', ') ?? '—'}</span></div>
-        <div class="dbg-row"><span>Patterns</span><span>${dbg?.patterns.join(', ') ?? '—'}</span></div>
+        <div class="dbg-row"><span>Patterns</span><span>${dbg?.patterns.join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Variants</span><span>${dbg?.variants.join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Anti-repeat</span><span>${dbg?.antiRepeat.join(' | ') || 'none'}</span></div>
+        <div class="dbg-row"><span>Dropped</span><span>${dbg?.dropped.join(', ') || 'none'}</span></div>
       </div>
     `;
   }
 
   setAdaptiveSnapshot(level: LevelData): void {
     this.aiDebugInfo = level.aiDebug;
+    this.currentLevelIndex = level.index;
   }
 
   setPlayerModel(model: PlayerModel): void {
