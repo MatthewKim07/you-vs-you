@@ -100,7 +100,6 @@ function buildProfile(runs: RunData[]): PlayerProfile {
     .map(([key]) => key + BUCKET / 2);
 
   // Jump style: classify by avg x-position of first jump per run
-  // AI HOOK (Milestone 4): refine using obstacle positions from LevelData
   const firstJumpXs = runs.filter(r => r.jumps.length > 0).map(r => r.jumps[0].x);
   let jumpStyle: PlayerProfile['jumpStyle'] = 'unknown';
   if (firstJumpXs.length >= 2) {

@@ -1,4 +1,3 @@
-// AI HOOK (Milestone 3+): record jump events into RunRecord.jumps for adaptive generation
 import { Vec2 } from './types';
 
 export const GRAVITY = 1400;    // px/s²

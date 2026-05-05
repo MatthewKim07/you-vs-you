@@ -32,7 +32,7 @@ export interface RunData {
   samples: PositionSample[];
 }
 
-// Derived summary across all stored runs — AI HOOK (Milestone 4): feed into level generator
+// Derived summary across all stored runs.
 export interface PlayerProfile {
   totalRuns: number;
   completedRuns: number;
