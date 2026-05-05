@@ -1,5 +1,5 @@
 import { RunTracker } from './runTracker';
-import { LevelData } from './level';
+import { LevelData, AdaptiveDebugInfo } from './level';
 import { PlayerModel } from './telemetry';
 
 // HTML overlay — hidden by default, toggled via "AI Data" button.
@@ -8,9 +8,7 @@ export class DebugPanel {
   private panel: HTMLDivElement;
   private button: HTMLButtonElement;
   private visible = false;
-  private adaptivePlacements: number[] = [];
-  private adaptiveNotes: string[] = [];
-  private adaptiveObstacleCount = 0;
+  private aiDebugInfo: AdaptiveDebugInfo | undefined;
   private playerModel: PlayerModel = {
     prefersJump: true,
     prefersCrouch: false,
@@ -39,9 +37,7 @@ export class DebugPanel {
     const fmt = (n: number) => Math.round(n).toLocaleString();
     const formatStyle = (style: string) => style.charAt(0).toUpperCase() + style.slice(1);
     const mostCommonLanding = profile.commonLandingZones[0];
-    const lastChange = this.adaptiveNotes.find((n) => n.includes('near landing') || n.includes('near death'))
-      ?? this.adaptiveNotes[1]
-      ?? this.adaptiveNotes[0];
+    const dbg = this.aiDebugInfo;
 
     this.panel.innerHTML = `
       <div class="dbg-section">
@@ -62,17 +58,17 @@ export class DebugPanel {
       </div>
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE</div>
-        <div class="dbg-row"><span>Obstacles</span><span>${this.adaptiveObstacleCount || '—'}</span></div>
-        <div class="dbg-row"><span>Placements</span><span>${this.adaptivePlacements.map(fmt).join(', ') || '—'}</span></div>
-        <div class="dbg-row"><span>Last change</span><span>${lastChange ?? '—'}</span></div>
+        <div class="dbg-row"><span>Strategy</span><span>${dbg?.strategy ?? '—'}</span></div>
+        <div class="dbg-row"><span>Density</span><span>${dbg?.density ?? '—'}</span></div>
+        <div class="dbg-row"><span>Obstacles</span><span>${dbg?.obstacleCount ?? '—'}</span></div>
+        <div class="dbg-row"><span>Placements</span><span>${dbg?.placementXs.map(fmt).join(', ') ?? '—'}</span></div>
+        <div class="dbg-row"><span>Patterns</span><span>${dbg?.patterns.join(', ') ?? '—'}</span></div>
       </div>
     `;
   }
 
   setAdaptiveSnapshot(level: LevelData): void {
-    this.adaptiveObstacleCount = level.aiDebug?.obstacleCount ?? 0;
-    this.adaptivePlacements = level.aiDebug?.placementXs ?? [];
-    this.adaptiveNotes = level.aiDebug?.notes ?? [];
+    this.aiDebugInfo = level.aiDebug;
   }
 
   setPlayerModel(model: PlayerModel): void {

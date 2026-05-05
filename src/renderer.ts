@@ -96,6 +96,8 @@ export class Renderer {
         this.drawLowCeiling(obs, groundY, cameraX);
       } else if (obs.kind === 'choiceObstacle') {
         this.drawChoiceObstacle(obs, groundY, cameraX);
+      } else if (obs.kind === 'platform') {
+        this.drawPlatform(obs, groundY, cameraX);
       }
       // gaps are rendered by absence of ground — no drawing needed
     }
@@ -121,7 +123,11 @@ export class Renderer {
       const barThickness = 12; // keep in sync with game.ts CHOICE_BAR_THICKNESS
       const topY = groundY - obs.height - barThickness - 6;
       ctx.strokeRect(sx - 6, topY, obs.width + 12, barThickness + 12);
+    } else if (obs.kind === 'platform') {
+      const thickness = 14;
+      ctx.strokeRect(sx - 5, groundY - obs.height - 5, obs.width + 10, thickness + 10);
     } else {
+      // gap
       const h = 70;
       ctx.strokeRect(sx - 5, groundY - h, obs.width + 10, h + 8);
     }
@@ -139,6 +145,8 @@ export class Renderer {
       y = groundY - (obs.height + 44);
     } else if (obs.kind === 'choiceObstacle') {
       y = groundY - (obs.height + 38);
+    } else if (obs.kind === 'platform') {
+      y = groundY - (obs.height + 30);
     } else {
       y = groundY - 84;
     }
@@ -239,6 +247,23 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
     ctx.lineWidth = 1;
     ctx.strokeRect(sx + 0.5, topY + 0.5, obs.width - 1, barThickness - 1);
+  }
+
+  private drawPlatform(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = obs.x - cameraX;
+    const surfaceY = groundY - obs.height;
+    const thickness = 14;
+
+    ctx.fillStyle = '#7A5C2E'; // brown body
+    ctx.fillRect(sx, surfaceY, obs.width, thickness);
+
+    ctx.fillStyle = GROUND_GRASS; // green top strip
+    ctx.fillRect(sx, surfaceY, obs.width, 4);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx + 0.5, surfaceY + 0.5, obs.width - 1, thickness - 1);
   }
 
   private drawLowCeiling(obs: Obstacle, groundY: number, cameraX: number) {

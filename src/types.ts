@@ -3,7 +3,7 @@ export interface Vec2 {
   y: number;
 }
 
-export type ObstacleKind = 'spike' | 'gap' | 'lowCeiling' | 'doubleSpike' | 'choiceObstacle';
+export type ObstacleKind = 'spike' | 'gap' | 'lowCeiling' | 'doubleSpike' | 'choiceObstacle' | 'platform';
 
 export interface Obstacle {
   kind: ObstacleKind;

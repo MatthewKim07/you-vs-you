@@ -4,6 +4,9 @@ export interface AdaptiveDebugInfo {
   notes: string[];
   placementXs: number[];
   obstacleCount: number;
+  strategy: string;
+  patterns: string[];
+  density: 'low' | 'medium' | 'high' | 'extreme';
 }
 
 export interface LevelData {

@@ -8,13 +8,17 @@ const SAFE_FLAG_GAP = 240;
 
 const SPIKE_W = 44;
 const SPIKE_H = 52;
+const DOUBLE_SPIKE_W = 104; // 44 + 16 gap + 44
+const DOUBLE_SPIKE_H = 52;
 const GAP_MIN_W = 108;
 const GAP_MAX_W = 145;
 const LOW_CEILING_MIN_W = 150;
 const LOW_CEILING_MAX_W = 220;
 const LOW_CEILING_CLEARANCE = 34;
+const CHOICE_OBS_W = 100;
+const CHOICE_OBS_H = 34; // clearance from ground to bar bottom
 
-const MAX_OBSTACLES = 7;
+const MAX_NEW_OBSTACLES = 8;
 
 type Strategy =
   | 'punishJumpBias'
@@ -22,6 +26,20 @@ type Strategy =
   | 'punishPredictability'
   | 'punishLateReactions'
   | 'balancedEscalation';
+
+type PatternKind =
+  | 'singleSpike'
+  | 'doubleSpike'
+  | 'lowCeiling'
+  | 'wideGap'
+  | 'stepGap'
+  | 'jumpThenCrouch'
+  | 'crouchThenJump'
+  | 'pressureSequence'
+  | 'staircase'
+  | 'choiceThenPunish';
+
+type DensityLabel = 'low' | 'medium' | 'high' | 'extreme';
 
 interface GenerationContext {
   pathStart: number;
@@ -34,14 +52,9 @@ interface GenerationContext {
   latestDeath?: RunData;
 }
 
-interface Signal {
-  x: number;
-  source: 'landing' | 'death' | 'profile';
-}
-
 export function generateAdaptiveLevel(
   previousRuns: RunData[],
-  profile: PlayerProfile,
+  _profile: PlayerProfile,
   playerModel: PlayerModel,
   levelIndex: number,
   canvasWidth: number,
@@ -69,25 +82,29 @@ export function generateAdaptiveLevel(
   };
 
   const strategy = selectStrategy(playerModel);
-  const targetCount = obstacleCountForLevel(levelIndex);
-
+  const zoneCount = zoneCountForLevel(levelIndex);
+  const density = densityForZoneCount(zoneCount);
   const notes: string[] = [];
+
   notes.push(`Strategy: ${strategy}`);
+
+  if (latestDeath?.deathX !== undefined) {
+    notes.push(`near death x=${Math.round(latestDeath.deathX)}`);
+  }
+  const lastSuccessLanding = latestSuccess?.landings.slice(-1)[0];
+  if (lastSuccessLanding) {
+    notes.push(`near landing x=${Math.round(lastSuccessLanding.x)}`);
+  }
 
   const carried = carryForwardObstacles(ctx, levelIndex);
   if (carried.length > 0) {
     notes.push(`Carried ${carried.length} obstacle(s) from previous level`);
   }
 
-  const newCount = clampInt(targetCount - carried.length, 1, targetCount);
-  const kindPattern = buildPatternKinds(strategy, playerModel, newCount, levelIndex);
+  const patternKinds = buildPatternPlan(strategy, zoneCount, levelIndex);
+  const { newObstacles, usedPatterns } = placePatterns(patternKinds, carried, levelIndex, ctx);
 
-  const signals = collectSignals(ctx, profile);
-  const created = placeCounterObstacles(kindPattern, carried, signals, strategy, playerModel, levelIndex, ctx, notes);
-
-  const obstacles = [...carried, ...created]
-    .sort((a, b) => a.x - b.x)
-    .slice(0, MAX_OBSTACLES);
+  const obstacles = [...carried, ...newObstacles].sort((a, b) => a.x - b.x);
 
   const markerSource = latestSuccess ?? latestRun;
   const landingMarkers = (markerSource?.landings ?? [])
@@ -108,6 +125,9 @@ export function generateAdaptiveLevel(
       notes,
       placementXs: obstacles.map((o) => Math.round(o.x)),
       obstacleCount: obstacles.length,
+      strategy,
+      patterns: usedPatterns,
+      density,
     },
   };
 }
@@ -120,12 +140,196 @@ function selectStrategy(model: PlayerModel): Strategy {
   return 'balancedEscalation';
 }
 
+function zoneCountForLevel(levelIndex: number): number {
+  return clampInt(levelIndex + 1, 2, 8);
+}
+
+function densityForZoneCount(count: number): DensityLabel {
+  if (count <= 3) return 'low';
+  if (count <= 5) return 'medium';
+  if (count <= 7) return 'high';
+  return 'extreme';
+}
+
+function patternPoolForStrategy(strategy: Strategy, levelIndex: number): PatternKind[] {
+  switch (strategy) {
+    case 'punishJumpBias':
+      return ['lowCeiling', 'crouchThenJump', 'choiceThenPunish', 'lowCeiling', 'wideGap'];
+    case 'punishCrouchBias':
+      return ['wideGap', 'jumpThenCrouch', 'pressureSequence', 'singleSpike', 'stepGap'];
+    case 'punishPredictability':
+      return ['jumpThenCrouch', 'crouchThenJump', 'choiceThenPunish', 'staircase'];
+    case 'punishLateReactions':
+      return ['pressureSequence', 'doubleSpike', 'staircase', 'stepGap', 'pressureSequence'];
+    case 'balancedEscalation':
+      if (levelIndex > 5) return ['jumpThenCrouch', 'doubleSpike', 'crouchThenJump', 'staircase', 'choiceThenPunish'];
+      if (levelIndex > 3) return ['jumpThenCrouch', 'wideGap', 'lowCeiling', 'pressureSequence'];
+      return ['singleSpike', 'lowCeiling', 'wideGap', 'jumpThenCrouch'];
+  }
+}
+
+function buildPatternPlan(strategy: Strategy, zoneCount: number, levelIndex: number): PatternKind[] {
+  const pool = patternPoolForStrategy(strategy, levelIndex);
+  const result: PatternKind[] = [];
+  for (let i = 0; i < zoneCount; i++) {
+    result.push(pool[i % pool.length]);
+  }
+  return result;
+}
+
+function patternFirstKind(kind: PatternKind): ObstacleKind {
+  switch (kind) {
+    case 'singleSpike': return 'spike';
+    case 'doubleSpike': return 'doubleSpike';
+    case 'lowCeiling': return 'lowCeiling';
+    case 'wideGap': return 'gap';
+    case 'stepGap': return 'gap';
+    case 'jumpThenCrouch': return 'spike';
+    case 'crouchThenJump': return 'lowCeiling';
+    case 'pressureSequence': return 'spike';
+    case 'staircase': return 'spike';
+    case 'choiceThenPunish': return 'choiceObstacle';
+  }
+}
+
+function patternWidth(kind: PatternKind, levelIndex: number): number {
+  const ceilW = clampInt(LOW_CEILING_MIN_W + levelIndex * 10, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+  const tightGap = levelIndex > 5 ? 185 : 205;
+  const pressureGap = levelIndex > 5 ? 150 : 175;
+  switch (kind) {
+    case 'singleSpike': return SPIKE_W;
+    case 'doubleSpike': return DOUBLE_SPIKE_W;
+    case 'lowCeiling': return ceilW;
+    case 'wideGap': return clampInt(GAP_MIN_W + levelIndex * 6, GAP_MIN_W, GAP_MAX_W);
+    case 'stepGap': return 280;
+    case 'jumpThenCrouch': return SPIKE_W + tightGap + ceilW;
+    case 'crouchThenJump': return ceilW + tightGap + SPIKE_W;
+    case 'pressureSequence': return SPIKE_W + pressureGap + SPIKE_W;
+    case 'staircase': return 390;
+    case 'choiceThenPunish': return CHOICE_OBS_W + tightGap + SPIKE_W;
+  }
+}
+
+function buildPatternObstacles(kind: PatternKind, startX: number, levelIndex: number): Obstacle[] {
+  const ceilW = clampInt(LOW_CEILING_MIN_W + levelIndex * 10, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+  const tightGap = levelIndex > 5 ? 185 : 205;
+  const pressureGap = levelIndex > 5 ? 150 : 175;
+  switch (kind) {
+    case 'singleSpike':
+      return [{ kind: 'spike', x: startX, width: SPIKE_W, height: SPIKE_H }];
+    case 'doubleSpike':
+      return [{ kind: 'doubleSpike', x: startX, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H }];
+    case 'lowCeiling':
+      return [{ kind: 'lowCeiling', x: startX, width: ceilW, height: LOW_CEILING_CLEARANCE }];
+    case 'wideGap': {
+      const w = clampInt(GAP_MIN_W + levelIndex * 6, GAP_MIN_W, GAP_MAX_W);
+      return [{ kind: 'gap', x: startX, width: w, height: 0 }];
+    }
+    case 'stepGap':
+      return [
+        { kind: 'gap', x: startX, width: 280, height: 0 },
+        { kind: 'platform', x: startX + 50, width: 70, height: 0 },
+        { kind: 'platform', x: startX + 160, width: 70, height: 0 },
+      ];
+    case 'jumpThenCrouch':
+      return [
+        { kind: 'spike', x: startX, width: SPIKE_W, height: SPIKE_H },
+        { kind: 'lowCeiling', x: startX + SPIKE_W + tightGap, width: ceilW, height: LOW_CEILING_CLEARANCE },
+      ];
+    case 'crouchThenJump':
+      return [
+        { kind: 'lowCeiling', x: startX, width: ceilW, height: LOW_CEILING_CLEARANCE },
+        { kind: 'spike', x: startX + ceilW + tightGap, width: SPIKE_W, height: SPIKE_H },
+      ];
+    case 'pressureSequence':
+      return [
+        { kind: 'spike', x: startX, width: SPIKE_W, height: SPIKE_H },
+        { kind: 'spike', x: startX + SPIKE_W + pressureGap, width: SPIKE_W, height: SPIKE_H },
+      ];
+    case 'staircase':
+      return [
+        { kind: 'gap', x: startX, width: 390, height: 0 },
+        { kind: 'platform', x: startX + 20, width: 70, height: 15 },
+        { kind: 'platform', x: startX + 140, width: 70, height: 30 },
+        { kind: 'platform', x: startX + 260, width: 70, height: 45 },
+      ];
+    case 'choiceThenPunish':
+      return [
+        { kind: 'choiceObstacle', x: startX, width: CHOICE_OBS_W, height: CHOICE_OBS_H },
+        { kind: 'spike', x: startX + CHOICE_OBS_W + tightGap, width: SPIKE_W, height: SPIKE_H },
+      ];
+  }
+}
+
+function placePatterns(
+  patternKinds: PatternKind[],
+  carried: Obstacle[],
+  levelIndex: number,
+  ctx: GenerationContext,
+): { newObstacles: Obstacle[]; usedPatterns: string[] } {
+  const challengeSpace = ctx.pathEnd - ctx.pathStart;
+  const n = patternKinds.length;
+  const baseSpacing = levelIndex > 5 ? 145 : 170;
+
+  const placed: Obstacle[] = [...carried];
+  const newObstacles: Obstacle[] = [];
+  const usedPatterns: string[] = [];
+
+  for (let i = 0; i < n; i++) {
+    if (newObstacles.length >= MAX_NEW_OBSTACLES) break;
+
+    const kind = patternKinds[i];
+    const pWidth = patternWidth(kind, levelIndex);
+
+    // Ideal center: evenly distributed across challenge space
+    const idealCenter = ctx.pathStart + Math.round(challengeSpace * (i + 1) / (n + 1));
+    let startX = idealCenter - Math.floor(pWidth / 2);
+    startX = Math.max(startX, ctx.pathStart);
+
+    // Enforce minimum gap from last placed obstacle
+    if (placed.length > 0) {
+      const lastObs = placed[placed.length - 1];
+      const lastEnd = lastObs.x + lastObs.width;
+      const firstKind = patternFirstKind(kind);
+      const minGap = requiredSpacing(lastObs.kind, firstKind, baseSpacing, levelIndex);
+      startX = Math.max(startX, lastEnd + minGap);
+    }
+
+    if (startX + pWidth > ctx.pathEnd) continue;
+
+    const pObs = buildPatternObstacles(kind, startX, levelIndex);
+    // Check each pattern obstacle only against pre-pattern placed obstacles
+    const snapshot = [...placed];
+
+    const allFit = pObs.every((obs) => {
+      if (obs.x < SAFE_SPAWN_END || obs.x + obs.width > ctx.pathEnd) return false;
+      return !snapshot.some((ext) => {
+        if (rectsOverlap(obs, ext)) return true;
+        const gap = obs.x > ext.x
+          ? obs.x - (ext.x + ext.width)
+          : ext.x - (obs.x + obs.width);
+        return gap < requiredSpacing(ext.kind, obs.kind, baseSpacing, levelIndex);
+      });
+    });
+
+    if (allFit) {
+      placed.push(...pObs);
+      newObstacles.push(...pObs);
+      usedPatterns.push(kind);
+    }
+  }
+
+  return { newObstacles, usedPatterns };
+}
+
 function carryForwardObstacles(ctx: GenerationContext, levelIndex: number): Obstacle[] {
   const snapshot = ctx.latestRun?.obstaclesSnapshot;
   if (!snapshot || snapshot.length === 0) return [];
 
-  const carryTarget = carryCountForLevel(levelIndex);
-  const sorted = [...snapshot].sort((a, b) => a.x - b.x);
+  const carryTarget = levelIndex > 5 ? 2 : 1;
+  // Skip gap/platform — they form paired units that are meaningless when separated
+  const carryable = snapshot.filter(o => o.kind !== 'gap' && o.kind !== 'platform');
+  const sorted = [...carryable].sort((a, b) => a.x - b.x);
   const picked = sorted.slice(0, carryTarget);
 
   const carried: Obstacle[] = [];
@@ -139,176 +343,50 @@ function carryForwardObstacles(ctx: GenerationContext, levelIndex: number): Obst
     carried.push({ ...normalized, x: shiftedX });
   }
 
-  // ensure carried obstacles are safe among themselves
   return enforceSafety(carried, levelIndex, ctx.pathEnd);
 }
 
-function buildPatternKinds(
-  strategy: Strategy,
-  model: PlayerModel,
-  count: number,
-  levelIndex: number,
-): ObstacleKind[] {
-  const kinds: ObstacleKind[] = [];
-
-  const pushSeq = (seq: ObstacleKind[]) => {
-    for (const k of seq) {
-      if (kinds.length >= count) return;
-      kinds.push(k);
-    }
-  };
-
-  while (kinds.length < count) {
-    if (strategy === 'punishJumpBias') {
-      pushSeq(jumpThenCrouch(levelIndex));
-    } else if (strategy === 'punishCrouchBias') {
-      pushSeq(crouchThenJump(levelIndex));
-    } else if (strategy === 'punishPredictability') {
-      pushSeq(baitPattern(model));
-    } else if (strategy === 'punishLateReactions') {
-      pushSeq(pressureSequence(levelIndex));
-    } else {
-      pushSeq(balancedEscalationPattern(levelIndex));
-    }
-  }
-
-  return kinds.slice(0, count);
-}
-
-function jumpThenCrouch(levelIndex: number): ObstacleKind[] {
-  return [levelIndex % 2 === 0 ? 'gap' : 'spike', 'lowCeiling'];
-}
-
-function crouchThenJump(levelIndex: number): ObstacleKind[] {
-  return ['lowCeiling', levelIndex % 2 === 0 ? 'spike' : 'gap'];
-}
-
-function baitPattern(model: PlayerModel): ObstacleKind[] {
-  const familiar: ObstacleKind = model.prefersJump ? 'spike' : 'lowCeiling';
-  const breaker: ObstacleKind = familiar === 'lowCeiling' ? 'gap' : 'lowCeiling';
-  return [familiar, familiar, breaker];
-}
-
-function pressureSequence(levelIndex: number): ObstacleKind[] {
-  if (levelIndex > 5) {
-    return ['spike', 'lowCeiling', 'gap'];
-  }
-  return ['spike', 'gap'];
-}
-
-function balancedEscalationPattern(levelIndex: number): ObstacleKind[] {
-  if (levelIndex > 5) {
-    return ['spike', 'lowCeiling', 'gap'];
-  }
-  return ['spike', 'lowCeiling'];
-}
-
-function collectSignals(ctx: GenerationContext, profile: PlayerProfile): Signal[] {
-  const out: Signal[] = [];
-
-  for (const l of ctx.latestSuccess?.landings.slice(-4) ?? []) {
-    out.push({ x: clamp(Math.round(l.x + 72), ctx.pathStart, ctx.pathEnd), source: 'landing' });
-  }
-
-  if (ctx.latestDeath?.deathX !== undefined) {
-    out.push({
-      x: clamp(Math.round(ctx.latestDeath.deathX + 34), ctx.pathStart, ctx.pathEnd),
-      source: 'death',
-    });
-  }
-
-  for (const zone of profile.commonLandingZones.slice(0, 3)) {
-    out.push({ x: clamp(Math.round(zone + 58), ctx.pathStart, ctx.pathEnd), source: 'profile' });
-  }
-
-  return out;
-}
-
-function placeCounterObstacles(
-  kinds: ObstacleKind[],
-  carried: Obstacle[],
-  signals: Signal[],
-  strategy: Strategy,
-  model: PlayerModel,
-  levelIndex: number,
-  ctx: GenerationContext,
-  notes: string[],
-): Obstacle[] {
-  const placed: Obstacle[] = [...carried].sort((a, b) => a.x - b.x);
-  const created: Obstacle[] = [];
-
-  const minSpacing = levelIndex > 5 ? 145 : 170;
-  const latePressureBonus = strategy === 'punishLateReactions' ? -20 : 0;
-
-  for (let i = 0; i < kinds.length; i++) {
-    const kind = kinds[i];
-    const candidate = makeObstacle(kind, levelIndex);
-
-    const signal = signals[i % Math.max(1, signals.length)];
-    const defaultX = defaultPlacementX(i, kinds.length, ctx.pathStart, ctx.pathEnd);
-    let x = signal ? signal.x : defaultX;
-    x += randomSigned(20, 50);
-
-    const prev = placed[placed.length - 1];
-    if (prev) {
-      const need = requiredSpacing(prev.kind, kind, minSpacing + latePressureBonus, levelIndex);
-      x = Math.max(x, prev.x + prev.width + need);
-    }
-
-    x = clamp(Math.round(x), ctx.pathStart, ctx.pathEnd - candidate.width);
-    candidate.x = x;
-
-    if (!isPlacementSafe(candidate, placed, levelIndex, ctx.pathEnd, minSpacing)) {
-      continue;
-    }
-
-    placed.push(candidate);
-    created.push(candidate);
-    addReasonNote(notes, strategy, model, candidate, signal);
-  }
-
-  return created;
-}
-
 function makeObstacle(kind: ObstacleKind, levelIndex: number): Obstacle {
-  if (kind === 'gap') {
-    return {
-      kind,
-      x: 0,
-      width: clampInt(GAP_MIN_W + levelIndex * 6, GAP_MIN_W, GAP_MAX_W),
-      height: 0,
-    };
+  switch (kind) {
+    case 'gap': {
+      const w = clampInt(GAP_MIN_W + levelIndex * 6, GAP_MIN_W, GAP_MAX_W);
+      return { kind, x: 0, width: w, height: 0 };
+    }
+    case 'lowCeiling': {
+      const w = clampInt(LOW_CEILING_MIN_W + levelIndex * 10, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+      return { kind, x: 0, width: w, height: LOW_CEILING_CLEARANCE };
+    }
+    case 'doubleSpike':
+      return { kind, x: 0, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H };
+    case 'choiceObstacle':
+      return { kind, x: 0, width: CHOICE_OBS_W, height: CHOICE_OBS_H };
+    case 'platform':
+      return { kind, x: 0, width: 70, height: 0 };
+    case 'spike':
+      return { kind, x: 0, width: SPIKE_W, height: SPIKE_H };
   }
-  if (kind === 'lowCeiling') {
-    return {
-      kind,
-      x: 0,
-      width: clampInt(LOW_CEILING_MIN_W + levelIndex * 10, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W),
-      height: LOW_CEILING_CLEARANCE,
-    };
-  }
-  return { kind: 'spike', x: 0, width: SPIKE_W, height: SPIKE_H };
 }
 
 function normalizeObstacle(obs: Obstacle, levelIndex: number): Obstacle {
   const base = makeObstacle(obs.kind, levelIndex);
-  return {
-    kind: obs.kind,
-    x: obs.x,
-    width: base.width,
-    height: base.height,
-  };
+  return { kind: obs.kind, x: obs.x, width: base.width, height: base.height };
 }
 
 function enforceSafety(obstacles: Obstacle[], levelIndex: number, pathEnd: number): Obstacle[] {
-  const sorted = obstacles.sort((a, b) => a.x - b.x);
+  const sorted = [...obstacles].sort((a, b) => a.x - b.x);
   const safe: Obstacle[] = [];
-  const minSpacing = levelIndex > 5 ? 145 : 170;
+  const baseSpacing = levelIndex > 5 ? 145 : 170;
 
   for (const obs of sorted) {
     const clamped = { ...obs, x: clamp(obs.x, SAFE_SPAWN_END, pathEnd - obs.width) };
-    if (!isPlacementSafe(clamped, safe, levelIndex, pathEnd, minSpacing)) continue;
-    safe.push(clamped);
+    const ok = !safe.some((ext) => {
+      if (rectsOverlap(clamped, ext)) return true;
+      const gap = clamped.x > ext.x
+        ? clamped.x - (ext.x + ext.width)
+        : ext.x - (clamped.x + clamped.width);
+      return gap < requiredSpacing(ext.kind, clamped.kind, baseSpacing, levelIndex);
+    });
+    if (ok) safe.push(clamped);
   }
 
   return safe;
@@ -321,87 +399,19 @@ function requiredSpacing(
   levelIndex: number,
 ): number {
   const spacing = Math.max(130, baseSpacing);
-  const pairHasLowCeiling = (prevKind === 'lowCeiling' && (nextKind === 'spike' || nextKind === 'gap'))
-    || (nextKind === 'lowCeiling' && (prevKind === 'spike' || prevKind === 'gap'));
-
-  if (pairHasLowCeiling) {
+  const isOverhead = (k: ObstacleKind) => k === 'lowCeiling' || k === 'choiceObstacle';
+  const isGround = (k: ObstacleKind) => k === 'spike' || k === 'gap' || k === 'doubleSpike';
+  const pairHasOverhead =
+    (isOverhead(prevKind) && isGround(nextKind)) ||
+    (isOverhead(nextKind) && isGround(prevKind));
+  if (pairHasOverhead) {
     return Math.max(spacing, levelIndex > 5 ? 180 : 200);
   }
   return spacing;
 }
 
-function isPlacementSafe(
-  candidate: Obstacle,
-  existing: Obstacle[],
-  levelIndex: number,
-  pathEnd: number,
-  minSpacing: number,
-): boolean {
-  if (candidate.x < SAFE_SPAWN_END) return false;
-  if (candidate.x + candidate.width > pathEnd) return false;
-
-  for (const obs of existing) {
-    if (rectsOverlap(candidate, obs)) return false;
-    const gap = candidate.x > obs.x ? candidate.x - (obs.x + obs.width) : obs.x - (candidate.x + candidate.width);
-    const need = requiredSpacing(obs.kind, candidate.kind, minSpacing, levelIndex);
-    if (gap < need) return false;
-  }
-
-  return true;
-}
-
 function rectsOverlap(a: Obstacle, b: Obstacle): boolean {
   return a.x < b.x + b.width && a.x + a.width > b.x;
-}
-
-function obstacleCountForLevel(levelIndex: number): number {
-  // L2-L5: 4..5 obstacles, L6+: 6..7 obstacles (capped).
-  const base = levelIndex > 5 ? 6 + Math.floor((levelIndex - 5) / 4) : 4 + Math.floor(levelIndex / 2);
-  return clampInt(base, 4, MAX_OBSTACLES);
-}
-
-function carryCountForLevel(levelIndex: number): number {
-  return levelIndex > 5 ? 2 : 1;
-}
-
-function defaultPlacementX(slot: number, total: number, start: number, end: number): number {
-  const span = end - start;
-  return start + Math.round((span * (slot + 1)) / (total + 1));
-}
-
-function addReasonNote(
-  notes: string[],
-  strategy: Strategy,
-  model: PlayerModel,
-  obstacle: Obstacle,
-  signal: Signal | undefined,
-) {
-  if (strategy === 'punishJumpBias' && obstacle.kind === 'lowCeiling') {
-    notes.push('Added low ceiling because player prefers jumping');
-    return;
-  }
-  if (strategy === 'punishCrouchBias' && obstacle.kind === 'gap') {
-    notes.push('Added gap because player prefers crouching');
-    return;
-  }
-  if (strategy === 'punishPredictability') {
-    notes.push('Broke familiar pattern to punish predictability');
-    return;
-  }
-  if (strategy === 'punishLateReactions') {
-    notes.push('Tighter reaction window for late decisions');
-    return;
-  }
-
-  if (signal?.source === 'death') {
-    notes.push('Countered recent death position');
-  } else if (signal?.source === 'landing') {
-    notes.push('Countered recent landing position');
-  } else if (model.prefersCrouch && obstacle.kind !== 'lowCeiling') {
-    notes.push('Mixed jump obstacle against crouch bias');
-  } else {
-    notes.push('Balanced escalation mix');
-  }
 }
 
 function randomSigned(minAbs: number, maxAbs: number): number {

@@ -204,8 +204,9 @@ export class Game {
     // Read previous frame's ground state before any mutation this frame
     const wasOnGround = this.wasOnGround;
 
-    const overGap = this.isOverGap();
-    player.update(dt, level.groundY, !overGap);
+    const cx = player.pos.x + player.width / 2;
+    const effectiveFloor = this.getEffectiveFloor(cx);
+    player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null);
 
     // --- Ground state transitions ---
     if (wasOnGround && !player.onGround) {
@@ -264,11 +265,18 @@ export class Game {
     }
   }
 
-  private isOverGap(): boolean {
-    const cx = this.player.pos.x + this.player.width / 2;
-    return this.level.obstacles.some(
+  // Returns the Y-coordinate of the floor under the player, or null if void (gap, no platform).
+  // platform.height = elevation of platform surface above groundY.
+  private getEffectiveFloor(cx: number): number | null {
+    const overGap = this.level.obstacles.some(
       o => o.kind === 'gap' && cx >= o.x && cx <= o.x + o.width
     );
+    if (!overGap) return this.level.groundY;
+
+    const platform = this.level.obstacles.find(
+      o => o.kind === 'platform' && cx >= o.x && cx <= o.x + o.width
+    );
+    return platform ? this.level.groundY - platform.height : null;
   }
 
   private hitSpike(): boolean {
