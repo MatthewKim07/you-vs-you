@@ -31,7 +31,30 @@ export class Renderer {
 
     this.drawGround(segments, groundY, cameraX);
     this.drawObstacles(obstacles, groundY, cameraX);
+    this.drawLandingMarkers(level.aiLandingMarkersX ?? [], groundY, cameraX);
     this.drawFlag(flagX - cameraX, groundY);
+  }
+
+  private drawLandingMarkers(markers: number[], groundY: number, cameraX: number) {
+    if (markers.length === 0) return;
+    const { ctx } = this;
+
+    for (const x of markers) {
+      const sx = x - cameraX;
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.moveTo(sx, groundY - 90);
+      ctx.lineTo(sx, groundY - 16);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.beginPath();
+      ctx.arc(sx, groundY - 96, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   private drawGround(segments: ReturnType<typeof getGroundSegments>, groundY: number, cameraX: number) {
@@ -190,7 +213,7 @@ export class Renderer {
     ctx.fillText(ready ? 'Tap to try again' : '...', cx, cy + 22);
   }
 
-  drawLevelCompleteOverlay(canvas: HTMLCanvasElement, levelNum: number, totalLevels: number) {
+  drawLevelCompleteOverlay(canvas: HTMLCanvasElement, nextLevelNum: number) {
     const { ctx } = this;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -205,27 +228,7 @@ export class Renderer {
 
     ctx.fillStyle = 'white';
     ctx.font = `${Math.min(20, canvas.width / 19)}px sans-serif`;
-    const nextLabel = levelNum < totalLevels ? `Tap for Level ${levelNum + 1}` : 'Tap to finish';
-    ctx.fillText(nextLabel, cx, cy + 24);
+    ctx.fillText(`Tap for Level ${nextLevelNum}`, cx, cy + 24);
   }
 
-  drawAllCompleteOverlay(canvas: HTMLCanvasElement) {
-    const { ctx } = this;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    ctx.textAlign = 'center';
-
-    ctx.fillStyle = '#FFD700';
-    ctx.font = `bold ${Math.min(46, canvas.width / 7)}px sans-serif`;
-    ctx.fillText('You Beat It!', cx, cy - 30);
-
-    ctx.fillStyle = 'white';
-    ctx.font = `${Math.min(20, canvas.width / 19)}px sans-serif`;
-    ctx.fillText('All levels complete', cx, cy + 14);
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.fillText('Tap to play again', cx, cy + 44);
-  }
 }

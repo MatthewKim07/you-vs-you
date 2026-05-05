@@ -12,4 +12,4 @@ export interface Obstacle {
   height: number;  // spikes: visual/collision height; gaps: ignored
 }
 
-export type GameState = 'playing' | 'dead' | 'levelComplete' | 'allComplete';
+export type GameState = 'playing' | 'dead' | 'levelComplete';

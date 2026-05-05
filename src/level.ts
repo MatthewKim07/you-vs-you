@@ -1,12 +1,19 @@
 import { Obstacle } from './types';
 
+export interface AdaptiveDebugInfo {
+  notes: string[];
+  placementXs: number[];
+  obstacleCount: number;
+}
+
 export interface LevelData {
   index: number;       // 0-based
   worldWidth: number;
   groundY: number;     // top of ground, derived from canvas height at build time
   flagX: number;
   obstacles: Obstacle[];
-  // AI HOOK (Milestone 3+): replace static obstacles with generator output
+  aiLandingMarkersX?: number[];
+  aiDebug?: AdaptiveDebugInfo;
 }
 
 export interface GroundSegment {
@@ -14,31 +21,16 @@ export interface GroundSegment {
   width: number;
 }
 
-// Static level definitions — obstacles placed in world-space pixels
+// Static tutorial fallback only. Levels 2+ are adaptive in game.ts.
 const LEVEL_DEFINITIONS: Array<{ obstacles: Obstacle[] }> = [
   {
-    // Level 1: flat run, no obstacles — tutorial
-    obstacles: [],
-  },
-  {
-    // Level 2: one spike, learn to jump
-    obstacles: [
-      { kind: 'spike', x: 700, width: 44, height: 52 },
-    ],
-  },
-  {
-    // Level 3: spike + gap — two distinct challenges
-    obstacles: [
-      { kind: 'spike', x: 620, width: 44, height: 52 },
-      { kind: 'gap',   x: 1100, width: 130, height: 0 },
-    ],
+    // Level 1 starter: one spike to teach timing immediately.
+    obstacles: [{ kind: 'spike', x: 520, width: 44, height: 52 }],
   },
 ];
 
-export const TOTAL_LEVELS = LEVEL_DEFINITIONS.length;
-
 export function buildLevel(index: number, canvasHeight: number): LevelData {
-  const def = LEVEL_DEFINITIONS[index];
+  const def = LEVEL_DEFINITIONS[index] ?? LEVEL_DEFINITIONS[0];
   return {
     index,
     worldWidth: 2000,
@@ -68,4 +60,3 @@ export function getGroundSegments(worldWidth: number, obstacles: Obstacle[]): Gr
   }
   return segments;
 }
-

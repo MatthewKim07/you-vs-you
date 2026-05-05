@@ -1,10 +1,11 @@
 import { Player } from './player';
-import { buildLevel, LevelData, TOTAL_LEVELS } from './level';
+import { buildLevel, LevelData } from './level';
 import { InputHandler } from './input';
 import { Renderer } from './renderer';
 import { RunTracker } from './runTracker';
 import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
+import { generateAdaptiveLevel } from './adaptiveGenerator';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -26,7 +27,7 @@ export class Game {
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
-  private airStartMs = 0;
+  private airStartMs: number | null = null;
   private sampleTimer = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -46,12 +47,14 @@ export class Game {
   private startLevel(index: number) {
     this.resizeCanvas();
     this.levelIndex = index;
-    this.level = buildLevel(index, this.canvas.height);
+    this.level = this.buildLevelForIndex(index);
+    this.level.groundY = this.canvas.height - 80;
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
     this.resetFrameTracking();
     this.tracker.startRun(index, this.attempts);
+    this.debugPanel.setAdaptiveSnapshot(this.level);
   }
 
   private restartLevel() {
@@ -64,9 +67,20 @@ export class Game {
     this.tracker.startRun(this.levelIndex, this.attempts);
   }
 
+  private buildLevelForIndex(index: number): LevelData {
+    // Level 1 remains static tutorial; adaptive generation starts at Level 2+.
+    if (index === 0) {
+      return buildLevel(index, this.canvas.height);
+    }
+
+    const runs = this.tracker.getAllRuns();
+    const profile = this.tracker.getProfile();
+    return generateAdaptiveLevel(runs, profile, index, this.canvas.width);
+  }
+
   private resetFrameTracking() {
-    this.wasOnGround = true; // player always spawns on ground
-    this.airStartMs = 0;
+    this.wasOnGround = this.player.onGround;
+    this.airStartMs = null;
     this.sampleTimer = 0;
     this.deathTimer = 0;
   }
@@ -78,6 +92,8 @@ export class Game {
     } else {
       this.player.reset(SPAWN_X, spawnY);
     }
+    // Spawn starts grounded; prevents a false air→ground landing on first frame.
+    this.player.onGround = true;
   }
 
   private setupResize() {
@@ -114,19 +130,8 @@ export class Game {
       case 'levelComplete':
         if (this.input.consumeJump()) {
           const next = this.levelIndex + 1;
-          if (next >= TOTAL_LEVELS) {
-            this.state = 'allComplete';
-          } else {
-            this.attempts = 1;
-            this.startLevel(next);
-          }
-        }
-        break;
-
-      case 'allComplete':
-        if (this.input.consumeJump()) {
           this.attempts = 1;
-          this.startLevel(0);
+          this.startLevel(next);
         }
         break;
 
@@ -158,10 +163,11 @@ export class Game {
       // Became airborne (jumped or walked off edge)
       this.airStartMs = performance.now();
     }
-    if (!wasOnGround && player.onGround) {
+    if (!wasOnGround && player.onGround && this.airStartMs !== null) {
       // Landed
       const airTimeMs = performance.now() - this.airStartMs;
       tracker.recordLanding(player.pos.x, player.pos.y, airTimeMs);
+      this.airStartMs = null;
     }
 
     // Persist for next frame — must happen after physics, before early returns
@@ -192,7 +198,6 @@ export class Game {
     if (player.pos.x + player.width >= level.flagX) {
       tracker.finishRun(true);
       this.state = 'levelComplete';
-      // AI HOOK (Milestone 4): pass tracker.getAllRuns() to level generator
     }
   }
 
@@ -240,9 +245,7 @@ export class Game {
     if (this.state === 'dead') {
       this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
     } else if (this.state === 'levelComplete') {
-      this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 1, TOTAL_LEVELS);
-    } else if (this.state === 'allComplete') {
-      this.renderer.drawAllCompleteOverlay(this.canvas);
+      this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2);
     }
 
     this.debugPanel.update();

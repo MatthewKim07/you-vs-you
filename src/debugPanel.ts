@@ -1,4 +1,5 @@
 import { RunTracker } from './runTracker';
+import { LevelData } from './level';
 
 // HTML overlay — hidden by default, toggled via "AI Data" button.
 // Reads from RunTracker only; no game logic here.
@@ -6,6 +7,9 @@ export class DebugPanel {
   private panel: HTMLDivElement;
   private button: HTMLButtonElement;
   private visible = false;
+  private adaptivePlacements: number[] = [];
+  private adaptiveNotes: string[] = [];
+  private adaptiveObstacleCount = 0;
 
   constructor(private tracker: RunTracker) {
     this.button = this.makeButton();
@@ -39,7 +43,20 @@ export class DebugPanel {
         <div class="dbg-row"><span>Jump style</span><span>${profile.jumpStyle}</span></div>
         <div class="dbg-row"><span>Landing zones</span><span>${profile.commonLandingZones.map(fmt).join(', ') || '—'}</span></div>
       </div>
+      <div class="dbg-section">
+        <div class="dbg-title">ADAPTIVE</div>
+        <div class="dbg-row"><span>Obstacles</span><span>${this.adaptiveObstacleCount || '—'}</span></div>
+        <div class="dbg-row"><span>Placements</span><span>${this.adaptivePlacements.map(fmt).join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Note 1</span><span>${this.adaptiveNotes[0] ?? '—'}</span></div>
+        <div class="dbg-row"><span>Note 2</span><span>${this.adaptiveNotes[1] ?? '—'}</span></div>
+      </div>
     `;
+  }
+
+  setAdaptiveSnapshot(level: LevelData): void {
+    this.adaptiveObstacleCount = level.aiDebug?.obstacleCount ?? 0;
+    this.adaptivePlacements = level.aiDebug?.placementXs ?? [];
+    this.adaptiveNotes = level.aiDebug?.notes ?? [];
   }
 
   private makeButton(): HTMLButtonElement {
