@@ -12,6 +12,9 @@ const SPIKE_W = 44;
 const SPIKE_H = 52;
 const GAP_MIN_W = 108;
 const GAP_MAX_W = 142;
+const LOW_CEILING_MIN_W = 150;
+const LOW_CEILING_MAX_W = 220;
+const LOW_CEILING_CLEARANCE = 34;
 
 type SignalReason = 'landing' | 'death' | 'profile' | 'default';
 
@@ -43,7 +46,7 @@ export function generateAdaptiveLevel(
   const pathStart = SAFE_SPAWN_END;
   const pathEnd = flagX - SAFE_FLAG_GAP;
 
-  const obstacleCount = clampInt(1 + Math.floor(levelIndex / 2), 1, MAX_OBSTACLES);
+  const obstacleCount = obstacleCountForLevel(levelIndex);
   const sourceLevel = Math.max(0, levelIndex - 1);
 
   const levelRuns = previousRuns.filter((r) => r.levelIndex === sourceLevel);
@@ -211,8 +214,8 @@ function chooseTypes(recentRuns: RunData[], count: number, levelIndex: number): 
       types.push('spike');
       continue;
     }
-    if (levelIndex <= 1) {
-      types.push('spike');
+    if (i === 1 && levelIndex >= 1) {
+      types.push('lowCeiling');
       continue;
     }
 
@@ -240,8 +243,16 @@ function materializeObstacles(
 
   for (let i = 0; i < ordered.length; i++) {
     const kind = types[i] ?? 'spike';
-    const width = kind === 'gap' ? gapWidthFor(levelIndex) : SPIKE_W;
-    const height = kind === 'spike' ? SPIKE_H : 0;
+    const width = kind === 'gap'
+      ? gapWidthFor(levelIndex)
+      : kind === 'lowCeiling'
+        ? lowCeilingWidth(levelIndex)
+        : SPIKE_W;
+    const height = kind === 'spike'
+      ? SPIKE_H
+      : kind === 'lowCeiling'
+        ? LOW_CEILING_CLEARANCE
+        : 0;
 
     const desiredX = clamp(Math.round(ordered[i]), pathStart, pathEnd - width);
     let x = desiredX;
@@ -282,6 +293,16 @@ function addPlacementNotes(notes: string[], obstacles: Obstacle[], forced: Force
 
 function gapWidthFor(levelIndex: number): number {
   return clampInt(GAP_MIN_W + levelIndex * 6, GAP_MIN_W, GAP_MAX_W);
+}
+
+function lowCeilingWidth(levelIndex: number): number {
+  return clampInt(LOW_CEILING_MIN_W + levelIndex * 10, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+}
+
+function obstacleCountForLevel(levelIndex: number): number {
+  // Level 2+ should not be easier than Level 1 (which has 2 test obstacles).
+  // L2=3, L3=4, L4+=5 (capped).
+  return clampInt(2 + levelIndex, 3, MAX_OBSTACLES);
 }
 
 function randomSigned(minAbs: number, maxAbs: number): number {
