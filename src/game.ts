@@ -16,6 +16,7 @@ const SAMPLE_INTERVAL = 0.2;    // seconds between position samples
 const LEVEL_HIGHLIGHT_SECS = 2.4;
 const AI_MESSAGE_SECS = 2.6;
 const LOW_CEILING_THICKNESS = 16; // keep in sync with renderer low-ceiling draw thickness
+const CHOICE_BAR_THICKNESS = 12;  // keep in sync with renderer choice-obstacle draw thickness
 
 export class Game {
   private player!: Player;
@@ -245,6 +246,10 @@ export class Game {
       this.triggerDeath('spike', player.pos.x);
       return;
     }
+    if (this.hitChoiceObstacle()) {
+      this.triggerDeath('spike', player.pos.x);
+      return;
+    }
 
     // --- Win check ---
     if (player.pos.x + player.width >= level.flagX) {
@@ -267,18 +272,36 @@ export class Game {
   }
 
   private hitSpike(): boolean {
-    const spikes = this.level.obstacles.filter(
-      (o): o is Obstacle & { kind: 'spike' } => o.kind === 'spike'
-    );
     const px = this.player.pos.x;
     const pr = px + this.player.width;
     const pb = this.player.pos.y + this.player.height;
+    const inset = 6;
 
-    return spikes.some(s => {
-      const inset = 6;
-      const spikeHitTop = this.level.groundY - s.height + 12;
-      return px + inset < s.x + s.width - inset && pr - inset > s.x + inset && pb > spikeHitTop;
-    });
+    return this.level.obstacles
+      .filter(o => o.kind === 'spike' || o.kind === 'doubleSpike')
+      .some(s => {
+        const spikeHitTop = this.level.groundY - s.height + 12;
+        return px + inset < s.x + s.width - inset && pr - inset > s.x + inset && pb > spikeHitTop;
+      });
+  }
+
+  private hitChoiceObstacle(): boolean {
+    if (this.player.isCrouching) return false;
+
+    const px = this.player.pos.x;
+    const pr = px + this.player.width;
+    const playerTop = this.player.pos.y;
+    const playerBottom = playerTop + this.player.height;
+
+    return this.level.obstacles
+      .filter(o => o.kind === 'choiceObstacle')
+      .some(c => {
+        const barBottom = this.level.groundY - c.height;
+        const barTop = barBottom - CHOICE_BAR_THICKNESS;
+        const xOverlap = pr > c.x && px < c.x + c.width;
+        const yOverlap = playerBottom > barTop && playerTop < barBottom;
+        return xOverlap && yOverlap;
+      });
   }
 
   private hitLowCeiling(): boolean {

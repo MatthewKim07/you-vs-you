@@ -2,12 +2,15 @@ import { Player } from './player';
 import { LevelData, getGroundSegments } from './level';
 import { Obstacle } from './types';
 
-const GROUND_GRASS = '#5D8A35';
-const GROUND_DIRT  = '#8B5E3C';
-const SPIKE_COLOR  = '#CC2222';
-const SPIKE_SHADOW = '#881111';
-const CEIL_COLOR   = '#7EE7FF';
-const CEIL_GLOW    = '#2DA2C4';
+const GROUND_GRASS   = '#5D8A35';
+const GROUND_DIRT    = '#8B5E3C';
+const SPIKE_COLOR    = '#CC2222';
+const SPIKE_SHADOW   = '#881111';
+const CEIL_COLOR     = '#7EE7FF';
+const CEIL_GLOW      = '#2DA2C4';
+const CHOICE_COLOR   = '#A855F7';
+const CHOICE_GLOW    = '#7C3AED';
+const DOUBLE_SPIKE_GAP = 16; // gap between the two spikes in a doubleSpike
 
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
@@ -87,8 +90,12 @@ export class Renderer {
       }
       if (obs.kind === 'spike') {
         this.drawSpike(obs, groundY, cameraX);
+      } else if (obs.kind === 'doubleSpike') {
+        this.drawDoubleSpike(obs, groundY, cameraX);
       } else if (obs.kind === 'lowCeiling') {
         this.drawLowCeiling(obs, groundY, cameraX);
+      } else if (obs.kind === 'choiceObstacle') {
+        this.drawChoiceObstacle(obs, groundY, cameraX);
       }
       // gaps are rendered by absence of ground — no drawing needed
     }
@@ -103,13 +110,17 @@ export class Renderer {
     ctx.strokeStyle = `rgba(255, 225, 120, ${alpha})`;
     ctx.lineWidth = 2;
     ctx.setLineDash([3, 4]);
-    if (obs.kind === 'spike') {
+    if (obs.kind === 'spike' || obs.kind === 'doubleSpike') {
       const topY = groundY - obs.height - 6;
       ctx.strokeRect(sx - 6, topY, obs.width + 12, obs.height + 12);
     } else if (obs.kind === 'lowCeiling') {
       const thickness = 16;
       const topY = groundY - obs.height - thickness - 6;
       ctx.strokeRect(sx - 6, topY, obs.width + 12, thickness + 12);
+    } else if (obs.kind === 'choiceObstacle') {
+      const barThickness = 12; // keep in sync with game.ts CHOICE_BAR_THICKNESS
+      const topY = groundY - obs.height - barThickness - 6;
+      ctx.strokeRect(sx - 6, topY, obs.width + 12, barThickness + 12);
     } else {
       const h = 70;
       ctx.strokeRect(sx - 5, groundY - h, obs.width + 10, h + 8);
@@ -121,7 +132,16 @@ export class Renderer {
     const { ctx } = this;
     if (pulse < 0.2) return;
     const sx = obs.x - cameraX + obs.width / 2;
-    const y = groundY - (obs.kind === 'spike' ? obs.height + 26 : obs.kind === 'lowCeiling' ? obs.height + 44 : 84);
+    let y: number;
+    if (obs.kind === 'spike' || obs.kind === 'doubleSpike') {
+      y = groundY - (obs.height + 26);
+    } else if (obs.kind === 'lowCeiling') {
+      y = groundY - (obs.height + 44);
+    } else if (obs.kind === 'choiceObstacle') {
+      y = groundY - (obs.height + 38);
+    } else {
+      y = groundY - 84;
+    }
     const alpha = Math.min(0.9, pulse);
 
     ctx.save();
@@ -166,6 +186,59 @@ export class Renderer {
     ctx.lineTo(tipX, baseY - obs.height + 10);
     ctx.closePath();
     ctx.fill();
+  }
+
+  private drawDoubleSpike(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = obs.x - cameraX;
+    const spikeW = (obs.width - DOUBLE_SPIKE_GAP) / 2;
+    const baseY = groundY + 2;
+
+    for (let i = 0; i < 2; i++) {
+      const left = sx + i * (spikeW + DOUBLE_SPIKE_GAP);
+      const tipX = left + spikeW / 2;
+
+      ctx.fillStyle = SPIKE_SHADOW;
+      ctx.beginPath();
+      ctx.moveTo(tipX, baseY - obs.height + 6);
+      ctx.lineTo(left + spikeW, baseY);
+      ctx.lineTo(left, baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = SPIKE_COLOR;
+      ctx.beginPath();
+      ctx.moveTo(tipX, baseY - obs.height);
+      ctx.lineTo(left + spikeW - 4, baseY);
+      ctx.lineTo(left + 4, baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255,100,100,0.4)';
+      ctx.beginPath();
+      ctx.moveTo(tipX, baseY - obs.height);
+      ctx.lineTo(tipX + 4, baseY - obs.height + 20);
+      ctx.lineTo(tipX, baseY - obs.height + 10);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  private drawChoiceObstacle(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = obs.x - cameraX;
+    const barThickness = 12; // keep in sync with game.ts CHOICE_BAR_THICKNESS
+    const topY = groundY - obs.height - barThickness;
+
+    ctx.fillStyle = CHOICE_COLOR;
+    ctx.fillRect(sx, topY, obs.width, barThickness);
+
+    ctx.fillStyle = CHOICE_GLOW;
+    ctx.fillRect(sx + 4, topY + 4, obs.width - 8, 3);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx + 0.5, topY + 0.5, obs.width - 1, barThickness - 1);
   }
 
   private drawLowCeiling(obs: Obstacle, groundY: number, cameraX: number) {
