@@ -36,6 +36,7 @@ export class DebugPanel {
       <div class="dbg-section">
         <div class="dbg-title">THIS RUN</div>
         <div class="dbg-row"><span>Jumps</span><span>${run?.jumps.length ?? '—'}</span></div>
+        <div class="dbg-row"><span>Actions</span><span>${run?.actions.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Landings</span><span>${run?.landings.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Samples</span><span>${run?.samples.length ?? '—'}</span></div>
       </div>

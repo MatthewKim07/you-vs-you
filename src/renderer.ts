@@ -6,6 +6,8 @@ const GROUND_GRASS = '#5D8A35';
 const GROUND_DIRT  = '#8B5E3C';
 const SPIKE_COLOR  = '#CC2222';
 const SPIKE_SHADOW = '#881111';
+const CEIL_COLOR   = '#7EE7FF';
+const CEIL_GLOW    = '#2DA2C4';
 
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
@@ -85,6 +87,8 @@ export class Renderer {
       }
       if (obs.kind === 'spike') {
         this.drawSpike(obs, groundY, cameraX);
+      } else if (obs.kind === 'lowCeiling') {
+        this.drawLowCeiling(obs, groundY, cameraX);
       }
       // gaps are rendered by absence of ground — no drawing needed
     }
@@ -102,6 +106,10 @@ export class Renderer {
     if (obs.kind === 'spike') {
       const topY = groundY - obs.height - 6;
       ctx.strokeRect(sx - 6, topY, obs.width + 12, obs.height + 12);
+    } else if (obs.kind === 'lowCeiling') {
+      const thickness = 16;
+      const topY = groundY - obs.height - thickness - 6;
+      ctx.strokeRect(sx - 6, topY, obs.width + 12, thickness + 12);
     } else {
       const h = 70;
       ctx.strokeRect(sx - 5, groundY - h, obs.width + 10, h + 8);
@@ -113,7 +121,7 @@ export class Renderer {
     const { ctx } = this;
     if (pulse < 0.2) return;
     const sx = obs.x - cameraX + obs.width / 2;
-    const y = groundY - (obs.kind === 'spike' ? obs.height + 26 : 84);
+    const y = groundY - (obs.kind === 'spike' ? obs.height + 26 : obs.kind === 'lowCeiling' ? obs.height + 44 : 84);
     const alpha = Math.min(0.9, pulse);
 
     ctx.save();
@@ -160,6 +168,23 @@ export class Renderer {
     ctx.fill();
   }
 
+  private drawLowCeiling(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = obs.x - cameraX;
+    const thickness = 16;
+    const topY = groundY - obs.height - thickness;
+
+    ctx.fillStyle = CEIL_COLOR;
+    ctx.fillRect(sx, topY, obs.width, thickness);
+
+    ctx.fillStyle = CEIL_GLOW;
+    ctx.fillRect(sx + 4, topY + 4, obs.width - 8, 3);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx + 0.5, topY + 0.5, obs.width - 1, thickness - 1);
+  }
+
   private drawFlag(screenX: number, groundY: number) {
     const { ctx } = this;
     const poleH = 90;
@@ -186,11 +211,19 @@ export class Renderer {
     ctx.fillStyle = '#4A90E2';
     ctx.fillRect(sx, sy, player.width, player.height);
     ctx.fillStyle = '#6AAFF5';
-    ctx.fillRect(sx + 2, sy + 2, player.width - 4, 14);
-    ctx.fillStyle = 'white';
-    ctx.fillRect(sx + 16, sy + 8, 12, 10);
-    ctx.fillStyle = '#111';
-    ctx.fillRect(sx + 20, sy + 11, 6, 6);
+    ctx.fillRect(sx + 2, sy + 2, player.width - 4, Math.min(14, player.height - 6));
+
+    if (player.isCrouching) {
+      ctx.fillStyle = '#A9E4FF';
+      ctx.fillRect(sx + 5, sy + 8, player.width - 10, 5);
+      ctx.fillStyle = '#16364A';
+      ctx.fillRect(sx + 7, sy + 16, player.width - 14, 4);
+    } else {
+      ctx.fillStyle = 'white';
+      ctx.fillRect(sx + 16, sy + 8, 12, 10);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(sx + 20, sy + 11, 6, 6);
+    }
 
     ctx.globalAlpha = 1;
   }
@@ -239,7 +272,7 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.font = `${Math.min(15, canvasW / 26)}px sans-serif`;
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillText('Tap / Space to jump', canvasW / 2, canvasH - 20);
+      ctx.fillText('Tap to jump • Hold to crouch', canvasW / 2, canvasH - 20);
     }
   }
 

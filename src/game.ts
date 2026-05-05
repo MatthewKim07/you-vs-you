@@ -13,6 +13,7 @@ const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after de
 const SAMPLE_INTERVAL = 0.2;    // seconds between position samples
 const LEVEL_HIGHLIGHT_SECS = 2.4;
 const AI_MESSAGE_SECS = 2.6;
+const LOW_CEILING_THICKNESS = 16; // keep in sync with renderer low-ceiling draw thickness
 
 export class Game {
   private player!: Player;
@@ -163,13 +164,27 @@ export class Game {
 
   private updatePlaying(dt: number) {
     const { player, level, tracker } = this;
+    const wantsCrouch = this.input.isCrouchHeld();
+
+    if (wantsCrouch && player.onGround && !player.isCrouching) {
+      player.setCrouch(true);
+      tracker.recordAction('crouchStart', player.pos.x);
+    } else if ((!wantsCrouch || !player.onGround) && player.isCrouching) {
+      player.setCrouch(false);
+      tracker.recordAction('crouchEnd', player.pos.x);
+    }
 
     // --- Input: only record a jump if the player is actually on the ground ---
     if (this.input.consumeJump()) {
+      const wasCrouching = player.isCrouching;
       if (player.onGround) {
         tracker.recordJump(player.pos.x, player.pos.y);
+        tracker.recordAction('jump', player.pos.x);
       }
       player.jump();
+      if (wasCrouching && !player.isCrouching) {
+        tracker.recordAction('crouchEnd', player.pos.x);
+      }
     }
 
     // Read previous frame's ground state before any mutation this frame
@@ -213,6 +228,10 @@ export class Game {
       this.triggerDeath('spike', player.pos.x);
       return;
     }
+    if (this.hitLowCeiling()) {
+      this.triggerDeath('spike', player.pos.x);
+      return;
+    }
 
     // --- Win check ---
     if (player.pos.x + player.width >= level.flagX) {
@@ -244,6 +263,27 @@ export class Game {
       const inset = 6;
       const spikeHitTop = this.level.groundY - s.height + 12;
       return px + inset < s.x + s.width - inset && pr - inset > s.x + inset && pb > spikeHitTop;
+    });
+  }
+
+  private hitLowCeiling(): boolean {
+    if (this.player.isCrouching) return false;
+
+    const ceilings = this.level.obstacles.filter(
+      (o): o is Obstacle & { kind: 'lowCeiling' } => o.kind === 'lowCeiling'
+    );
+    const px = this.player.pos.x;
+    const pr = px + this.player.width;
+    const playerTop = this.player.pos.y;
+    const playerBottom = playerTop + this.player.height;
+
+    return ceilings.some((c) => {
+      const slabTop = this.level.groundY - c.height - LOW_CEILING_THICKNESS;
+      const slabBottom = this.level.groundY - c.height;
+
+      const xOverlap = pr > c.x && px < c.x + c.width;
+      const yOverlap = playerBottom > slabTop && playerTop < slabBottom;
+      return xOverlap && yOverlap;
     });
   }
 

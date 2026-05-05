@@ -17,6 +17,7 @@ export class RunTracker {
       jumps: [],
       landings: [],
       samples: [],
+      actions: [],
     };
   }
 
@@ -33,6 +34,11 @@ export class RunTracker {
   recordSample(x: number, y: number): void {
     if (!this.current) return;
     this.current.samples.push({ x, y, timeMs: this.elapsed() });
+  }
+
+  recordAction(action: 'jump' | 'crouchStart' | 'crouchEnd', x: number): void {
+    if (!this.current) return;
+    this.current.actions.push({ action, x, timeMs: this.elapsed() });
   }
 
   finishRun(completed: boolean, deathReason?: 'spike' | 'gap', deathX?: number): void {

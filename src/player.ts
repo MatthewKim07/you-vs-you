@@ -8,8 +8,15 @@ export class Player {
   pos: Vec2;
   vel: Vec2;
   readonly width = 32;
-  readonly height = 48;
+  readonly normalHeight = 48;
+  readonly crouchHeight = 30;
+  private currentHeight = this.normalHeight;
   onGround = false;
+  isCrouching = false;
+
+  get height() {
+    return this.currentHeight;
+  }
 
   constructor(x: number, y: number) {
     this.pos = { x, y };
@@ -18,9 +25,31 @@ export class Player {
 
   jump() {
     if (this.onGround) {
+      if (this.isCrouching) {
+        this.setCrouch(false);
+      }
       this.vel.y = JUMP_FORCE;
       this.onGround = false;
     }
+  }
+
+  setCrouch(crouch: boolean) {
+    if (crouch) {
+      if (!this.onGround || this.isCrouching) return;
+      const delta = this.normalHeight - this.crouchHeight;
+      this.currentHeight = this.crouchHeight;
+      this.pos.y += delta;
+      this.isCrouching = true;
+      return;
+    }
+
+    if (!this.isCrouching) return;
+    const delta = this.normalHeight - this.crouchHeight;
+    this.currentHeight = this.normalHeight;
+    if (this.onGround) {
+      this.pos.y -= delta;
+    }
+    this.isCrouching = false;
   }
 
   // onSolidGround: false when player is over a gap — skip floor collision
@@ -47,5 +76,7 @@ export class Player {
     this.pos = { x, y };
     this.vel = { x: MOVE_SPEED, y: 0 };
     this.onGround = false;
+    this.isCrouching = false;
+    this.currentHeight = this.normalHeight;
   }
 }

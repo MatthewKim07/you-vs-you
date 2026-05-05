@@ -24,8 +24,11 @@ export interface GroundSegment {
 // Static tutorial fallback only. Levels 2+ are adaptive in game.ts.
 const LEVEL_DEFINITIONS: Array<{ obstacles: Obstacle[] }> = [
   {
-    // Level 1 starter: one spike to teach timing immediately.
-    obstacles: [{ kind: 'spike', x: 520, width: 44, height: 52 }],
+    // Level 1 starter: spike + low ceiling to teach jump and crouch.
+    obstacles: [
+      { kind: 'spike', x: 520, width: 44, height: 52 },
+      { kind: 'lowCeiling', x: 980, width: 168, height: 34 },
+    ],
   },
 ];
 

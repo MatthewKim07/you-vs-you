@@ -19,6 +19,12 @@ export interface PositionSample {
   timeMs: number;
 }
 
+export interface ActionEvent {
+  action: 'jump' | 'crouchStart' | 'crouchEnd';
+  x: number;
+  timeMs: number;
+}
+
 export interface RunData {
   levelIndex: number;
   attemptNumber: number;
@@ -30,6 +36,7 @@ export interface RunData {
   jumps: JumpEvent[];
   landings: LandingEvent[];
   samples: PositionSample[];
+  actions: ActionEvent[];
 }
 
 // Derived summary across all stored runs.
