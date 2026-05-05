@@ -1,9 +1,9 @@
-// AI HOOK (Milestone 2+): record jump events into RunRecord for adaptive level generation
+// AI HOOK (Milestone 3+): record jump events into RunRecord.jumps for adaptive generation
 import { Vec2 } from './types';
 
-const GRAVITY = 1400;    // px/s²
-const JUMP_FORCE = -620; // px/s (negative = up)
-const MOVE_SPEED = 230;  // px/s, constant rightward movement
+export const GRAVITY = 1400;    // px/s²
+export const JUMP_FORCE = -620; // px/s (negative = up)
+export const MOVE_SPEED = 230;  // px/s, constant rightward movement
 
 export class Player {
   pos: Vec2;
@@ -24,18 +24,21 @@ export class Player {
     }
   }
 
-  update(dt: number, groundY: number) {
+  // onSolidGround: false when player is over a gap — skip floor collision
+  update(dt: number, groundY: number, onSolidGround: boolean) {
     this.vel.y += GRAVITY * dt;
-
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
 
-    // Ground collision
-    const floorLine = groundY - this.height;
-    if (this.pos.y >= floorLine) {
-      this.pos.y = floorLine;
-      this.vel.y = 0;
-      this.onGround = true;
+    if (onSolidGround) {
+      const floorLine = groundY - this.height;
+      if (this.pos.y >= floorLine) {
+        this.pos.y = floorLine;
+        this.vel.y = 0;
+        this.onGround = true;
+      } else {
+        this.onGround = false;
+      }
     } else {
       this.onGround = false;
     }

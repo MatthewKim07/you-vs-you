@@ -3,10 +3,21 @@ export interface Vec2 {
   y: number;
 }
 
-export type GameState = 'playing' | 'win';
+export type ObstacleKind = 'spike' | 'gap';
 
-// AI HOOK (Milestone 2+): extend with recorded run data for adaptive generation
+export interface Obstacle {
+  kind: ObstacleKind;
+  x: number;       // world-space left edge
+  width: number;
+  height: number;  // spikes: visual/collision height; gaps: ignored
+}
+
+export type GameState = 'playing' | 'dead' | 'levelComplete' | 'allComplete';
+
+// AI HOOK (Milestone 3+): RunRecord feeds adaptive level generator
 export interface RunRecord {
-  jumps: Array<{ x: number; velY: number }>;
+  levelIndex: number;
+  attempts: number;
+  jumps: Array<{ x: number; t: number }>;
   completionTimeMs: number;
 }
