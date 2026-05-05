@@ -1,5 +1,6 @@
 export class InputHandler {
   private jumpPressed = false;
+  private jumpReleased = false;
   private crouchHeld = false;
 
   private pointerDown = false;
@@ -11,7 +12,9 @@ export class InputHandler {
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
         e.preventDefault();
-        if (!e.repeat) this.jumpPressed = true;
+        if (!e.repeat) {
+          this.jumpPressed = true;
+        }
       } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
         e.preventDefault();
         this.crouchHeld = true;
@@ -19,12 +22,16 @@ export class InputHandler {
     });
 
     window.addEventListener('keyup', (e) => {
-      if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+      if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+        this.jumpReleased = true;
+      } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
         this.crouchHeld = false;
       }
     });
 
     window.addEventListener('blur', () => {
+      this.jumpPressed = false;
+      this.jumpReleased = false;
       this.crouchHeld = false;
       this.pointerDown = false;
       this.holdActivated = false;
@@ -75,6 +82,14 @@ export class InputHandler {
 
   isCrouchHeld(): boolean {
     return this.crouchHeld;
+  }
+
+  consumeJumpRelease(): boolean {
+    if (this.jumpReleased) {
+      this.jumpReleased = false;
+      return true;
+    }
+    return false;
   }
 
   private clearHoldTimer() {

@@ -9,6 +9,7 @@ import { generateAdaptiveLevel } from './adaptiveGenerator';
 import { deathMessage, introMessage, levelCompleteMessage, levelStartMessage } from './aiGameMaster';
 import { PlayerModel } from './telemetry';
 import { analyzePlayer } from './playerAnalyzer';
+import { JUMP_CUT_FACTOR } from './movementTuning';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -17,6 +18,8 @@ const LEVEL_HIGHLIGHT_SECS = 2.4;
 const AI_MESSAGE_SECS = 2.6;
 const LOW_CEILING_THICKNESS = 16; // keep in sync with renderer low-ceiling draw thickness
 const CHOICE_BAR_THICKNESS = 12;  // keep in sync with renderer choice-obstacle draw thickness
+const SUPPORT_EDGE_INSET = 2;     // use a tiny inset so visual edge contact still counts
+const PLATFORM_SNAP_TOLERANCE = 10;
 
 export class Game {
   private player!: Player;
@@ -41,6 +44,7 @@ export class Game {
   private wasOnGround = true; // previous frame's ground state, persisted across frames
   private airStartMs: number | null = null;
   private sampleTimer = 0;
+  private canCutCurrentJump = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -67,7 +71,12 @@ export class Game {
     this.cameraX = 0;
     this.state = 'playing';
     this.resetFrameTracking();
-    this.tracker.startRun(index, this.attempts, this.level.obstacles);
+    this.tracker.startRun(index, this.attempts, this.level.obstacles, {
+      difficulty: this.level.aiDebug?.difficulty,
+      strategy: this.level.aiDebug?.strategy,
+      density: this.level.aiDebug?.density,
+      variants: this.level.aiDebug?.variants,
+    });
     this.debugPanel.setAdaptiveSnapshot(this.level);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
@@ -87,7 +96,12 @@ export class Game {
     this.cameraX = 0;
     this.state = 'playing';
     this.resetFrameTracking();
-    this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles);
+    this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
+      difficulty: this.level.aiDebug?.difficulty,
+      strategy: this.level.aiDebug?.strategy,
+      density: this.level.aiDebug?.density,
+      variants: this.level.aiDebug?.variants,
+    });
   }
 
   private buildLevelForIndex(index: number): LevelData {
@@ -113,6 +127,7 @@ export class Game {
     this.airStartMs = null;
     this.sampleTimer = 0;
     this.deathTimer = 0;
+    this.canCutCurrentJump = false;
   }
 
   private spawnPlayer() {
@@ -195,17 +210,27 @@ export class Game {
         tracker.recordJump(player.pos.x, player.pos.y);
         tracker.recordAction('jump', player.pos.x);
       }
-      player.jump();
+      const didJump = player.jump();
+      if (didJump) {
+        this.canCutCurrentJump = true;
+      }
       if (wasCrouching && !player.isCrouching) {
         tracker.recordAction('crouchEnd', player.pos.x);
       }
     }
 
+    if (this.input.consumeJumpRelease() && this.canCutCurrentJump) {
+      player.cutJump(JUMP_CUT_FACTOR);
+      this.canCutCurrentJump = false;
+    }
+
     // Read previous frame's ground state before any mutation this frame
     const wasOnGround = this.wasOnGround;
 
-    const cx = player.pos.x + player.width / 2;
-    const effectiveFloor = this.getEffectiveFloor(cx);
+    const playerLeft = player.pos.x + SUPPORT_EDGE_INSET;
+    const playerRight = player.pos.x + player.width - SUPPORT_EDGE_INSET;
+    const playerBottom = player.pos.y + player.height;
+    const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
     player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null);
 
     // --- Ground state transitions ---
@@ -218,6 +243,9 @@ export class Game {
       const airTimeMs = performance.now() - this.airStartMs;
       tracker.recordLanding(player.pos.x, player.pos.y, airTimeMs);
       this.airStartMs = null;
+    }
+    if (player.onGround || player.vel.y >= 0) {
+      this.canCutCurrentJump = false;
     }
 
     // Persist for next frame — must happen after physics, before early returns
@@ -265,18 +293,35 @@ export class Game {
     }
   }
 
-  // Returns the Y-coordinate of the floor under the player, or null if void (gap, no platform).
-  // platform.height = elevation of platform surface above groundY.
-  private getEffectiveFloor(cx: number): number | null {
-    const overGap = this.level.obstacles.some(
-      o => o.kind === 'gap' && cx >= o.x && cx <= o.x + o.width
-    );
-    if (!overGap) return this.level.groundY;
+  // Returns the top floor currently supporting the player's footprint.
+  // Uses full body overlap so edge contact behaves exactly like visuals.
+  private getEffectiveFloor(
+    playerLeft: number,
+    playerRight: number,
+    playerBottom: number,
+    verticalVelocity: number,
+  ): number | null {
+    const gaps = this.level.obstacles.filter((o) => o.kind === 'gap');
+    const platforms = this.level.obstacles.filter((o) => o.kind === 'platform');
+    const overlapsX = (obs: Obstacle): boolean =>
+      playerRight > obs.x && playerLeft < obs.x + obs.width;
 
-    const platform = this.level.obstacles.find(
-      o => o.kind === 'platform' && cx >= o.x && cx <= o.x + o.width
+    const fullyInsideGap = gaps.some(
+      (g) => playerLeft >= g.x && playerRight <= g.x + g.width,
     );
-    return platform ? this.level.groundY - platform.height : null;
+    let floor: number | null = fullyInsideGap ? null : this.level.groundY;
+
+    for (const p of platforms) {
+      if (!overlapsX(p)) continue;
+      const platformTop = this.level.groundY - p.height;
+      const canStandOnPlatform =
+        verticalVelocity >= 0 && playerBottom <= platformTop + PLATFORM_SNAP_TOLERANCE;
+      if (!canStandOnPlatform) continue;
+      if (floor === null || platformTop < floor) {
+        floor = platformTop;
+      }
+    }
+    return floor;
   }
 
   private hitSpike(): boolean {

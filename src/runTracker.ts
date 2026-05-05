@@ -1,11 +1,23 @@
 import { Obstacle } from './types';
 import { RunData, PlayerProfile } from './telemetry';
 
+interface GenerationMeta {
+  difficulty?: string;
+  strategy?: string;
+  density?: string;
+  variants?: string[];
+}
+
 export class RunTracker {
   private runs: RunData[] = [];
   private current: RunData | null = null;
 
-  startRun(levelIndex: number, attemptNumber: number, obstaclesSnapshot?: Obstacle[]): void {
+  startRun(
+    levelIndex: number,
+    attemptNumber: number,
+    obstaclesSnapshot?: Obstacle[],
+    generationMeta?: GenerationMeta,
+  ): void {
     // Abandon any open run (e.g. level skip before death/complete)
     if (this.current) {
       this.runs.push({ ...this.current, endedAt: performance.now(), completed: false });
@@ -16,6 +28,10 @@ export class RunTracker {
       startedAt: performance.now(),
       completed: false,
       obstaclesSnapshot: obstaclesSnapshot?.map((o) => ({ ...o })),
+      generatedDifficulty: generationMeta?.difficulty,
+      generatedStrategy: generationMeta?.strategy,
+      generatedDensity: generationMeta?.density,
+      generatedVariants: generationMeta?.variants ? [...generationMeta.variants] : undefined,
       jumps: [],
       landings: [],
       samples: [],

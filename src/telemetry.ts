@@ -36,6 +36,10 @@ export interface RunData {
   obstaclesSnapshot?: Obstacle[];
   deathReason?: 'spike' | 'gap';
   deathX?: number;
+  generatedDifficulty?: string;
+  generatedStrategy?: string;
+  generatedDensity?: string;
+  generatedVariants?: string[];
   jumps: JumpEvent[];
   landings: LandingEvent[];
   samples: PositionSample[];

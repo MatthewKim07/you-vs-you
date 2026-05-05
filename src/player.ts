@@ -23,13 +23,21 @@ export class Player {
     this.vel = { x: MOVE_SPEED, y: 0 };
   }
 
-  jump() {
-    if (this.onGround) {
-      if (this.isCrouching) {
-        this.setCrouch(false);
-      }
-      this.vel.y = JUMP_FORCE;
-      this.onGround = false;
+  jump(): boolean {
+    if (!this.onGround) return false;
+    if (this.isCrouching) {
+      this.setCrouch(false);
+    }
+    this.vel.y = JUMP_FORCE;
+    this.onGround = false;
+    return true;
+  }
+
+  cutJump(factor: number) {
+    if (this.onGround || this.vel.y >= 0) return;
+    const cutVelocity = JUMP_FORCE * factor; // JUMP_FORCE is negative
+    if (this.vel.y < cutVelocity) {
+      this.vel.y = cutVelocity;
     }
   }
 
