@@ -39,6 +39,16 @@ export interface RunData {
   actions: ActionEvent[];
 }
 
+export interface PlayerModel {
+  prefersJump: boolean;
+  prefersCrouch: boolean;
+  jumpFrequency: number;
+  crouchFrequency: number;
+  reactionTiming: 'early' | 'balanced' | 'late';
+  consistency: 'predictable' | 'mixed' | 'random';
+  riskProfile: 'safe' | 'balanced' | 'aggressive';
+}
+
 // Derived summary across all stored runs.
 export interface PlayerProfile {
   totalRuns: number;

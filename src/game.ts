@@ -7,6 +7,8 @@ import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
 import { deathMessage, introMessage, levelCompleteMessage, levelStartMessage } from './aiGameMaster';
+import { PlayerModel } from './telemetry';
+import { analyzePlayer } from './playerAnalyzer';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -32,6 +34,7 @@ export class Game {
   private aiMessage = '';
   private aiMessageTimeLeft = 0;
   private introShown = false;
+  private playerModel: PlayerModel = analyzePlayer([]);
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
@@ -43,6 +46,7 @@ export class Game {
     this.input = new InputHandler(canvas);
     this.tracker = new RunTracker();
     this.debugPanel = new DebugPanel(this.tracker);
+    this.debugPanel.setPlayerModel(this.playerModel);
     this.setupResize();
     this.startLevel(0);
   }
@@ -53,6 +57,7 @@ export class Game {
   }
 
   private startLevel(index: number) {
+    this.refreshPlayerModel();
     this.resizeCanvas();
     this.levelIndex = index;
     this.level = this.buildLevelForIndex(index);
@@ -63,6 +68,7 @@ export class Game {
     this.resetFrameTracking();
     this.tracker.startRun(index, this.attempts);
     this.debugPanel.setAdaptiveSnapshot(this.level);
+    this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
 
     if (!this.introShown && index === 0) {
@@ -91,7 +97,14 @@ export class Game {
 
     const runs = this.tracker.getAllRuns();
     const profile = this.tracker.getProfile();
+    // Kept in Game state for future generator input extension.
+    const _modelForFuture = this.playerModel;
+    void _modelForFuture;
     return generateAdaptiveLevel(runs, profile, index, this.canvas.width);
+  }
+
+  private refreshPlayerModel() {
+    this.playerModel = analyzePlayer(this.tracker.getAllRuns());
   }
 
   private resetFrameTracking() {
@@ -240,6 +253,8 @@ export class Game {
       const lastLandingX = landingEvents.length > 0 ? landingEvents[landingEvents.length - 1].x : undefined;
       this.showAIMessage(levelCompleteMessage(lastLandingX, tracker.getProfile().jumpStyle));
       tracker.finishRun(true);
+      this.refreshPlayerModel();
+      this.debugPanel.setPlayerModel(this.playerModel);
       this.state = 'levelComplete';
     }
   }
@@ -290,6 +305,8 @@ export class Game {
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
     this.showAIMessage(deathMessage(reason, deathX, this.tracker.getProfile().jumpStyle));
     this.tracker.finishRun(false, reason, deathX);
+    this.refreshPlayerModel();
+    this.debugPanel.setPlayerModel(this.playerModel);
     this.state = 'dead';
     this.deathTimer = 0;
   }

@@ -1,5 +1,6 @@
 import { RunTracker } from './runTracker';
 import { LevelData } from './level';
+import { PlayerModel } from './telemetry';
 
 // HTML overlay — hidden by default, toggled via "AI Data" button.
 // Reads from RunTracker only; no game logic here.
@@ -10,6 +11,15 @@ export class DebugPanel {
   private adaptivePlacements: number[] = [];
   private adaptiveNotes: string[] = [];
   private adaptiveObstacleCount = 0;
+  private playerModel: PlayerModel = {
+    prefersJump: true,
+    prefersCrouch: false,
+    jumpFrequency: 0,
+    crouchFrequency: 0,
+    reactionTiming: 'balanced',
+    consistency: 'mixed',
+    riskProfile: 'balanced',
+  };
 
   constructor(private tracker: RunTracker) {
     this.button = this.makeButton();
@@ -24,6 +34,7 @@ export class DebugPanel {
 
     const run = this.tracker.getCurrentRun();
     const profile = this.tracker.getProfile();
+    const model = this.playerModel;
 
     const fmt = (n: number) => Math.round(n).toLocaleString();
     const formatStyle = (style: string) => style.charAt(0).toUpperCase() + style.slice(1);
@@ -41,10 +52,12 @@ export class DebugPanel {
         <div class="dbg-row"><span>Samples</span><span>${run?.samples.length ?? '—'}</span></div>
       </div>
       <div class="dbg-section">
-        <div class="dbg-title">PROFILE</div>
+        <div class="dbg-title">MODEL</div>
         <div class="dbg-row"><span>Total runs</span><span>${profile.totalRuns}</span></div>
-        <div class="dbg-row"><span>Completed runs</span><span>${profile.completedRuns}</span></div>
-        <div class="dbg-row"><span>Jump style</span><span>${formatStyle(profile.jumpStyle)}</span></div>
+        <div class="dbg-row"><span>Prefers</span><span>${model.prefersJump ? 'Jump' : 'Crouch'}</span></div>
+        <div class="dbg-row"><span>Reaction</span><span>${formatStyle(model.reactionTiming)}</span></div>
+        <div class="dbg-row"><span>Consistency</span><span>${formatStyle(model.consistency)}</span></div>
+        <div class="dbg-row"><span>Risk</span><span>${formatStyle(model.riskProfile)}</span></div>
         <div class="dbg-row"><span>Most common landing</span><span>${mostCommonLanding ? `~${fmt(mostCommonLanding)}px` : '—'}</span></div>
       </div>
       <div class="dbg-section">
@@ -60,6 +73,10 @@ export class DebugPanel {
     this.adaptiveObstacleCount = level.aiDebug?.obstacleCount ?? 0;
     this.adaptivePlacements = level.aiDebug?.placementXs ?? [];
     this.adaptiveNotes = level.aiDebug?.notes ?? [];
+  }
+
+  setPlayerModel(model: PlayerModel): void {
+    this.playerModel = model;
   }
 
   private makeButton(): HTMLButtonElement {
