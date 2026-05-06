@@ -76,6 +76,8 @@ export class DebugPanel {
         <div class="dbg-row"><span>Platform</span><span>${dbg?.platformUsed ? 'yes' : 'no'}</span></div>
         <div class="dbg-row"><span>Validation</span><span>${dbg?.validationStatus ?? '—'}</span></div>
         <div class="dbg-row"><span>Warnings</span><span>${dbg?.validationWarnings.join(' | ') || 'none'}</span></div>
+        <div class="dbg-row"><span>Counters</span><span>${dbg?.counterTargets.join(', ') || 'none'}</span></div>
+        <div class="dbg-row"><span>Adapt</span><span>${dbg?.adaptationReasons.slice(0, 2).join(' | ') || '—'}</span></div>
         <div class="dbg-row"><span>Placed</span><span>${dbg?.patterns.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Obstacles</span><span>${dbg?.obstacleCount ?? '—'}</span></div>
         <div class="dbg-row"><span>Patterns</span><span>${dbg?.patterns.join(', ') || '—'}</span></div>

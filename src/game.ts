@@ -706,6 +706,8 @@ export class Game {
           variants: this.level.aiDebug.variants,
           density: this.level.aiDebug.density,
           patterns: this.level.aiDebug.patterns,
+          counterTargets: this.level.aiDebug.counterTargets,
+          adaptationReasons: this.level.aiDebug.adaptationReasons,
         }
         : undefined,
       latestDeath,
