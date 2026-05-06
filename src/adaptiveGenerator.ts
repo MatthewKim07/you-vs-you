@@ -7,6 +7,8 @@ import {
   calculateSafeJumpDistance,
   calculateMaxJumpDistance,
 } from './movementTuning';
+import { calculateKnowledge, determinePhase, AIKnowledge, getTopLearnedHabit } from './aiKnowledge';
+import { directTraps } from './aiTrapDirector';
 
 const GROUND_TOP = 0;
 const SAFE_SPAWN_END = 320;
@@ -44,15 +46,19 @@ type SegmentType =
   | 'headClearanceJump'
   | 'choiceThenPunish'
   | 'pressureCombo'
-  | 'mixedPlatformCombo';
+  | 'mixedPlatformCombo'
+  | 'choiceGate'
+  | 'baitChoice';
 
 // Score per segment type — used for planning and validation.
 const SEGMENT_BASE_SCORES: Record<SegmentType, number> = {
   spikeJump:          1,
   doubleSpikeTiming:  2,
   lowCeilingCrouch:   2,
+  choiceGate:         2,
   jumpThenCrouch:     3,
   crouchThenJump:     3,
+  baitChoice:         3,
   headClearanceJump:  4,
   choiceThenPunish:   4,
   longGapPlatforms:   5,
@@ -151,7 +157,7 @@ interface Interval {
 
 export function generateAdaptiveLevel(
   previousRuns: RunData[],
-  _profile: PlayerProfile,
+  profile: PlayerProfile,
   playerModel: PlayerModel,
   levelIndex: number,
   canvasWidth: number,
@@ -162,6 +168,10 @@ export function generateAdaptiveLevel(
   const latestRun = sourceRuns[sourceRuns.length - 1];
   const latestSuccess = [...sourceRuns].reverse().find((r) => r.completed);
   const counterTargets = classifyPlayerCounters(playerModel, previousRuns);
+
+  // Task 5: AI Learning - calculate knowledge and determine phase
+  const knowledge = calculateKnowledge(previousRuns, playerModel);
+  const phase = determinePhase(knowledge, levelIndex);
 
   const segmentCtx: SegmentContext = {
     levelIndex,
@@ -193,11 +203,28 @@ export function generateAdaptiveLevel(
 
     lastWarnings = [...repaired.warnings, ...valid.warnings];
     if (valid.ok) {
+      // Task 5: Apply trap mutations after successful build
+      const trapResult = directTraps(
+        phase,
+        knowledge,
+        playerModel,
+        profile,
+        repaired.built.obstacles,
+        levelIndex,
+        segmentCtx.reactionSpacing,
+      );
+
+      // Update build with trapped obstacles
+      const trappedBuild: BuildResult = {
+        ...repaired.built,
+        obstacles: trapResult.obstacles,
+      };
+
       return finalizeLevel(
         levelIndex,
         segmentCtx,
         strategy,
-        repaired.built,
+        trappedBuild,
         specs,
         requiredRules,
         previousRuns,
@@ -207,17 +234,39 @@ export function generateAdaptiveLevel(
         repaired.repaired ? 'repaired' : 'valid',
         dedupeStrings([...repaired.warnings, ...valid.warnings], 8),
         counterTargets,
+        knowledge,
+        phase,
+        trapResult.activeTraps,
+        trapResult.trapReasons,
+        trapResult.predictedLandingX,
       );
     }
   }
 
-  // Fallback — harder than original to avoid easy-out.
+  // Fallback - harder than original to avoid easy-out.
   const safeFallback = buildKnownSafeFallback(levelIndex, segmentCtx, canvasWidth);
+
+  // Task 5: Apply trap mutations to fallback too
+  const trapResult = directTraps(
+    phase,
+    knowledge,
+    playerModel,
+    profile,
+    safeFallback.obstacles,
+    levelIndex,
+    segmentCtx.reactionSpacing,
+  );
+
+  const trappedFallback: BuildResult = {
+    ...safeFallback,
+    obstacles: trapResult.obstacles,
+  };
+
   return finalizeLevel(
     levelIndex,
     segmentCtx,
     strategy,
-    safeFallback,
+    trappedFallback,
     safeFallback.segmentBuilds.map((s) => ({ type: s.type })),
     requiredRules,
     previousRuns,
@@ -227,6 +276,11 @@ export function generateAdaptiveLevel(
     'fallback',
     dedupeStrings([...lastWarnings, 'Used known safe fallback level'], 8),
     counterTargets,
+    knowledge,
+    phase,
+    trapResult.activeTraps,
+    trapResult.trapReasons,
+    trapResult.predictedLandingX,
   );
 }
 
@@ -244,6 +298,11 @@ function finalizeLevel(
   validationStatus: ValidationStatus,
   validationWarnings: string[],
   counterTargets: CounterTarget[],
+  knowledge?: AIKnowledge,
+  phase?: import('./aiKnowledge').AIPhase,
+  activeTraps?: string[],
+  trapReasons?: string[],
+  predictedLandingX?: number,
 ): LevelData {
   const obstacles = [...built.obstacles].sort((a, b) => a.x - b.x);
   const notes: string[] = [];
@@ -267,6 +326,21 @@ function finalizeLevel(
   const totalDiffScore = built.segmentBuilds.reduce((sum, s) => sum + s.difficultyScore, 0);
   const reqDiffScore   = requiredDifficultyScore(levelIndex);
   const segScores      = built.segmentBuilds.map((s) => s.difficultyScore);
+
+  // Task 5: Get AI learning data
+  const safeKnowledge = knowledge ?? {
+    runsObserved: 0,
+    jumpPreferenceConfidence: 0,
+    crouchPreferenceConfidence: 0,
+    landingPredictionConfidence: 0,
+    reactionTimingConfidence: 0,
+    platformRelianceConfidence: 0,
+    overallConfidence: 0,
+  };
+  const safePhase = phase ?? 'observe';
+  const safeActiveTraps = activeTraps ?? [];
+  const safeTrapReasons = trapReasons ?? [];
+  const topHabit = getTopLearnedHabit(safeKnowledge);
 
   return {
     index: levelIndex,
@@ -304,7 +378,15 @@ function finalizeLevel(
       segmentScores: segScores,
       counterTargets,
       adaptationReasons: buildAdaptationReasons(counterTargets),
+      // Task 5: AI Learning fields
+      aiPhase: safePhase,
+      activeTraps: safeActiveTraps,
+      trapReasons: safeTrapReasons,
+      overallConfidence: safeKnowledge.overallConfidence,
+      topLearnedHabit: topHabit ?? '—',
+      predictedLandingX,
     },
+    aiKnowledge: safeKnowledge,
   };
 }
 
@@ -334,6 +416,17 @@ function segmentCountForLevel(levelIndex: number, attempt: number): number {
 
 function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
   const rules: RequiredRule[] = [];
+
+  // Decision-based obstacles are required from level 1 onward
+  if (levelIndex >= 1) {
+    rules.push({ tag: 'choiceDecision', types: ['choiceGate', 'choiceThenPunish', 'baitChoice'], minCount: 1 });
+  }
+  if (levelIndex >= 2) {
+    rules.push({ tag: 'choiceDecision', types: ['choiceGate', 'choiceThenPunish', 'baitChoice'], minCount: 1 });
+  }
+  if (levelIndex >= 1) {
+    rules.push({ tag: 'forcedAction', types: ['spikeJump', 'doubleSpikeTiming', 'lowCeilingCrouch', 'jumpThenCrouch', 'crouchThenJump', 'headClearanceJump'], minCount: 1 });
+  }
 
   if (levelIndex === 1) {
     rules.push({ tag: 'longGapPlatforms', types: ['longGapPlatforms'], minCount: 1 });
@@ -396,6 +489,7 @@ function designSegmentPlan(
   applyAntiRepeatUpgrades(specs, levelIndex);
   enforceMinimumVariety(specs, levelIndex, pool);
   enforcePlatformRules(specs, levelIndex);
+  enforceChoiceMinimums(specs, levelIndex, pool);
   applyPredictabilityBreak(specs, ctx.playerModel, levelIndex);
 
   return specs;
@@ -469,8 +563,10 @@ function upgradeSegmentType(type: SegmentType): SegmentType {
     case 'spikeJump':          return 'doubleSpikeTiming';
     case 'doubleSpikeTiming':  return 'jumpThenCrouch';
     case 'lowCeilingCrouch':   return 'crouchThenJump';
+    case 'choiceGate':         return 'baitChoice';
     case 'jumpThenCrouch':     return 'headClearanceJump';
     case 'crouchThenJump':     return 'choiceThenPunish';
+    case 'baitChoice':         return 'choiceThenPunish';
     case 'headClearanceJump':  return 'pressureCombo';
     case 'choiceThenPunish':   return 'pressureCombo';
     case 'longGapPlatforms':   return 'mixedPlatformCombo';
@@ -504,8 +600,10 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
     'spikeJump',
     'doubleSpikeTiming',
     'lowCeilingCrouch',
+    'choiceGate',
     'jumpThenCrouch',
     'crouchThenJump',
+    'baitChoice',
     'longGapPlatforms',
     'staircaseClimb',
     'headClearanceJump',
@@ -518,6 +616,17 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
   if (levelIndex > 1) all = all.filter((t) => t !== 'spikeJump');
   if (levelIndex > 2) all = all.filter((t) => t !== 'lowCeilingCrouch');
 
+  // Bias toward choice segments as levels progress
+  if (levelIndex >= 2) {
+    all.push('choiceGate');
+  }
+  if (levelIndex >= 4) {
+    all.push('baitChoice', 'choiceThenPunish');
+  }
+  if (levelIndex >= 6) {
+    all.push('choiceGate', 'baitChoice');
+  }
+
   return applyStrategyBias(all, ctx);
 }
 
@@ -525,14 +634,17 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
 function applyStrategyBias(pool: SegmentType[], ctx: SegmentContext): SegmentType[] {
   const bias: SegmentType[] = [...pool];
   if (ctx.playerModel.prefersJump) {
-    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish');
+    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish', 'choiceGate', 'baitChoice');
   }
   if (ctx.playerModel.prefersCrouch) {
-    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo');
+    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo', 'choiceGate', 'baitChoice');
   }
   if (ctx.playerModel.reactionTiming === 'late') {
     bias.push('pressureCombo', 'doubleSpikeTiming', 'headClearanceJump');
   }
+  // Always bias toward more choice segments so AI has data to learn from
+  bias.push('choiceGate', 'choiceThenPunish');
+  if (ctx.levelIndex >= 4) bias.push('baitChoice');
   return bias.filter((t) => pool.includes(t));
 }
 
@@ -612,6 +724,41 @@ function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
   if (levelIndex >= 5 && platformCount < 2) {
     specs.push({ type: 'longGapPlatforms' });
     specs.push({ type: 'staircaseClimb' });
+  }
+}
+
+function enforceChoiceMinimums(specs: SegmentSpec[], levelIndex: number, pool: SegmentType[]) {
+  const choiceTypes: SegmentType[] = ['choiceGate', 'choiceThenPunish', 'baitChoice'];
+  let choiceCount = specs.filter((s) => choiceTypes.includes(s.type)).length;
+
+  const minChoices =
+    levelIndex >= 8 ? 3 :
+    levelIndex >= 5 ? 2 :
+    levelIndex >= 3 ? 2 :
+    levelIndex >= 1 ? 1 : 0;
+
+  if (choiceCount >= minChoices) return;
+
+  const availableChoices = pool.filter((t) => choiceTypes.includes(t));
+  let seed = levelIndex * 31;
+
+  for (let i = 0; i < specs.length && choiceCount < minChoices; i++) {
+    if (specs[i].requiredTag) continue;
+    if (choiceTypes.includes(specs[i].type)) continue;
+    const replacement = availableChoices[seed % availableChoices.length];
+    if (replacement) {
+      specs[i].type = replacement;
+      seed++;
+      choiceCount++;
+    }
+  }
+
+  // If still not enough, append choice segments
+  while (choiceCount < minChoices) {
+    const choice = availableChoices[seed % availableChoices.length] ?? 'choiceGate';
+    specs.push({ type: choice });
+    seed++;
+    choiceCount++;
   }
 }
 
@@ -804,6 +951,44 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
         advanced: true,
         platform: false,
         difficultyScore: 4,
+      };
+    }
+
+    case 'choiceGate': {
+      const w = clampInt(CHOICE_OBS_W + ctx.levelIndex * 4, CHOICE_OBS_W, 140);
+      return {
+        type,
+        variant: 'choiceGate',
+        obstacles: [{ kind: 'choiceObstacle', x: startX + 20, width: w, height: CHOICE_OBS_H }],
+        length: w + 50,
+        combo: false,
+        advanced: false,
+        platform: false,
+        difficultyScore: 2,
+      };
+    }
+
+    case 'baitChoice': {
+      const w = clampInt(CHOICE_OBS_W + ctx.levelIndex * 3, CHOICE_OBS_W, 130);
+      const obs: Obstacle = {
+        kind: 'choiceObstacle',
+        x: startX + 20,
+        width: w,
+        height: CHOICE_OBS_H,
+        trapHost: true,
+        trapType: 'baitChoice',
+        trapState: 'idle',
+        trapReason: 'Choice bar that AI will mutate based on learned preference',
+      };
+      return {
+        type,
+        variant: 'baitChoice',
+        obstacles: [obs],
+        length: w + 50,
+        combo: false,
+        advanced: ctx.levelIndex >= 4,
+        platform: false,
+        difficultyScore: 3,
       };
     }
 
@@ -1302,8 +1487,12 @@ function classifyPlayerCounters(model: PlayerModel, recentRuns: RunData[]): Coun
   if (model.prefersCrouch && model.crouchFrequency - model.jumpFrequency > 0.15) targets.add('crouchBiased');
   if (model.reactionTiming === 'late') targets.add('lateReactor');
   if (model.consistency === 'predictable') targets.add('predictablePattern');
-  if (model.prefersJump && model.crouchFrequency < 0.1) targets.add('overusesChoiceJump');
-  if (model.prefersCrouch && model.jumpFrequency < 0.1) targets.add('overusesChoiceCrouch');
+  // Use choice-specific rates when available
+  if (model.choiceJumpRate > 0.65) targets.add('overusesChoiceJump');
+  if (model.choiceCrouchRate > 0.65) targets.add('overusesChoiceCrouch');
+  // Fallback to global rates if choice data is sparse
+  if (model.choiceJumpRate === 0 && model.prefersJump && model.crouchFrequency < 0.1) targets.add('overusesChoiceJump');
+  if (model.choiceCrouchRate === 0 && model.prefersCrouch && model.jumpFrequency < 0.1) targets.add('overusesChoiceCrouch');
 
   const recent = recentRuns.slice(-5);
   if (recent.length >= 2) {
@@ -1358,11 +1547,12 @@ function scoreCandidateSegment(
         else if (type === 'jumpThenCrouch' || type === 'crouchThenJump') score += 2;
         break;
       case 'overusesChoiceJump':
-        if (type === 'choiceThenPunish' || type === 'headClearanceJump') score += 3;
+        if (type === 'choiceThenPunish' || type === 'headClearanceJump' || type === 'baitChoice') score += 3;
+        else if (type === 'choiceGate') score += 2;
         break;
       case 'overusesChoiceCrouch':
-        if (type === 'choiceThenPunish') score += 3;
-        else if (type === 'longGapPlatforms') score += 2;
+        if (type === 'choiceThenPunish' || type === 'baitChoice') score += 3;
+        else if (type === 'longGapPlatforms' || type === 'choiceGate') score += 2;
         break;
     }
   }

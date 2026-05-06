@@ -29,6 +29,13 @@ export interface AdaptiveDebugInfo {
   segmentScores: number[];
   counterTargets: string[];
   adaptationReasons: string[];
+  // AI Learning fields (Task 5)
+  aiPhase: string; // 'observe' | 'test' | 'counter' | 'predict'
+  activeTraps: string[];
+  trapReasons: string[];
+  overallConfidence: number;
+  topLearnedHabit: string;
+  predictedLandingX?: number;
 }
 
 export interface LevelData {
@@ -39,6 +46,7 @@ export interface LevelData {
   obstacles: Obstacle[];
   aiLandingMarkersX?: number[];
   aiDebug?: AdaptiveDebugInfo;
+  aiKnowledge?: import('./aiKnowledge').AIKnowledge; // Task 5: AI learning data
 }
 
 export interface GroundSegment {
