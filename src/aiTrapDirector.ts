@@ -1,22 +1,70 @@
-import { Obstacle } from './types';
-import { PlayerModel, PlayerProfile } from './telemetry';
+import { Obstacle, TrapState } from './types';
+import { ObstacleChoiceStats, PlayerModel, PlayerProfile, RunData } from './telemetry';
 import {
   AIKnowledge,
   AIPhase,
+  determinePhase,
   isTrapUnlocked,
   getMaxTrapHosts,
 } from './aiKnowledge';
 import { calculateMaxJumpDistance } from './movementTuning';
 
 export interface TrapDirectiveOutput {
-  obstacles: Obstacle[]; // full list, mutated + any new ones added
+  obstacles: Obstacle[];
   activeTraps: string[];
   trapReasons: string[];
   phase: AIPhase;
   predictedLandingX?: number;
+  mutationFallbackUsed: boolean;
+  mutationTargetObstacleId?: string;
 }
 
-// Main trap director - decides which traps to activate
+export interface TrapPlayerSnapshot {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  velX: number;
+  velY: number;
+  onGround: boolean;
+  isCrouching: boolean;
+}
+
+export interface RealtimeTrapMutation {
+  trapType: string;
+  trapState: TrapState;
+  reason: string;
+  message: string;
+  predictedLandingX?: number;
+}
+
+export interface RealtimeTrapDebug {
+  phase: AIPhase;
+  activeTrap: string;
+  trapState: TrapState | 'none';
+  predictedAction: 'jump' | 'crouch' | 'mixed' | 'unknown';
+  predictedLandingX?: number;
+  trapReason: string;
+  confidence: number;
+  lastMutation: string;
+}
+
+export interface RealtimeTrapOutput {
+  mutations: RealtimeTrapMutation[];
+  debug: RealtimeTrapDebug;
+}
+
+interface RealtimeTrapContext {
+  obstacles: Obstacle[];
+  player: TrapPlayerSnapshot;
+  playerModel: PlayerModel;
+  knowledge: AIKnowledge;
+  recentRuns: RunData[];
+  levelIndex: number;
+  groundY: number;
+  dt: number;
+}
+
 export function directTraps(
   phase: AIPhase,
   knowledge: AIKnowledge,
@@ -29,172 +77,156 @@ export function directTraps(
   const activeTraps: string[] = [];
   const trapReasons: string[] = [];
   let predictedLandingX: number | undefined;
+  let mutationFallbackUsed = false;
+  let mutationTargetObstacleId: string | undefined;
 
-  // Observe phase: no traps
-  if (phase === 'observe') {
-    return {
-      obstacles,
-      activeTraps: [],
-      trapReasons: [],
-      phase,
-    };
-  }
-
+  const mutatedObstacles = obstacles.map((o) => initializeRuntimeFields({ ...o }));
   const maxHosts = getMaxTrapHosts(phase);
-  if (maxHosts === 0) {
-    return {
-      obstacles,
-      activeTraps: [],
-      trapReasons: [],
-      phase,
-    };
-  }
-
-  // Create a copy of obstacles to mutate
-  const mutatedObstacles: Obstacle[] = obstacles.map((o) => ({ ...o }));
   let hostsApplied = 0;
+  const perObstacleStats = model.perObstacleChoiceStats ?? {};
+  const choicePreference = inferChoicePreference(model, levelIndex);
+  const hasChoiceObstacles = mutatedObstacles.some(
+    (o) =>
+      o.kind === 'choiceObstacle' &&
+      (o.trapType === undefined ||
+        o.trapType === 'adaptiveChoiceGate' ||
+        o.trapType === 'dualPathGate' ||
+        o.trapType === 'baitChoiceTrap' ||
+        o.trapType === 'adaptiveChoiceGateJump' ||
+        o.trapType === 'adaptiveChoiceGateCrouch'),
+  );
+  const canCounterChoice = hasChoiceObstacles && choicePreference !== null;
 
-  // Try to apply traps in order of intelligence/impact
-  // Phase 2 (test): mild traps
-  // Phase 3 (counter): active counter traps
-  // Phase 4 (predict): prediction-based traps
-
-  // 1. Reactive low ceiling - punish jump preference
-  if (
-    hostsApplied < maxHosts &&
-    isTrapUnlocked('reactiveLowCeiling', knowledge) &&
-    model.prefersJump
-  ) {
-    const result = applyReactiveLowCeiling(mutatedObstacles, levelIndex);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('reactiveLowCeiling');
-      trapReasons.push(`Lowered ceiling height by ${result.amount}px to punish jump preference`);
+  if (phase !== 'observe' && maxHosts > 0) {
+    if (
+      hostsApplied < maxHosts &&
+      isTrapUnlocked('reactiveLowCeiling', knowledge) &&
+      (model.prefersJump || model.preferredChoiceAction === 'jump')
+    ) {
+      const applied = hostReactiveLowCeiling(mutatedObstacles, levelIndex);
+      if (applied) {
+        hostsApplied++;
+        activeTraps.push('reactiveLowCeiling');
+        trapReasons.push('Armed a reactive low ceiling for jump-heavy behavior');
+      }
     }
-  }
 
-  // 2. Fake choice obstacle - follow up choice with punishment
-  if (
-    hostsApplied < maxHosts &&
-    isTrapUnlocked('fakeChoiceObstacle', knowledge) &&
-    (model.prefersJump || model.prefersCrouch)
-  ) {
-    const result = applyFakeChoiceObstacle(mutatedObstacles, reactionSpacing, model.prefersJump);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('fakeChoiceObstacle');
-      trapReasons.push(
-        model.prefersJump
-          ? 'Added spike after choice to punish jump bias'
-          : 'Added low ceiling after choice to punish crouch bias',
-      );
+    if (hostsApplied < maxHosts && canCounterChoice) {
+      if (choicePreference === 'jump') {
+        const { appliedCount, fallbackCount, targetIds } = hostCounterJumpChoices(mutatedObstacles, reactionSpacing, levelIndex, perObstacleStats);
+        if (appliedCount > 0) {
+          hostsApplied += appliedCount;
+          activeTraps.push('adaptiveChoiceGateJump');
+          trapReasons.push(
+            `Choice-jump counter armed on ${appliedCount} gate(s) (${Math.round(model.choiceJumpRate * 100)}% jump choices)${
+              fallbackCount > 0 ? ` [${fallbackCount} fallback]` : ''
+            }`,
+          );
+          mutationFallbackUsed = fallbackCount > 0;
+          mutationTargetObstacleId = targetIds.slice(0, 3).join(', ');
+        }
+      } else if (choicePreference === 'crouch') {
+        const { appliedCount, fallbackCount, targetIds } = hostCounterCrouchChoices(mutatedObstacles, reactionSpacing, perObstacleStats);
+        if (appliedCount > 0) {
+          hostsApplied += appliedCount;
+          activeTraps.push('adaptiveChoiceGateCrouch');
+          trapReasons.push(
+            `Choice-crouch counter armed on ${appliedCount} gate(s) (${Math.round(model.choiceCrouchRate * 100)}% crouch choices)${
+              fallbackCount > 0 ? ` [${fallbackCount} fallback]` : ''
+            }`,
+          );
+          mutationFallbackUsed = fallbackCount > 0;
+          mutationTargetObstacleId = targetIds.slice(0, 3).join(', ');
+        }
+      }
     }
-  }
 
-  // 3. Shifting gap - punish late reactions
-  if (hostsApplied < maxHosts && isTrapUnlocked('shiftingGap', knowledge)) {
-    const result = applyShiftingGap(mutatedObstacles, levelIndex);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('shiftingGap');
-      trapReasons.push(`Widened gap by ${result.amount}px to punish late reactions`);
+    if (
+      hostsApplied < maxHosts &&
+      isTrapUnlocked('shiftingGap', knowledge)
+    ) {
+      const applied = hostShiftingGap(mutatedObstacles, levelIndex, model.reactionTiming);
+      if (applied) {
+        hostsApplied++;
+        activeTraps.push('shiftingGap');
+        trapReasons.push('Armed a shifting gap mutation');
+      }
     }
-  }
 
-  // 4. Landing punisher - predict and punish landing (phase 4+)
-  if (
-    phase === 'predict' &&
-    hostsApplied < maxHosts &&
-    isTrapUnlocked('landingPunisher', knowledge) &&
-    profile.commonLandingZones.length > 0
-  ) {
-    predictedLandingX = profile.commonLandingZones[0];
-    const result = applyLandingPunisher(mutatedObstacles, predictedLandingX);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('landingPunisher');
-      trapReasons.push(`Placed spike at predicted landing x=${Math.round(predictedLandingX)}px`);
+    if (
+      hostsApplied < maxHosts &&
+      (phase === 'predict' || phase === 'dominate') &&
+      isTrapUnlocked('landingPunisher', knowledge) &&
+      profile.commonLandingZones.length > 0
+    ) {
+      predictedLandingX = profile.commonLandingZones[0];
+      const applied = hostLandingPunisher(mutatedObstacles, predictedLandingX);
+      if (applied) {
+        hostsApplied++;
+        activeTraps.push('landingPunisher');
+        trapReasons.push(`Armed a landing punisher near ${Math.round(predictedLandingX)}px`);
+      }
     }
-  }
 
-  // 5. Collapsing platform - punish platform reliance (phase 4+)
-  if (
-    phase === 'predict' &&
-    hostsApplied < maxHosts &&
-    isTrapUnlocked('collapsingPlatform', knowledge)
-  ) {
-    const result = applyCollapsingPlatform(mutatedObstacles);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('collapsingPlatform');
-      trapReasons.push('Marked platform as collapsing to punish platform reliance');
+    if (
+      hostsApplied < maxHosts &&
+      (phase === 'predict' || phase === 'dominate') &&
+      isTrapUnlocked('collapsingPlatform', knowledge)
+    ) {
+      const applied = hostCollapsingPlatform(mutatedObstacles);
+      if (applied) {
+        hostsApplied++;
+        activeTraps.push('collapsingPlatform');
+        trapReasons.push('Armed a collapsing platform trap');
+      }
     }
-  }
 
-  // NEW: Choice-specific counter traps
-  // If player consistently jumps through choices, add a low ceiling right after
-  if (
-    hostsApplied < maxHosts &&
-    (phase === 'counter' || phase === 'predict') &&
-    model.preferredChoiceAction === 'jump'
-  ) {
-    const result = applyCounterJumpChoice(mutatedObstacles, reactionSpacing, levelIndex);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('counterJumpChoice');
-      trapReasons.push('Added low ceiling after choice gate to punish jump preference');
+    if (
+      hostsApplied < maxHosts &&
+      (phase === 'test' || phase === 'counter' || phase === 'predict' || phase === 'dominate') &&
+      isTrapUnlocked('popUpSpike', knowledge)
+    ) {
+      const targetCount = phase === 'test' ? 1 : phase === 'counter' ? 2 : phase === 'predict' ? 3 : 4;
+      let planted = 0;
+      while (hostsApplied < maxHosts && planted < targetCount) {
+        const applied = hostPopUpSpike(mutatedObstacles, levelIndex + planted);
+        if (!applied) break;
+        hostsApplied++;
+        planted++;
+      }
+      if (planted > 0) {
+        activeTraps.push('popUpSpike');
+        trapReasons.push(`Planted ${planted} hidden pop-up spike trap(s)`);
+      }
     }
-  }
 
-  // If player consistently crouches through choices, add a spike right after
-  if (
-    hostsApplied < maxHosts &&
-    (phase === 'counter' || phase === 'predict') &&
-    model.preferredChoiceAction === 'crouch'
-  ) {
-    const result = applyCounterCrouchChoice(mutatedObstacles, reactionSpacing, levelIndex);
-    if (result.applied) {
-      hostsApplied++;
-      activeTraps.push('counterCrouchChoice');
-      trapReasons.push('Added spike after choice gate to punish crouch preference');
-    }
-  }
-
-  // 6. Chain mutation - apply two traps at once (phase 4+ only, level 5+)
-  if (
-    phase === 'predict' &&
-    levelIndex >= 5 &&
-    knowledge.overallConfidence > 0.75 &&
-    hostsApplied < maxHosts
-  ) {
-    const chainResult = applyChainMutation(
-      mutatedObstacles,
-      knowledge,
-      model,
-      profile,
-      levelIndex,
-      reactionSpacing,
-      hostsApplied,
-      maxHosts,
-    );
-    if (chainResult.trapsApplied > 0) {
-      activeTraps.push('chainMutation');
-      trapReasons.push('Applied chained trap mutations');
-      hostsApplied += chainResult.trapsApplied;
-      if (chainResult.predictedLandingX !== undefined) {
-        predictedLandingX = chainResult.predictedLandingX;
+    if (
+      hostsApplied < maxHosts &&
+      (phase === 'predict' || phase === 'dominate') &&
+      isTrapUnlocked('platformNeedle', knowledge)
+    ) {
+      const targetCount = phase === 'dominate' ? 2 : 1;
+      let armed = 0;
+      while (hostsApplied < maxHosts && armed < targetCount) {
+        const applied = hostPlatformNeedle(mutatedObstacles);
+        if (!applied) break;
+        hostsApplied++;
+        armed++;
+      }
+      if (armed > 0) {
+        activeTraps.push('platformNeedle');
+        trapReasons.push(`Armed ${armed} platform tile spike trap(s)`);
       }
     }
   }
 
-  // Fairness check: ensure at least one valid path remains
   if (!verifyValidPathExists(mutatedObstacles)) {
-    // Revert mutations if they made the level impossible
     return {
-      obstacles,
+      obstacles: obstacles.map((o) => initializeRuntimeFields({ ...o })),
       activeTraps: [],
-      trapReasons: ['Traps would block all paths - reverted'],
+      trapReasons: ['Host setup reverted to preserve a valid path'],
       phase,
+      mutationFallbackUsed: false,
     };
   }
 
@@ -204,332 +236,669 @@ export function directTraps(
     trapReasons,
     phase,
     predictedLandingX,
+    mutationFallbackUsed,
+    mutationTargetObstacleId,
   };
 }
 
-// Trap 1: Lower the clearance of an existing lowCeiling
-function applyReactiveLowCeiling(
-  obstacles: Obstacle[],
-  levelIndex: number,
-): { applied: boolean; amount: number } {
-  const lowCeilings = obstacles.filter((o) => o.kind === 'lowCeiling' && !o.trapHost);
-  if (lowCeilings.length === 0) return { applied: false, amount: 0 };
+export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutput {
+  const phase = determinePhase(ctx.knowledge, ctx.levelIndex, ctx.playerModel, ctx.recentRuns);
+  const maxActive = getMaxTrapHosts(phase);
+  const predictedAction = getPredictedAction(ctx.playerModel);
+  const predictedLandingX = computePredictedLandingX(ctx.recentRuns);
 
-  // Pick the first available lowCeiling
-  const target = lowCeilings[0];
-  const reduction = 10; // pixels to reduce clearance by
-  const newHeight = Math.max(24, target.height - reduction); // minimum 24px clearance
-  const actualReduction = target.height - newHeight;
+  const mutations: RealtimeTrapMutation[] = [];
+  let activeTrap = 'none';
+  let activeState: TrapState | 'none' = 'none';
+  let activeReason = 'none';
+  let activeCount = 0;
 
-  target.height = newHeight;
+  for (const obs of ctx.obstacles) {
+    initializeRuntimeFields(obs);
+
+    if (!obs.trapHost || !obs.trapType) continue;
+
+    const state = obs.trapState ?? 'idle';
+    if (state === 'armed' || state === 'warning' || state === 'triggered') {
+      activeCount++;
+      if (activeTrap === 'none') {
+        activeTrap = obs.trapType;
+        activeState = state;
+        activeReason = obs.trapReason ?? 'armed';
+      }
+    }
+
+    if (phase === 'observe') continue;
+
+    const playerFront = ctx.player.x + ctx.player.width;
+    const ahead = (obs.currentX ?? obs.x) - playerFront;
+
+    const isChoiceMutationType =
+      obs.trapType === 'adaptiveChoiceGateJump' ||
+      obs.trapType === 'adaptiveChoiceGateCrouch' ||
+      obs.trapType === 'baitChoiceTrap';
+    if (state === 'idle' && (isChoiceMutationType || activeCount < maxActive) && shouldArmTrap(obs, ctx.player, ahead, phase, ctx.groundY)) {
+      if (obs.trapType === 'baitChoiceTrap') {
+        const chosen = resolveBaitChoiceMutation(obs, ctx.playerModel, ctx.recentRuns);
+        obs.trapType = chosen;
+        obs.trapReason =
+          chosen === 'adaptiveChoiceGateJump'
+            ? 'AI inferred jump tendency at choice bars; spikes will block the jump lane'
+            : 'AI inferred crouch tendency at choice bars; bar will drop to block crouch lane';
+      }
+      obs.trapState = 'armed';
+      obs.trapTimer = 0;
+      obs.warningTimer = warningDuration(ctx.levelIndex, phase);
+      if (obs.trapType === 'adaptiveChoiceGateJump' || obs.trapType === 'adaptiveChoiceGateCrouch') {
+        obs.warningTimer = Math.min(obs.warningTimer, 0.12);
+        // Show immediate visible "AI changed this gate" signal even before full trigger.
+        if (obs.trapType === 'adaptiveChoiceGateJump') {
+          obs.currentSpikeExt = Math.max(obs.currentSpikeExt ?? 0, 40);
+        } else {
+          const from = obs.currentHeight ?? obs.height;
+          const to = obs.targetHeight ?? obs.height;
+          obs.currentHeight = lerp(from, to, 0.55);
+        }
+      }
+      obs.animationProgress = 0;
+      obs.triggeredByAI = true;
+      activeCount++;
+      if (activeTrap === 'none') {
+        activeTrap = obs.trapType;
+        activeState = 'armed';
+        activeReason = obs.trapReason ?? 'armed';
+      }
+      continue;
+    }
+
+    if (obs.trapState === 'armed') {
+      obs.trapTimer = (obs.trapTimer ?? 0) + ctx.dt;
+      if ((obs.trapTimer ?? 0) >= 0.08) {
+        obs.trapState = 'warning';
+        obs.trapTimer = 0;
+        obs.warningTimer = warningDuration(ctx.levelIndex, phase);
+        if (obs.trapType === 'adaptiveChoiceGateJump' || obs.trapType === 'adaptiveChoiceGateCrouch') {
+          obs.warningTimer = Math.min(obs.warningTimer, 0.12);
+        }
+        obs.animationProgress = 0;
+      }
+      continue;
+    }
+
+    if (obs.trapState === 'warning') {
+      obs.warningTimer = Math.max(0, (obs.warningTimer ?? 0) - ctx.dt);
+      const warnDur = warningDuration(ctx.levelIndex, phase);
+      obs.animationProgress = clamp01(1 - (obs.warningTimer / warnDur));
+
+      const isChoiceMutation = obs.trapType === 'adaptiveChoiceGateJump' || obs.trapType === 'adaptiveChoiceGateCrouch';
+      const canTriggerNow = canTriggerSafely(obs, ctx.player, ctx.groundY);
+      const forceChoiceTrigger = isChoiceMutation && (
+        ahead > -26 || !isPlayerInsideTrap(obs, ctx.player, ctx.groundY)
+      );
+      if (obs.warningTimer <= 0 && (canTriggerNow || forceChoiceTrigger)) {
+        obs.trapState = 'triggered';
+        obs.trapTimer = 0;
+        obs.animationProgress = 0;
+        // Apply a strong first-step mutation so the trap is immediately meaningful.
+        if (obs.trapType === 'adaptiveChoiceGateJump') {
+          obs.currentSpikeExt = obs.targetSpikeExt ?? 120;
+        }
+        if (obs.trapType === 'adaptiveChoiceGateCrouch') {
+          obs.currentHeight = obs.targetHeight ?? obs.height;
+        }
+
+        const message = trapTriggerMessage(obs.trapType, predictedAction, predictedLandingX);
+        const mutation: RealtimeTrapMutation = {
+          trapType: obs.trapType,
+          trapState: 'triggered',
+          reason: obs.trapReason ?? 'AI trap triggered',
+          message,
+          predictedLandingX,
+        };
+        mutations.push(mutation);
+
+        activeTrap = obs.trapType;
+        activeState = 'triggered';
+        activeReason = mutation.reason;
+      }
+      continue;
+    }
+
+    if (obs.trapState === 'triggered') {
+      obs.trapTimer = (obs.trapTimer ?? 0) + ctx.dt;
+      const t = clamp01((obs.trapTimer ?? 0) / mutationDurationForType(obs.trapType));
+      obs.animationProgress = t;
+      applyMutationProgress(obs, t);
+
+      if (t >= 1) {
+        obs.trapState = 'spent';
+      }
+    }
+  }
+
+  return {
+    mutations,
+    debug: {
+      phase,
+      activeTrap,
+      trapState: activeState,
+      predictedAction,
+      predictedLandingX,
+      trapReason: activeReason,
+      confidence: ctx.knowledge.overallConfidence,
+      lastMutation: mutations[mutations.length - 1]?.message ?? 'none',
+    },
+  };
+}
+
+function hostReactiveLowCeiling(obstacles: Obstacle[], levelIndex: number): boolean {
+  const target = obstacles.find((o) => o.kind === 'lowCeiling' && !o.trapHost);
+  if (!target) return false;
+
+  initializeRuntimeFields(target);
   target.trapHost = true;
   target.trapType = 'reactiveLowCeiling';
   target.trapState = 'idle';
-  target.trapReason = `Reduced clearance to punish jumping (level ${levelIndex})`;
-
-  return { applied: true, amount: actualReduction };
+  target.currentHeight = clamp(target.height + 10, 34, 62);
+  target.trapInitialHeight = target.currentHeight;
+  target.targetHeight = clamp(target.height - clamp(levelIndex, 4, 12), 34, 56);
+  target.trapReason = 'You jump early and often; ceiling will lower while you approach';
+  return true;
 }
 
-// Trap 2: Add follow-up obstacle after choiceObstacle
-function applyFakeChoiceObstacle(
+// Jump-counter: spikes grow upward from the bar top (0 → 120px).
+// Player bottom at apex = groundY-137; bar top at ~groundY-46; spike tip at groundY-46-120 = groundY-166.
+// Even max jump cannot clip the spike zone once fully extended.
+function hostCounterJumpChoices(
   obstacles: Obstacle[],
-  reactionSpacing: number,
-  jumpBiased: boolean,
-): { applied: boolean } {
-  const choiceObstacles = obstacles.filter((o) => o.kind === 'choiceObstacle' && !o.trapHost);
-  if (choiceObstacles.length === 0) return { applied: false };
-
-  const choiceObs = choiceObstacles[0];
-  const followUpX = choiceObs.x + choiceObs.width + reactionSpacing * 0.75;
-
-  // If jump-biased, place a spike (jumpers hit it)
-  // If crouch-biased, place a low ceiling (crouchers get stuck)
-  const newObstacle: Obstacle = jumpBiased
-    ? {
-        kind: 'spike',
-        x: followUpX,
-        width: 44,
-        height: 52,
-        trapHost: true,
-        trapType: 'fakeChoiceObstacle',
-        trapState: 'idle',
-        trapReason: 'Follow-up spike to punish jump choice',
-      }
-    : {
-        kind: 'lowCeiling',
-        x: followUpX,
-        width: 100,
-        height: 34,
-        trapHost: true,
-        trapType: 'fakeChoiceObstacle',
-        trapState: 'idle',
-        trapReason: 'Follow-up low ceiling to punish crouch choice',
-      };
-
-  obstacles.push(newObstacle);
-  choiceObs.trapHost = true;
-  choiceObs.trapType = 'fakeChoiceObstacle';
-  choiceObs.trapState = 'idle';
-
-  return { applied: true };
-}
-
-// Trap 3: Widen an existing gap
-function applyShiftingGap(
-  obstacles: Obstacle[],
-  levelIndex: number,
-): { applied: boolean; amount: number } {
-  const gaps = obstacles.filter((o) => o.kind === 'gap' && !o.trapHost);
-  if (gaps.length === 0) return { applied: false, amount: 0 };
-
-  // Pick a gap that's not too wide already
-  const maxJump = calculateMaxJumpDistance();
-  const target = gaps.find((g) => g.width < maxJump * 0.85);
-  if (!target) return { applied: false, amount: 0 };
-
-  const minWiden = 30;
-  const maxWiden = 50;
-  const widenAmount = minWiden + Math.floor(Math.random() * (maxWiden - minWiden + 1));
-
-  // Ensure we don't make it impossible
-  const newWidth = Math.min(target.width + widenAmount, Math.floor(maxJump * 0.9));
-  const actualWiden = newWidth - target.width;
-
-  if (actualWiden <= 0) return { applied: false, amount: 0 };
-
-  target.width = newWidth;
-  target.trapHost = true;
-  target.trapType = 'shiftingGap';
-  target.trapState = 'idle';
-  target.trapReason = `Widened gap to punish late reactions (level ${levelIndex})`;
-
-  return { applied: true, amount: actualWiden };
-}
-
-// Trap 4: Place spike at predicted landing location
-function applyLandingPunisher(
-  obstacles: Obstacle[],
-  predictedLandingX: number,
-): { applied: boolean } {
-  // Check if there's a safe zone at the predicted landing
-  const safeZoneStart = predictedLandingX - 60;
-  const safeZoneEnd = predictedLandingX + 60;
-
-  // Check for existing obstacles in the zone
-  const hasObstacle = obstacles.some(
-    (o) =>
-      o.kind !== 'gap' &&
-      o.x < safeZoneEnd &&
-      o.x + o.width > safeZoneStart,
-  );
-
-  if (hasObstacle) return { applied: false };
-
-  // Place a spike in the middle of the predicted zone
-  const spike: Obstacle = {
-    kind: 'spike',
-    x: predictedLandingX - 22, // center it
-    width: 44,
-    height: 52,
-    trapHost: true,
-    trapType: 'landingPunisher',
-    trapState: 'idle',
-    trapReason: `Spike placed at predicted landing x=${Math.round(predictedLandingX)}`,
-  };
-
-  obstacles.push(spike);
-  return { applied: true };
-}
-
-// Trap 5: Mark a platform as collapsing
-function applyCollapsingPlatform(obstacles: Obstacle[]): { applied: boolean } {
-  const platforms = obstacles.filter(
-    (o) => o.kind === 'platform' && !o.trapHost && !o.trapType,
-  );
-  if (platforms.length === 0) return { applied: false };
-
-  // Pick a platform that's not at the very start or end
-  const candidates = platforms.filter((p) => p.width >= 40);
-  if (candidates.length === 0) return { applied: false };
-
-  const target = candidates[Math.floor(candidates.length / 2)]; // middle one
-
-  target.trapHost = true;
-  target.trapType = 'collapsingPlatform';
-  target.trapState = 'idle';
-  target.trapReason = 'Platform will collapse when player lands on it';
-
-  return { applied: true };
-}
-
-// Trap 6: Chain two traps together
-function applyChainMutation(
-  obstacles: Obstacle[],
-  knowledge: AIKnowledge,
-  _model: PlayerModel,
-  profile: PlayerProfile,
-  levelIndex: number,
   _reactionSpacing: number,
-  currentHosts: number,
-  maxHosts: number,
-): { trapsApplied: number; predictedLandingX?: number } {
-  let trapsApplied = 0;
-  let predictedLandingX: number | undefined;
-
-  // Try to apply two different traps
-  if (currentHosts + trapsApplied < maxHosts && isTrapUnlocked('shiftingGap', knowledge)) {
-    const result = applyShiftingGap(obstacles, levelIndex);
-    if (result.applied) trapsApplied++;
-  }
-
-  if (
-    currentHosts + trapsApplied < maxHosts &&
-    isTrapUnlocked('landingPunisher', knowledge) &&
-    profile.commonLandingZones.length > 0
-  ) {
-    predictedLandingX = profile.commonLandingZones[0];
-    const result = applyLandingPunisher(obstacles, predictedLandingX);
-    if (result.applied) trapsApplied++;
-  }
-
-  if (
-    currentHosts + trapsApplied < maxHosts &&
-    isTrapUnlocked('collapsingPlatform', knowledge)
-  ) {
-    const result = applyCollapsingPlatform(obstacles);
-    if (result.applied) trapsApplied++;
-  }
-
-  return { trapsApplied, predictedLandingX };
-}
-
-// NEW: Counter-jump choice trap - add low ceiling right after a choice obstacle
-function applyCounterJumpChoice(
-  obstacles: Obstacle[],
-  reactionSpacing: number,
   levelIndex: number,
-): { applied: boolean } {
-  const choiceObstacles = obstacles.filter(
-    (o) => o.kind === 'choiceObstacle' && !o.trapHost,
-  );
-  if (choiceObstacles.length === 0) return { applied: false };
+  perObstacleStats: Record<string, ObstacleChoiceStats>,
+): { appliedCount: number; fallbackCount: number; targetIds: string[] } {
+  const targets = pickChoiceMutationHosts(obstacles, 'jump', perObstacleStats);
+  if (targets.length === 0) return { appliedCount: 0, fallbackCount: 0, targetIds: [] };
 
-  const choiceObs = choiceObstacles[0];
-  const ceilX = choiceObs.x + choiceObs.width + reactionSpacing * 0.5;
+  let appliedCount = 0;
+  let fallbackCount = 0;
+  const targetIds: string[] = [];
+  for (const { obstacle: target, usedFallback } of targets) {
+    initializeRuntimeFields(target);
+    const group = target.trapGroupId ?? `choice_group_${Math.round(target.x)}`;
+    target.trapGroupId = group;
+    target.trapHost = true;
+    target.trapType = 'adaptiveChoiceGateJump';
+    target.trapState = 'idle';
+    target.trapReason = 'You keep jumping at this gate; spikes shoot up to block the jump lane';
+    // Keep bar at its original height — spikes grow upward instead.
+    target.currentHeight = target.height;
+    target.trapInitialHeight = target.currentHeight;
+    // Baseline visible mutation so every learned jump-gate is clearly "AI-modified".
+    target.currentSpikeExt = 12;
+    target.targetSpikeExt = 120;
+    target.warningTimer = Math.max(0.14, warningDuration(levelIndex, 'counter'));
+    appliedCount++;
+    if (usedFallback) fallbackCount++;
+    targetIds.push(group);
+  }
 
-  // Place a low ceiling right after the choice - jumpers will hit it
-  const newCeiling: Obstacle = {
-    kind: 'lowCeiling',
-    x: ceilX,
-    width: clampInt(120 + levelIndex * 6, 100, 180),
-    height: clampInt(30 + levelIndex, 28, 38),
-    trapHost: true,
-    trapType: 'counterJumpChoice',
-    trapState: 'idle',
-    trapReason: 'Low ceiling after choice gate to punish jump preference',
-  };
-
-  obstacles.push(newCeiling);
-  choiceObs.trapHost = true;
-  choiceObs.trapType = 'counterJumpChoice';
-
-  return { applied: true };
+  return { appliedCount, fallbackCount, targetIds };
 }
 
-// NEW: Counter-crouch choice trap - add spike right after a choice obstacle
-function applyCounterCrouchChoice(
+// Crouch-counter: bar drops to floor (height → 2) — player must jump over it.
+// No linked spike needed; the bar itself blocks the ground/crouch route.
+function hostCounterCrouchChoices(
   obstacles: Obstacle[],
-  reactionSpacing: number,
-  _levelIndex: number,
-): { applied: boolean } {
-  const choiceObstacles = obstacles.filter(
-    (o) => o.kind === 'choiceObstacle' && !o.trapHost,
-  );
-  if (choiceObstacles.length === 0) return { applied: false };
+  _reactionSpacing: number,
+  perObstacleStats: Record<string, ObstacleChoiceStats>,
+): { appliedCount: number; fallbackCount: number; targetIds: string[] } {
+  const targets = pickChoiceMutationHosts(obstacles, 'crouch', perObstacleStats);
+  if (targets.length === 0) return { appliedCount: 0, fallbackCount: 0, targetIds: [] };
 
-  // Pick a different choice obstacle than the jump counter would
-  const choiceObs = choiceObstacles.length > 1 ? choiceObstacles[1] : choiceObstacles[0];
-  const spikeX = choiceObs.x + choiceObs.width + reactionSpacing * 0.5;
+  let appliedCount = 0;
+  let fallbackCount = 0;
+  const targetIds: string[] = [];
+  for (const { obstacle: target, usedFallback } of targets) {
+    initializeRuntimeFields(target);
+    const group = target.trapGroupId ?? `choice_group_${Math.round(target.x)}`;
+    target.trapGroupId = group;
+    target.trapHost = true;
+    target.trapType = 'adaptiveChoiceGateCrouch';
+    target.trapState = 'idle';
+    target.trapReason = 'You keep crouching at this gate; bar drops to floor — you must jump';
+    target.currentHeight = target.height;
+    target.trapInitialHeight = target.height;
+    target.targetHeight = 2;
+    appliedCount++;
+    if (usedFallback) fallbackCount++;
+    targetIds.push(group);
+  }
 
-  // Place a spike right after the choice - crouchers will hit it
-  const newSpike: Obstacle = {
+  return { appliedCount, fallbackCount, targetIds };
+}
+
+function hostLandingPunisher(obstacles: Obstacle[], predictedLandingX: number): boolean {
+  const spikeX = predictedLandingX - 22;
+  if (obstacles.some((o) => rangesOverlap(o.x, o.x + o.width, spikeX - 24, spikeX + 68) && o.kind !== 'gap')) {
+    return false;
+  }
+
+  obstacles.push(initializeRuntimeFields({
     kind: 'spike',
     x: spikeX,
     width: 44,
     height: 52,
     trapHost: true,
-    trapType: 'counterCrouchChoice',
+    trapType: 'landingPunisher',
     trapState: 'idle',
-    trapReason: 'Spike after choice gate to punish crouch preference',
-  };
-
-  obstacles.push(newSpike);
-  choiceObs.trapHost = true;
-  choiceObs.trapType = 'counterCrouchChoice';
-
-  return { applied: true };
+    trapReason: `Predicted your landing around ${Math.round(predictedLandingX)}px`,
+    currentHeight: 8,
+    targetHeight: 52,
+    trapInitialHeight: 8,
+  }));
+  return true;
 }
 
-function clampInt(value: number, min: number, max: number): number {
-  return Math.round(Math.max(min, Math.min(max, value)));
+function hostCollapsingPlatform(obstacles: Obstacle[]): boolean {
+  const target = obstacles.find((o) => o.kind === 'platform' && !o.trapHost);
+  if (!target) return false;
+
+  initializeRuntimeFields(target);
+  target.trapHost = true;
+  target.trapType = 'collapsingPlatform';
+  target.trapState = 'idle';
+  target.currentHeight = target.height;
+  target.trapInitialHeight = target.height;
+  target.targetHeight = 0;
+  target.trapReason = 'You trust platforms; this one will shake then collapse';
+  return true;
 }
 
-// Fairness verification: ensure at least one valid path exists
-function verifyValidPathExists(obstacles: Obstacle[]): boolean {
+function hostShiftingGap(
+  obstacles: Obstacle[],
+  levelIndex: number,
+  reactionTiming: PlayerModel['reactionTiming'],
+): boolean {
   const maxJump = calculateMaxJumpDistance();
-  const gaps = obstacles.filter((o) => o.kind === 'gap');
-  const platforms = obstacles.filter((o) => o.kind === 'platform');
+  const target = obstacles.find((o) => o.kind === 'gap' && !o.trapHost && o.width < maxJump * 0.82);
+  if (!target) return false;
 
-  for (const gap of gaps) {
-    // Skip gaps with platforms (they're crossable)
-    const hasPlatforms = platforms.some(
-      (p) => p.x >= gap.x && p.x + p.width <= gap.x + gap.width,
-    );
-    if (hasPlatforms) continue;
+  initializeRuntimeFields(target);
+  const shift = clamp(26 + levelIndex * 2, 26, 54);
+  const widened = Math.min(target.width + shift, Math.floor(maxJump * 0.88));
+  const delta = widened - target.width;
+  if (delta <= 6) return false;
 
-    // Check if gap is jumpable
-    if (gap.width > maxJump * 0.9) {
-      return false; // This gap would be impossible
-    }
+  target.trapHost = true;
+  target.trapType = 'shiftingGap';
+  target.trapState = 'idle';
+  target.currentWidth = target.width;
+  target.trapInitialWidth = target.width;
+  target.targetWidth = widened;
+  target.currentX = target.x;
+  target.trapInitialX = target.x;
+
+  if (reactionTiming === 'late') {
+    target.targetX = target.x - delta;
+    target.trapReason = 'Late reactions detected; near edge is shifting toward you';
+  } else if (reactionTiming === 'early') {
+    target.targetX = target.x;
+    target.trapReason = 'Early jump timing detected; far edge is extending away';
+  } else {
+    target.targetX = target.x - Math.round(delta * 0.35);
+    target.trapReason = 'Balanced timing detected; both gap edges are shifting';
   }
 
   return true;
 }
 
-// Update collapsing platform state machine (called from game.ts)
+function applyMutationProgress(obs: Obstacle, t: number): void {
+  if (obs.kind === 'lowCeiling') {
+    const from = obs.currentHeight ?? obs.height;
+    const to = obs.targetHeight ?? obs.height;
+    obs.currentHeight = lerp(from, to, t);
+    return;
+  }
+
+  if (obs.kind === 'spike' || obs.kind === 'doubleSpike') {
+    const start = Math.min(obs.currentHeight ?? obs.height, obs.height);
+    const target = obs.targetHeight ?? obs.height;
+    obs.currentHeight = lerp(start, target, t);
+    return;
+  }
+
+  if (obs.kind === 'gap') {
+    const startW = obs.width;
+    const targetW = obs.targetWidth ?? obs.width;
+    const startX = obs.x;
+    const targetX = obs.targetX ?? obs.x;
+    obs.currentWidth = lerp(startW, targetW, t);
+    obs.currentX = lerp(startX, targetX, t);
+    return;
+  }
+
+  if (obs.kind === 'platform' && obs.trapType === 'collapsingPlatform') {
+    const collapseFrom = obs.height;
+    const collapseTo = obs.targetHeight ?? 0;
+    obs.currentHeight = Math.max(0, lerp(collapseFrom, collapseTo, t));
+    if (obs.currentHeight <= 1.5) {
+      obs.currentHeight = 0;
+    }
+    return;
+  }
+
+  if (obs.kind === 'choiceObstacle' && obs.trapType === 'adaptiveChoiceGateJump') {
+    // Animate spike extension; bar height unchanged.
+    const from = obs.currentSpikeExt ?? 0;
+    const to = obs.targetSpikeExt ?? 120;
+    obs.currentSpikeExt = lerp(from, to, t);
+    obs.animationProgress = t;
+    return;
+  }
+
+  if (obs.kind === 'choiceObstacle' && obs.trapType === 'adaptiveChoiceGateCrouch') {
+    // Bar drops to floor.
+    const from = obs.currentHeight ?? obs.height;
+    const to = obs.targetHeight ?? obs.height;
+    obs.currentHeight = lerp(from, to, t);
+    obs.animationProgress = t;
+    return;
+  }
+
+  if (obs.kind === 'platform' && obs.trapType === 'platformNeedle') {
+    const from = obs.currentSpikeExt ?? 0;
+    const to = obs.targetSpikeExt ?? 34;
+    obs.currentSpikeExt = lerp(from, to, t);
+    obs.animationProgress = t;
+    return;
+  }
+
+  if (obs.kind === 'platform') {
+    // Mild shake-only signal for armed/warning states.
+    obs.animationProgress = t;
+  }
+
+}
+
+function canTriggerSafely(obs: Obstacle, player: TrapPlayerSnapshot, groundY: number): boolean {
+  const ox = obs.currentX ?? obs.x;
+  const ow = obs.currentWidth ?? obs.width;
+  const oh = obs.kind === 'choiceObstacle'
+    ? (obs.currentHeight ?? obs.height)
+    : (obs.targetHeight ?? obs.currentHeight ?? obs.height);
+
+  const playerLeft = player.x;
+  const playerRight = player.x + player.width;
+  const playerTop = player.y;
+  const playerBottom = player.y + player.height;
+
+  // Must be in front of the player.
+  if (ox <= playerRight + 6) return false;
+
+  if (obs.kind === 'gap') {
+    return !(playerLeft >= ox && playerRight <= ox + ow);
+  }
+
+  if (obs.kind === 'platform') {
+    if (obs.trapType === 'platformNeedle') {
+      const platformTop = groundY - (obs.currentHeight ?? obs.height);
+      const xOverlap = playerRight > ox + 4 && playerLeft < ox + ow - 4;
+      const touchingTopBand = playerBottom > platformTop - 2 && playerTop < platformTop + 12;
+      return !(xOverlap && touchingTopBand);
+    }
+    return true;
+  }
+
+  let hazardTop = groundY - oh;
+  let hazardBottom = groundY;
+  if (obs.kind === 'lowCeiling') {
+    hazardTop = groundY - oh - 16;
+    hazardBottom = groundY - oh;
+  } else if (obs.kind === 'choiceObstacle') {
+    hazardTop = groundY - oh - 12;
+    hazardBottom = groundY - oh;
+  }
+
+  const xOverlap = playerRight > ox && playerLeft < ox + ow;
+  const yOverlap = playerBottom > hazardTop && playerTop < hazardBottom;
+  return !(xOverlap && yOverlap);
+}
+
+function isPlayerInsideTrap(obs: Obstacle, player: TrapPlayerSnapshot, groundY: number): boolean {
+  const ox = obs.currentX ?? obs.x;
+  const ow = obs.currentWidth ?? obs.width;
+  const oh = obs.kind === 'choiceObstacle'
+    ? (obs.currentHeight ?? obs.height)
+    : (obs.targetHeight ?? obs.currentHeight ?? obs.height);
+
+  const playerLeft = player.x;
+  const playerRight = player.x + player.width;
+  const playerTop = player.y;
+  const playerBottom = player.y + player.height;
+
+  let hazardTop = groundY - oh;
+  let hazardBottom = groundY;
+  if (obs.kind === 'lowCeiling') {
+    hazardTop = groundY - oh - 16;
+    hazardBottom = groundY - oh;
+  } else if (obs.kind === 'choiceObstacle') {
+    const spikeExt = obs.trapType === 'adaptiveChoiceGateJump' ? (obs.currentSpikeExt ?? 0) : 0;
+    hazardTop = groundY - oh - 12 - spikeExt;
+    hazardBottom = groundY - oh;
+  }
+
+  const xOverlap = playerRight > ox && playerLeft < ox + ow;
+  const yOverlap = playerBottom > hazardTop && playerTop < hazardBottom;
+  return xOverlap && yOverlap;
+}
+
+function shouldArmTrap(
+  obs: Obstacle,
+  player: TrapPlayerSnapshot,
+  ahead: number,
+  phase: AIPhase,
+  groundY: number,
+): boolean {
+  if (obs.trapType === 'collapsingPlatform') {
+    return isPlayerOnPlatform(obs, player.x, player.y, player.width, player.height, groundY);
+  }
+  if (obs.trapType === 'adaptiveChoiceGateJump' || obs.trapType === 'adaptiveChoiceGateCrouch') {
+    // Arm early, and keep a small catch-up window after passing so fast traversal
+    // cannot skip mutation entirely for a choice gate.
+    if (ahead <= armDistanceForPhase(phase) + 140 && ahead > 95) return true;
+    if (ahead <= 95 && ahead > -30 && !isPlayerInsideTrap(obs, player, groundY)) return true;
+    return false;
+  }
+  if (obs.trapType === 'popUpSpike') {
+    // Arm with enough lead time for the warning glow to be visible and reacted to.
+    return ahead <= 210 && ahead > 65;
+  }
+  if (obs.trapType === 'platformNeedle') {
+    if (isPlayerOnPlatform(obs, player.x, player.y, player.width, player.height, groundY)) {
+      return false;
+    }
+    // Give a visible warning, but keep enough time for a skilled reroute.
+    return ahead <= 220 && ahead > 70;
+  }
+  return ahead <= armDistanceForPhase(phase) && ahead > 14;
+}
+
+// Pop-up spike: hidden at height=0, erupts from ground when player approaches.
+// Placed at build time so it's invisible until armed; gives ~0.2s warning via ground glow.
+function hostPopUpSpike(obstacles: Obstacle[], levelIndex: number): boolean {
+  const clearRadius = 72;
+  const minX = 420 + levelIndex * 24;
+  const maxX = 1900 + levelIndex * 80;
+  const step = 86;
+  const candidates: number[] = [];
+
+  for (let x = minX; x <= maxX; x += step) {
+    const inGap = obstacles.some((o) => o.kind === 'gap' && x >= o.x && x + 44 <= o.x + o.width);
+    if (inGap) continue;
+    const clear = !obstacles.some((o) => {
+      if (o.kind === 'gap') return false;
+      return rangesOverlap(o.x - clearRadius, o.x + o.width + clearRadius, x, x + 44);
+    });
+    if (clear) candidates.push(x);
+  }
+
+  if (candidates.length === 0) return false;
+  const idx = Math.abs(levelIndex * 7 + obstacles.length) % candidates.length;
+  const spikeX = candidates[idx];
+  obstacles.push(initializeRuntimeFields({
+    kind: 'spike',
+    x: spikeX,
+    width: 44,
+    height: 52,
+    trapHost: true,
+    trapType: 'popUpSpike',
+    trapState: 'idle',
+    trapReason: 'Hidden spike erupts from ground — jump!',
+    currentHeight: 0,
+    targetHeight: 52,
+    trapInitialHeight: 0,
+  }));
+  return true;
+}
+
+// Platform needle: a regular-looking tile that mutates by growing spikes upward.
+// Selection is conservative: only middle platforms inside multi-platform gaps are used,
+// which preserves at least one alternate route and keeps the section beatable.
+function hostPlatformNeedle(obstacles: Obstacle[]): boolean {
+  const gaps = obstacles.filter((o) => o.kind === 'gap');
+  const platforms = obstacles
+    .filter((o) => o.kind === 'platform' && !o.trapHost && o.width >= 56)
+    .sort((a, b) => a.x - b.x);
+  if (gaps.length === 0 || platforms.length < 3) return false;
+
+  const maxJump = calculateMaxJumpDistance();
+  const candidates: Obstacle[] = [];
+  for (const gap of gaps) {
+    const gx = gap.x;
+    const gr = gap.x + gap.width;
+    const inside = platforms.filter((p) => p.x >= gx && p.x + p.width <= gr);
+    if (inside.length < 3) continue;
+
+    for (let i = 1; i < inside.length - 1; i++) {
+      const prev = inside[i - 1];
+      const cur = inside[i];
+      const next = inside[i + 1];
+      const leftSpan = cur.x - (prev.x + prev.width);
+      const rightSpan = next.x - (cur.x + cur.width);
+      if (leftSpan > maxJump * 0.82 || rightSpan > maxJump * 0.82) continue;
+      candidates.push(cur);
+    }
+  }
+
+  if (candidates.length === 0) return false;
+  const target = candidates[Math.floor(candidates.length / 2)];
+  initializeRuntimeFields(target);
+  target.trapHost = true;
+  target.trapType = 'platformNeedle';
+  target.trapState = 'idle';
+  target.currentSpikeExt = 0;
+  target.targetSpikeExt = 34;
+  target.trapReason = 'You keep trusting these tiles; this one now grows spikes';
+  return true;
+}
+
+// Pick the best choice gate to mutate. Prefers the gate where the player shows the
+// strongest per-obstacle preference for `preferenceType` (jump or crouch). Falls back to
+// a gate without a top platform, or any eligible gate.
+function pickChoiceMutationHosts(
+  obstacles: Obstacle[],
+  preferenceType: 'jump' | 'crouch',
+  perObstacleStats: Record<string, ObstacleChoiceStats>,
+): Array<{ obstacle: Obstacle; usedFallback: boolean }> {
+  const choices = obstacles.filter(
+    (o) => o.kind === 'choiceObstacle' && (!o.trapType || o.trapType === 'adaptiveChoiceGate' || o.trapType === 'dualPathGate' || o.trapType === 'baitChoiceTrap'),
+  );
+  if (choices.length === 0) return [];
+
+  // Sort by per-obstacle confidence for the target preference (highest first).
+  const withStats = choices
+    .map((o) => {
+      const id = o.trapGroupId ?? `choice_${Math.round(o.x)}_${Math.round(o.width)}`;
+      const stats = perObstacleStats[id];
+      const rate = stats ? (preferenceType === 'jump' ? stats.jumpRate : stats.crouchRate) : 0;
+      const conf = stats ? stats.confidence : 0;
+      return { o, rate, conf };
+    })
+    .sort((a, b) => b.conf - a.conf || b.rate - a.rate);
+
+  // Prefer gates without a platform directly over them.
+  const hasTopPlatform = (choice: Obstacle): boolean => {
+    const left = choice.x + 8;
+    const right = choice.x + choice.width - 8;
+    return obstacles.some((o) => o.kind === 'platform' && rangesOverlap(o.x, o.x + o.width, left, right));
+  };
+
+  return withStats.map(({ o, conf }) => ({
+    obstacle: o,
+    usedFallback: conf <= 0 || hasTopPlatform(o),
+  }));
+}
+
+// Reset all trap host obstacles to their initial state so traps can fire again on the next
+// run of the same level. Called by game.ts on level restart (not on level advance).
+export function resetTrapHosts(obstacles: Obstacle[]): void {
+  for (const obs of obstacles) {
+    if (!obs.trapHost || !obs.trapType) continue;
+    obs.trapState = 'idle';
+    obs.trapTimer = 0;
+    obs.animationProgress = 0;
+    obs.warningTimer = 0;
+    obs.triggeredByAI = false;
+
+    if (obs.trapType === 'shiftingGap') {
+      obs.currentWidth = obs.trapInitialWidth ?? obs.width;
+      obs.currentX = obs.trapInitialX ?? obs.x;
+    } else {
+      obs.currentHeight = obs.trapInitialHeight ?? (obs.trapType === 'landingPunisher' || obs.trapType === 'popUpSpike' ? 0 : obs.height);
+    }
+    if (obs.trapType === 'adaptiveChoiceGateJump') {
+      obs.currentSpikeExt = 0;
+    }
+    if (obs.trapType === 'platformNeedle') {
+      obs.currentSpikeExt = 0;
+    }
+  }
+}
+
 export function updateCollapsingPlatform(
   platform: Obstacle,
   dt: number,
   playerOnPlatform: boolean,
 ): void {
   if (platform.trapType !== 'collapsingPlatform') return;
+  initializeRuntimeFields(platform);
 
-  switch (platform.trapState) {
-    case 'idle':
-      if (playerOnPlatform) {
-        platform.trapState = 'armed';
-        platform.trapTimer = 0;
-      }
-      break;
-    case 'armed':
-      platform.trapTimer = (platform.trapTimer || 0) + dt;
-      if (platform.trapTimer >= 0.5) {
-        platform.trapState = 'triggered';
-      }
-      break;
-    case 'triggered':
-      platform.trapTimer = (platform.trapTimer || 0) + dt;
-      if (platform.trapTimer >= 0.8) {
-        platform.trapState = 'spent';
-      }
-      break;
-    case 'spent':
-      // Platform is gone - handled by getEffectiveFloor
-      break;
+  if (platform.trapState === 'idle' && playerOnPlatform) {
+    platform.trapState = 'warning';
+    platform.warningTimer = Math.max(0.12, warningDuration(6, 'predict') * 0.75);
+    platform.triggeredByAI = true;
+    return;
+  }
+
+  if (platform.trapState === 'warning') {
+    platform.warningTimer = Math.max(0, (platform.warningTimer ?? 0) - dt);
+    if ((platform.warningTimer ?? 0) <= 0) {
+      platform.trapState = 'triggered';
+      platform.trapTimer = 0;
+      platform.animationProgress = 0;
+    }
+    return;
+  }
+
+  if (platform.trapState === 'triggered') {
+    platform.trapTimer = (platform.trapTimer ?? 0) + dt;
+    const t = clamp01((platform.trapTimer ?? 0) / 0.35);
+    applyMutationProgress(platform, t);
+    if (t >= 1) {
+      platform.trapState = 'spent';
+    }
   }
 }
 
-// Check if player is standing on a specific platform
 export function isPlayerOnPlatform(
   platform: Obstacle,
   playerX: number,
@@ -538,17 +907,233 @@ export function isPlayerOnPlatform(
   playerHeight: number,
   groundY: number,
 ): boolean {
-  const platformTop = groundY - platform.height;
+  const platformTop = groundY - (platform.currentHeight ?? platform.height);
   const playerBottom = playerY + playerHeight;
-
-  // Check horizontal overlap
   const playerLeft = playerX;
   const playerRight = playerX + playerWidth;
-  const platformLeft = platform.x;
-  const platformRight = platform.x + platform.width;
+  const platformLeft = platform.currentX ?? platform.x;
+  const platformRight = platformLeft + (platform.currentWidth ?? platform.width);
 
   const horizontalOverlap = playerRight > platformLeft && playerLeft < platformRight;
-  const verticalTouch = Math.abs(playerBottom - platformTop) < 5; // within 5px
+  const verticalTouch = Math.abs(playerBottom - platformTop) < 6;
 
   return horizontalOverlap && verticalTouch;
+}
+
+function trapTriggerMessage(
+  trapType: string,
+  predictedAction: 'jump' | 'crouch' | 'mixed' | 'unknown',
+  predictedLandingX?: number,
+): string {
+  switch (trapType) {
+    case 'adaptiveChoiceGateJump':
+      return 'You jumped at every choice. Spikes are shooting up.';
+    case 'adaptiveChoiceGateCrouch':
+      return 'You kept crouching. I dropped the bar to the floor.';
+    case 'popUpSpike':
+      return 'Ground spike — jump now!';
+    case 'platformNeedle':
+      return 'You trusted that tile. It grew spikes.';
+    case 'landingPunisher':
+      return predictedLandingX !== undefined
+        ? `I predicted that landing near ${Math.round(predictedLandingX)}px.`
+        : 'I predicted that landing.';
+    case 'collapsingPlatform':
+      return 'You trusted that platform again.';
+    case 'shiftingGap':
+      return predictedAction === 'jump'
+        ? 'You jump early, so I stretched the far edge.'
+        : 'Your timing is late, so I shifted the near edge.';
+    case 'reactiveLowCeiling':
+      return 'You jump first. I lowered the ceiling in real time.';
+    default:
+      return 'I changed the trap while you approached it.';
+  }
+}
+
+function armDistanceForPhase(phase: AIPhase): number {
+  switch (phase) {
+    case 'test':
+      return 230;
+    case 'counter':
+      return 280;
+    case 'predict':
+      return 320;
+    case 'dominate':
+      return 360;
+    case 'observe':
+    default:
+      return 0;
+  }
+}
+
+function warningDuration(levelIndex: number, phase: AIPhase): number {
+  const base = clamp(0.32 - levelIndex * 0.01, 0.16, 0.32);
+  if (phase === 'dominate') return Math.max(0.12, base - 0.03);
+  if (phase === 'predict') return Math.max(0.14, base - 0.015);
+  return base;
+}
+
+function mutationDurationForType(trapType?: string): number {
+  switch (trapType) {
+    case 'reactiveLowCeiling':
+      return 0.2;
+    case 'adaptiveChoiceGateJump':
+      return 0.14;
+    case 'adaptiveChoiceGateCrouch':
+    case 'landingPunisher':
+      return 0.17;
+    case 'popUpSpike':
+      return 0.11;
+    case 'platformNeedle':
+      return 0.16;
+    case 'shiftingGap':
+      return 0.22;
+    case 'collapsingPlatform':
+      return 0.3;
+    default:
+      return 0.2;
+  }
+}
+
+function getPredictedAction(
+  model: PlayerModel,
+): 'jump' | 'crouch' | 'mixed' | 'unknown' {
+  if (model.preferredChoiceAction !== 'unknown') {
+    return model.preferredChoiceAction;
+  }
+  if (model.prefersJump && model.jumpFrequency >= model.crouchFrequency) return 'jump';
+  if (model.prefersCrouch && model.crouchFrequency > model.jumpFrequency) return 'crouch';
+  return 'mixed';
+}
+
+function inferChoicePreference(
+  model: PlayerModel,
+  levelIndex: number,
+): 'jump' | 'crouch' | null {
+  if (model.preferredChoiceAction === 'jump' || model.preferredChoiceAction === 'crouch') {
+    return model.preferredChoiceAction;
+  }
+  if (model.choiceJumpRate > model.choiceCrouchRate + 0.05) return 'jump';
+  if (model.choiceCrouchRate > model.choiceJumpRate + 0.05) return 'crouch';
+  if (model.jumpFrequency > model.crouchFrequency + 0.06) return 'jump';
+  if (model.crouchFrequency > model.jumpFrequency + 0.06) return 'crouch';
+  // No strong signal yet: still force mutation variety so traps visibly adapt.
+  return levelIndex % 2 === 0 ? 'jump' : 'crouch';
+}
+
+// Pick a concrete mutation for bait choice traps.
+// Priority:
+// 1) specific obstacle stats
+// 2) same-family choice history across recent runs
+// 3) global choice model
+// 4) jump/crouch frequency
+// 5) deterministic fallback (x-based alternation)
+function resolveBaitChoiceMutation(
+  obs: Obstacle,
+  model: PlayerModel,
+  recentRuns: RunData[],
+): 'adaptiveChoiceGateJump' | 'adaptiveChoiceGateCrouch' {
+  const obsId = obs.trapGroupId ?? `choice_${Math.round(obs.x)}_${Math.round(obs.width)}`;
+  const perObstacle = model.perObstacleChoiceStats?.[obsId];
+  if (perObstacle && perObstacle.total >= 1) {
+    return perObstacle.jumpRate >= perObstacle.crouchRate
+      ? 'adaptiveChoiceGateJump'
+      : 'adaptiveChoiceGateCrouch';
+  }
+
+  const family = recentRuns
+    .slice(-6)
+    .flatMap((r) => r.choiceDecisions)
+    .filter((d) =>
+      d.obstacleType === 'baitChoiceTrap' ||
+      d.obstacleType === 'adaptiveChoiceGate' ||
+      d.obstacleType === 'dualPathGate',
+    );
+  if (family.length >= 2) {
+    const jumps = family.filter((d) => d.chosenAction === 'jump').length;
+    const crouches = family.length - jumps;
+    return jumps >= crouches ? 'adaptiveChoiceGateJump' : 'adaptiveChoiceGateCrouch';
+  }
+
+  if (model.preferredChoiceAction === 'jump') return 'adaptiveChoiceGateJump';
+  if (model.preferredChoiceAction === 'crouch') return 'adaptiveChoiceGateCrouch';
+
+  if (model.jumpFrequency !== model.crouchFrequency) {
+    return model.jumpFrequency > model.crouchFrequency
+      ? 'adaptiveChoiceGateJump'
+      : 'adaptiveChoiceGateCrouch';
+  }
+
+  return Math.floor(obs.x / 160) % 2 === 0
+    ? 'adaptiveChoiceGateJump'
+    : 'adaptiveChoiceGateCrouch';
+}
+
+function computePredictedLandingX(runs: RunData[]): number | undefined {
+  const recentLandings = runs
+    .slice(-4)
+    .flatMap((run) => run.landings)
+    .slice(-8)
+    .map((landing) => landing.x);
+
+  if (recentLandings.length < 2) return undefined;
+
+  const avg = recentLandings.reduce((sum, x) => sum + x, 0) / recentLandings.length;
+  return avg;
+}
+
+function verifyValidPathExists(obstacles: Obstacle[]): boolean {
+  const maxJump = calculateMaxJumpDistance();
+  const gaps = obstacles.filter((o) => o.kind === 'gap');
+  const platforms = obstacles.filter((o) => o.kind === 'platform');
+
+  for (const gap of gaps) {
+    const width = gap.targetWidth ?? gap.currentWidth ?? gap.width;
+    if (width <= maxJump * 0.9) continue;
+    const gx = gap.currentX ?? gap.x;
+    const gw = width;
+    const internalPlatforms = platforms.filter((p) => {
+      const px = p.currentX ?? p.x;
+      const pw = p.currentWidth ?? p.width;
+      return px >= gx && px + pw <= gx + gw;
+    });
+    if (internalPlatforms.length === 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function initializeRuntimeFields<T extends Obstacle>(obs: T): T {
+  if (obs.trapState === undefined) obs.trapState = 'idle';
+  if (obs.currentHeight === undefined) obs.currentHeight = obs.height;
+  if (obs.targetHeight === undefined) obs.targetHeight = obs.height;
+  if (obs.currentX === undefined) obs.currentX = obs.x;
+  if (obs.targetX === undefined) obs.targetX = obs.x;
+  if (obs.currentWidth === undefined) obs.currentWidth = obs.width;
+  if (obs.targetWidth === undefined) obs.targetWidth = obs.width;
+  if (obs.animationProgress === undefined) obs.animationProgress = 0;
+  if (obs.warningTimer === undefined) obs.warningTimer = 0;
+  if (obs.triggeredByAI === undefined) obs.triggeredByAI = false;
+  if (obs.currentSpikeExt === undefined) obs.currentSpikeExt = 0;
+  if (obs.targetSpikeExt === undefined) obs.targetSpikeExt = 0;
+  return obs;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clamp01(value: number): number {
+  return clamp(value, 0, 1);
+}
+
+function lerp(from: number, to: number, t: number): number {
+  return from + (to - from) * t;
+}
+
+function rangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
+  return a1 > b0 && a0 < b1;
 }

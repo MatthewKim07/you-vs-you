@@ -13,7 +13,7 @@ export interface AIKnowledge {
   overallConfidence: number; // 0-1 weighted average
 }
 
-export type AIPhase = 'observe' | 'test' | 'counter' | 'predict';
+export type AIPhase = 'observe' | 'test' | 'counter' | 'predict' | 'dominate';
 
 // Calculate AI knowledge/confidence from run data
 export function calculateKnowledge(runs: RunData[], model: PlayerModel): AIKnowledge {
@@ -68,18 +68,34 @@ export function calculateKnowledge(runs: RunData[], model: PlayerModel): AIKnowl
 }
 
 // Determine AI phase based on confidence and level
-export function determinePhase(knowledge: AIKnowledge, levelIndex: number): AIPhase {
-  // Early levels always start with observation
-  if (levelIndex <= 1 || knowledge.overallConfidence < 0.25) {
+export function determinePhase(
+  knowledge: AIKnowledge,
+  levelIndex: number,
+  model?: PlayerModel,
+  runs?: RunData[],
+): AIPhase {
+  const choiceDecisionCount = runs?.slice(-6).reduce((sum, run) => sum + run.choiceDecisions.length, 0) ?? 0;
+  const predictableChoice = model?.choiceConsistency === 'predictable';
+  const hasChoiceRead = model?.preferredChoiceAction === 'jump' || model?.preferredChoiceAction === 'crouch';
+  const confidenceScore =
+    knowledge.overallConfidence * 0.68 +
+    Math.min(1, choiceDecisionCount / 14) * 0.2 +
+    (predictableChoice ? 0.08 : 0) +
+    (hasChoiceRead ? 0.04 : 0);
+
+  if (levelIndex <= 1 || confidenceScore < 0.22) {
     return 'observe';
   }
-  if (knowledge.overallConfidence < 0.45) {
+  if (confidenceScore < 0.42) {
     return 'test';
   }
-  if (knowledge.overallConfidence < 0.7) {
+  if (confidenceScore < 0.65) {
     return 'counter';
   }
-  return 'predict';
+  if (confidenceScore < 0.84 || levelIndex < 6) {
+    return 'predict';
+  }
+  return 'dominate';
 }
 
 // Get top learned habit based on highest confidence
@@ -199,6 +215,10 @@ export function isTrapUnlocked(trapType: TrapType, knowledge: AIKnowledge): bool
       return knowledge.landingPredictionConfidence > 0.65;
     case 'collapsingPlatform':
       return knowledge.platformRelianceConfidence > 0.6;
+    case 'popUpSpike':
+      return knowledge.overallConfidence > 0.2;
+    case 'platformNeedle':
+      return knowledge.overallConfidence > 0.45;
     case 'chainMutation':
       return knowledge.overallConfidence > 0.75;
     default:
@@ -212,11 +232,13 @@ export function getMaxTrapHosts(phase: AIPhase): number {
     case 'observe':
       return 0;
     case 'test':
-      return 1;
-    case 'counter':
-      return 2;
-    case 'predict':
       return 3;
+    case 'counter':
+      return 5;
+    case 'predict':
+      return 7;
+    case 'dominate':
+      return 9;
   }
 }
 
@@ -227,6 +249,8 @@ export type TrapType =
   | 'shiftingGap'
   | 'landingPunisher'
   | 'collapsingPlatform'
+  | 'popUpSpike'
+  | 'platformNeedle'
   | 'chainMutation';
 
 // Get phase label for display
@@ -236,6 +260,7 @@ export function getPhaseLabel(phase: AIPhase): string {
     test: 'Test',
     counter: 'Counter',
     predict: 'Predict',
+    dominate: 'Dominate',
   };
   return labels[phase];
 }
@@ -263,5 +288,7 @@ export function getPhaseDescription(phase: AIPhase, knowledge: AIKnowledge): str
     }
     case 'predict':
       return 'I knew where you would land.';
+    case 'dominate':
+      return 'I know your habits and I am mutating traps in real time.';
   }
 }
