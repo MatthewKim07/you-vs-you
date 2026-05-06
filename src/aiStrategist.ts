@@ -25,7 +25,7 @@ export interface StrategyBriefInput {
   playerModel: PlayerModel;
   playerProfile: PlayerProfile;
   recentRuns: RecentRunsSummary;
-  aiDebug?: Pick<AdaptiveDebugInfo, 'strategy' | 'difficulty' | 'variants' | 'density' | 'patterns' | 'counterTargets' | 'adaptationReasons'>;
+  aiDebug?: Pick<AdaptiveDebugInfo, 'strategy' | 'difficulty' | 'variants' | 'density' | 'patterns' | 'counterTargets' | 'adaptationReasons' | 'aiPhase' | 'predictedLandingX'>;
   latestDeath?: {
     reason?: 'spike' | 'gap';
     x?: number;
@@ -132,6 +132,10 @@ function compactInput(input: StrategyBriefInput) {
       riskProfile: input.playerModel.riskProfile,
       jumpFrequency: round2(input.playerModel.jumpFrequency),
       crouchFrequency: round2(input.playerModel.crouchFrequency),
+      choiceJumpRate: round2(input.playerModel.choiceJumpRate),
+      choiceCrouchRate: round2(input.playerModel.choiceCrouchRate),
+      preferredChoiceAction: input.playerModel.preferredChoiceAction,
+      choiceConsistency: input.playerModel.choiceConsistency,
     },
     playerProfile: {
       totalRuns: input.playerProfile.totalRuns,
@@ -192,11 +196,11 @@ function buildPlayerRead(input: StrategyBriefInput): string {
   const land = input.latestLandingZones[0];
   const counters = input.aiDebug?.counterTargets ?? [];
 
-  if (counters.includes('overusesChoiceJump')) {
-    return 'At every choice obstacle, you jump. I logged that.';
+  if (counters.includes('overusesChoiceJump') || model.preferredChoiceAction === 'jump') {
+    return `At every choice obstacle, you jump (${(model.choiceJumpRate * 100).toFixed(0)}%). I logged that.`;
   }
-  if (counters.includes('overusesChoiceCrouch')) {
-    return 'You always crouch at choice points. That is easy to exploit.';
+  if (counters.includes('overusesChoiceCrouch') || model.preferredChoiceAction === 'crouch') {
+    return `You always crouch at choice points (${(model.choiceCrouchRate * 100).toFixed(0)}%). That is easy to exploit.`;
   }
   if (model.consistency === 'predictable' && land !== undefined) {
     return `You keep repeating a lane near ${Math.round(land)}px.`;
@@ -268,14 +272,44 @@ function buildSummary(input: StrategyBriefInput, read: string, plan: string): st
 }
 
 function buildTaunt(input: StrategyBriefInput): string {
+  const model = input.playerModel;
   const outcomes = input.recentRuns.latestOutcomes;
   const streakDeaths = outcomes.length >= 2 && outcomes[outcomes.length - 1] === 'death' && outcomes[outcomes.length - 2] === 'death';
   const counters = input.aiDebug?.counterTargets ?? [];
+  const aiPhase = input.aiDebug?.aiPhase;
+  const predictedLandingX = input.aiDebug?.predictedLandingX;
+
+  // Task 5: Phase-aware messages
+  if (input.phase === 'levelStart') {
+    switch (aiPhase) {
+      case 'observe':
+        return "I'm watching how you move.";
+      case 'test': {
+        const topHabit = counters.includes('jumpBiased') ? 'jumping' : counters.includes('crouchBiased') ? 'crouching' : 'your pattern';
+        return `You seem to prefer ${topHabit}.`;
+      }
+      case 'counter': {
+        if (counters.includes('jumpBiased')) return 'You keep jumping. I adjusted the ceiling.';
+        if (counters.includes('crouchBiased')) return 'You keep crouching. I widened the gaps.';
+        return "You're predictable. I've added surprises.";
+      }
+      case 'predict': {
+        if (predictedLandingX !== undefined) {
+          return `I knew where you would land.`;
+        }
+        return 'I can predict your next move before you make it.';
+      }
+    }
+  }
 
   if (input.phase === 'death') {
+    if (aiPhase === 'predict' && predictedLandingX !== undefined) {
+      return `I knew you would land near ${Math.round(predictedLandingX)}px.`;
+    }
     if (counters.includes('jumpBiased')) return 'You jumped again. I built this level knowing you would.';
     if (counters.includes('lateReactor')) return 'Half a second too slow. I already moved on.';
-    if (counters.includes('overusesChoiceJump')) return 'You always jump there. Try the other option.';
+    if (counters.includes('overusesChoiceJump') || model.preferredChoiceAction === 'jump') return 'You always jump at choices. I lowered the ceiling after it.';
+    if (counters.includes('overusesChoiceCrouch') || model.preferredChoiceAction === 'crouch') return 'You crouched again. I placed a spike right after.';
     if (counters.includes('diesToGaps')) return 'The gap wins again. Your platform timing needs work.';
     return 'You saw the trap, but your timing still blinked first.';
   }
@@ -284,6 +318,9 @@ function buildTaunt(input: StrategyBriefInput): string {
     return 'You are close, but I am still one step ahead of your rhythm.';
   }
   if (input.phase === 'levelComplete') {
+    if (aiPhase === 'predict') {
+      return 'You beat my prediction. Let me recalculate for next time.';
+    }
     if (counters.length > 0) return `Good clear. I already adjusted the next level for your habits.`;
     return 'Good clear; the next route is built to break that habit.';
   }

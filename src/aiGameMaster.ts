@@ -9,6 +9,8 @@ export function levelStartMessage(level: LevelData, profile: PlayerProfile, leve
   const notes = level.aiDebug?.notes ?? [];
   const counters = level.aiDebug?.counterTargets ?? [];
 
+  if (counters.includes('overusesChoiceJump')) return 'You always jump at choices. I added ceilings after them.';
+  if (counters.includes('overusesChoiceCrouch')) return 'You always crouch at choices. I placed spikes after them.';
   if (counters.includes('jumpBiased')) return 'You jump too often. I built this around that.';
   if (counters.includes('crouchBiased')) return 'You rely on crouching. I added gaps to fix that.';
   if (counters.includes('diesToGaps') || counters.includes('platformWeak')) return 'Gaps keep killing you. More of them this time.';

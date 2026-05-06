@@ -20,6 +20,10 @@ export class DebugPanel {
     reactionTiming: 'balanced',
     consistency: 'mixed',
     riskProfile: 'balanced',
+    choiceJumpRate: 0,
+    choiceCrouchRate: 0,
+    preferredChoiceAction: 'unknown',
+    choiceConsistency: 'unknown',
   };
 
   constructor(private tracker: RunTracker) {
@@ -36,19 +40,38 @@ export class DebugPanel {
     const run = this.tracker.getCurrentRun();
     const profile = this.tracker.getProfile();
     const model = this.playerModel;
+    const currentRun = this.tracker.getCurrentRun();
 
     const fmt = (n: number) => Math.round(n).toLocaleString();
     const formatStyle = (style: string) => style.charAt(0).toUpperCase() + style.slice(1);
     const mostCommonLanding = profile.commonLandingZones[0];
     const dbg = this.aiDebugInfo;
 
+    // Task 5: AI Learning section data
+    const phaseLabel = dbg?.aiPhase ? dbg.aiPhase.charAt(0).toUpperCase() + dbg.aiPhase.slice(1) : '—';
+    const overallConf = dbg?.overallConfidence ?? 0;
+    const topHabit = dbg?.topLearnedHabit ?? '—';
+    const activeTraps = dbg?.activeTraps ?? [];
+    const trapReasons = dbg?.trapReasons ?? [];
+    const predictedX = dbg?.predictedLandingX;
+
     this.panel.innerHTML = `
+      <div class="dbg-section">
+        <div class="dbg-title">AI LEARNING</div>
+        <div class="dbg-row"><span>Phase</span><span>${phaseLabel}</span></div>
+        <div class="dbg-row"><span>Confidence</span><span>${(overallConf * 100).toFixed(0)}%</span></div>
+        <div class="dbg-row"><span>Top habit</span><span>${topHabit}</span></div>
+        <div class="dbg-row"><span>Active traps</span><span>${activeTraps.join(', ') || 'none'}</span></div>
+        <div class="dbg-row"><span>Trap reason</span><span>${trapReasons[0] || '—'}</span></div>
+        <div class="dbg-row"><span>Predicted land</span><span>${predictedX ? `${Math.round(predictedX)}px` : '—'}</span></div>
+      </div>
       <div class="dbg-section">
         <div class="dbg-title">THIS RUN</div>
         <div class="dbg-row"><span>Jumps</span><span>${run?.jumps.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Actions</span><span>${run?.actions.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Landings</span><span>${run?.landings.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Samples</span><span>${run?.samples.length ?? '—'}</span></div>
+        <div class="dbg-row"><span>Choice decisions</span><span>${currentRun?.choiceDecisions.length ?? '—'}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">MODEL</div>
@@ -58,6 +81,10 @@ export class DebugPanel {
         <div class="dbg-row"><span>Consistency</span><span>${formatStyle(model.consistency)}</span></div>
         <div class="dbg-row"><span>Risk</span><span>${formatStyle(model.riskProfile)}</span></div>
         <div class="dbg-row"><span>Most common landing</span><span>${mostCommonLanding ? `~${fmt(mostCommonLanding)}px` : '—'}</span></div>
+        <div class="dbg-row"><span>Choice jump rate</span><span>${(model.choiceJumpRate * 100).toFixed(0)}%</span></div>
+        <div class="dbg-row"><span>Choice crouch rate</span><span>${(model.choiceCrouchRate * 100).toFixed(0)}%</span></div>
+        <div class="dbg-row"><span>Preferred choice</span><span>${formatStyle(model.preferredChoiceAction)}</span></div>
+        <div class="dbg-row"><span>Choice consistency</span><span>${formatStyle(model.choiceConsistency)}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>

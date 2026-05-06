@@ -7,7 +7,7 @@ import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
 import { introMessage } from './aiGameMaster';
-import { PlayerModel } from './telemetry';
+import { PlayerModel, ChoiceDecisionEvent } from './telemetry';
 import { analyzePlayer } from './playerAnalyzer';
 import { JUMP_CUT_FACTOR } from './movementTuning';
 import {
@@ -18,6 +18,7 @@ import {
   maybeFetchStrategyBrief,
   summarizeRecentRuns,
 } from './aiStrategist';
+import { updateCollapsingPlatform, isPlayerOnPlatform } from './aiTrapDirector';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -66,6 +67,8 @@ export class Game {
   private airStartMs: number | null = null;
   private sampleTimer = 0;
   private canCutCurrentJump = false;
+  // Choice obstacle tracking: which choice obs we've already recorded a decision for
+  private observedChoices = new Set<string>();
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -158,6 +161,7 @@ export class Game {
     this.sampleTimer = 0;
     this.deathTimer = 0;
     this.canCutCurrentJump = false;
+    this.observedChoices.clear();
   }
 
   private spawnPlayer() {
@@ -497,13 +501,107 @@ export class Game {
       const airTimeMs = performance.now() - this.airStartMs;
       tracker.recordLanding(player.pos.x, player.pos.y, airTimeMs);
       this.airStartMs = null;
+
+      // Task 5: Check for collapsing platform landing
+      for (const obs of level.obstacles) {
+        if (
+          obs.kind === 'platform' &&
+          obs.trapType === 'collapsingPlatform' &&
+          obs.trapState === 'idle'
+        ) {
+          const playerOnIt = isPlayerOnPlatform(
+            obs,
+            player.pos.x,
+            player.pos.y,
+            player.width,
+            player.height,
+            level.groundY,
+          );
+          if (playerOnIt) {
+            obs.trapState = 'armed';
+            obs.trapTimer = 0;
+          }
+        }
+      }
     }
     if (player.onGround || player.vel.y >= 0) {
       this.canCutCurrentJump = false;
     }
 
+    // Task 5: Update collapsing platform state machines
+    for (const obs of level.obstacles) {
+      if (obs.kind === 'platform' && obs.trapType === 'collapsingPlatform') {
+        const playerOnIt =
+          obs.trapState === 'idle'
+            ? isPlayerOnPlatform(
+                obs,
+                player.pos.x,
+                player.pos.y,
+                player.width,
+                player.height,
+                level.groundY,
+              )
+            : false;
+        updateCollapsingPlatform(obs, dt, playerOnIt);
+      }
+    }
+
     // Persist for next frame — must happen after physics, before early returns
     this.wasOnGround = player.onGround;
+
+    // --- Choice obstacle decision tracking ---
+    for (const obs of level.obstacles) {
+      if (obs.kind !== 'choiceObstacle') continue;
+      const obsId = `choice_${obs.x}_${obs.width}`;
+      if (this.observedChoices.has(obsId)) continue;
+
+      const playerFront = player.pos.x + player.width;
+      const playerTop = player.pos.y;
+      const playerBottom = playerTop + player.height;
+      const barBottom = level.groundY - obs.height;
+      const barTop = barBottom - CHOICE_BAR_THICKNESS;
+
+      // Check if player is currently within the choice obstacle zone
+      const inZone = playerFront > obs.x && player.pos.x < obs.x + obs.width;
+      const hasPassed = player.pos.x > obs.x + obs.width;
+
+      if (!inZone && !hasPassed) continue;
+
+      // Determine the decision
+      let decision: 'jump' | 'crouch' | null = null;
+
+      if (player.isCrouching && playerTop > barBottom) {
+        // Player is crouching and below the bar
+        decision = 'crouch';
+      } else if (playerBottom < barTop) {
+        // Player is above the bar (jumped)
+        decision = 'jump';
+      } else if (hasPassed) {
+        // Player passed the zone but didn't clearly jump or crouch
+        // Infer from recent actions
+        const recentActions = tracker.getCurrentRun()?.actions.slice(-3) ?? [];
+        const hadJump = recentActions.some((a) => a.action === 'jump' && a.x >= obs.x - 60 && a.x <= obs.x + obs.width);
+        const hadCrouch = recentActions.some((a) => a.action === 'crouchStart' && a.x >= obs.x - 60 && a.x <= obs.x + obs.width);
+        if (hadJump && !hadCrouch) decision = 'jump';
+        else if (hadCrouch && !hadJump) decision = 'crouch';
+      }
+
+      if (decision) {
+        const event: ChoiceDecisionEvent = {
+          obstacleId: obsId,
+          obstacleKind: obs.kind,
+          x: obs.x,
+          chosenAction: decision,
+          timeMs: this.levelAgeSec * 1000,
+          success: true,
+        };
+        tracker.recordChoiceDecision(event);
+        this.observedChoices.add(obsId);
+      } else if (hasPassed) {
+        // Player passed without a clear decision (might have been hit)
+        this.observedChoices.add(obsId);
+      }
+    }
 
     // --- Position samples at fixed interval (not every frame) ---
     this.sampleTimer += dt;
@@ -553,7 +651,13 @@ export class Game {
     verticalVelocity: number,
   ): number | null {
     const gaps = this.level.obstacles.filter((o) => o.kind === 'gap');
-    const platforms = this.level.obstacles.filter((o) => o.kind === 'platform');
+    // Task 5: Skip spent/triggered platforms (collapsing platform trap)
+    const platforms = this.level.obstacles.filter(
+      (o) =>
+        o.kind === 'platform' &&
+        o.trapState !== 'spent' &&
+        o.trapState !== 'triggered',
+    );
     const overlapsX = (obs: Obstacle): boolean =>
       playerRight > obs.x && playerLeft < obs.x + obs.width;
 
@@ -708,6 +812,8 @@ export class Game {
           patterns: this.level.aiDebug.patterns,
           counterTargets: this.level.aiDebug.counterTargets,
           adaptationReasons: this.level.aiDebug.adaptationReasons,
+          aiPhase: this.level.aiDebug.aiPhase,
+          predictedLandingX: this.level.aiDebug.predictedLandingX,
         }
         : undefined,
       latestDeath,
