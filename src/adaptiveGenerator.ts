@@ -79,6 +79,17 @@ type Strategy =
   | 'punishLateReactions'
   | 'balancedEscalation';
 
+type CounterTarget =
+  | 'jumpBiased'
+  | 'crouchBiased'
+  | 'platformWeak'
+  | 'lateReactor'
+  | 'predictablePattern'
+  | 'diesToGaps'
+  | 'diesToSpikes'
+  | 'overusesChoiceJump'
+  | 'overusesChoiceCrouch';
+
 type DensityLabel = 'low' | 'medium' | 'high' | 'extreme';
 
 interface SegmentSpec {
@@ -105,6 +116,7 @@ interface SegmentContext {
   safeJumpDistance: number;
   maxJumpDistance: number;
   reactionSpacing: number;
+  counterTargets: CounterTarget[];
 }
 
 interface RequiredRule {
@@ -149,6 +161,7 @@ export function generateAdaptiveLevel(
   const sourceRuns = previousRuns.filter((r) => r.levelIndex === Math.max(0, levelIndex - 1));
   const latestRun = sourceRuns[sourceRuns.length - 1];
   const latestSuccess = [...sourceRuns].reverse().find((r) => r.completed);
+  const counterTargets = classifyPlayerCounters(playerModel, previousRuns);
 
   const segmentCtx: SegmentContext = {
     levelIndex,
@@ -158,6 +171,7 @@ export function generateAdaptiveLevel(
     safeJumpDistance: calculateSafeJumpDistance(difficulty),
     maxJumpDistance: calculateMaxJumpDistance(),
     reactionSpacing: calculateReactionSpacing(difficulty),
+    counterTargets,
   };
 
   const requiredRules = requiredRulesForLevel(levelIndex);
@@ -192,6 +206,7 @@ export function generateAdaptiveLevel(
         valid.notes,
         repaired.repaired ? 'repaired' : 'valid',
         dedupeStrings([...repaired.warnings, ...valid.warnings], 8),
+        counterTargets,
       );
     }
   }
@@ -211,6 +226,7 @@ export function generateAdaptiveLevel(
     ['Validation fallback used after retries'],
     'fallback',
     dedupeStrings([...lastWarnings, 'Used known safe fallback level'], 8),
+    counterTargets,
   );
 }
 
@@ -227,6 +243,7 @@ function finalizeLevel(
   validationNotes: string[],
   validationStatus: ValidationStatus,
   validationWarnings: string[],
+  counterTargets: CounterTarget[],
 ): LevelData {
   const obstacles = [...built.obstacles].sort((a, b) => a.x - b.x);
   const notes: string[] = [];
@@ -285,6 +302,8 @@ function finalizeLevel(
       totalDifficultyScore: totalDiffScore,
       requiredDifficultyScore: reqDiffScore,
       segmentScores: segScores,
+      counterTargets,
+      adaptationReasons: buildAdaptationReasons(counterTargets),
     },
   };
 }
@@ -364,7 +383,7 @@ function designSegmentPlan(
   while (specs.length < maxSegments) {
     if (computePlanScore(specs) >= targetScore) break;
     const gap       = targetScore - computePlanScore(specs);
-    const candidate = pickSegmentForGap(pool, gap, specs, seed++);
+    const candidate = pickSegmentForGap(pool, gap, specs, seed++, ctx.counterTargets, levelIndex);
     specs.push({ type: candidate });
   }
 
@@ -382,13 +401,15 @@ function designSegmentPlan(
   return specs;
 }
 
-// Pick next segment to add based on remaining score gap.
-// Prefers novel types (anti-repeat) and high-value types when gap is large.
+// Pick next segment based on remaining score gap and player counter targets.
+// Filters by minimum base score, then ranks by scoreCandidateSegment.
 function pickSegmentForGap(
   pool: SegmentType[],
   gap: number,
   existing: SegmentSpec[],
   seed: number,
+  counterTargets: CounterTarget[],
+  levelIndex: number,
 ): SegmentType {
   const usedTypes = new Set(existing.map((s) => s.type));
 
@@ -403,9 +424,17 @@ function pickSegmentForGap(
     candidates = pool.filter((t) => !usedTypes.has(t));
     if (candidates.length === 0) candidates = [...pool];
   }
-
   if (candidates.length === 0) candidates = [...pool];
-  return candidates[Math.abs(seed) % candidates.length];
+
+  // Rank by personalized counter score; use deterministic jitter as tiebreak.
+  const scored = candidates
+    .map((t, i) => ({
+      type: t,
+      score: scoreCandidateSegment(t, counterTargets, levelIndex) + deterministicJitter(seed + i * 7, 1),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0].type;
 }
 
 function computePlanScore(specs: SegmentSpec[]): number {
@@ -1262,6 +1291,98 @@ function computeMaxQuietGap(obstacles: Obstacle[], pathStart: number, pathEnd: n
   }
   maxGap = Math.max(maxGap, pathEnd - starts[starts.length - 1]);
   return Math.round(maxGap);
+}
+
+// ── Player counter-target classification ───────────────────────────
+
+function classifyPlayerCounters(model: PlayerModel, recentRuns: RunData[]): CounterTarget[] {
+  const targets = new Set<CounterTarget>();
+
+  if (model.prefersJump && model.jumpFrequency - model.crouchFrequency > 0.15) targets.add('jumpBiased');
+  if (model.prefersCrouch && model.crouchFrequency - model.jumpFrequency > 0.15) targets.add('crouchBiased');
+  if (model.reactionTiming === 'late') targets.add('lateReactor');
+  if (model.consistency === 'predictable') targets.add('predictablePattern');
+  if (model.prefersJump && model.crouchFrequency < 0.1) targets.add('overusesChoiceJump');
+  if (model.prefersCrouch && model.jumpFrequency < 0.1) targets.add('overusesChoiceCrouch');
+
+  const recent = recentRuns.slice(-5);
+  if (recent.length >= 2) {
+    const deaths = recent.filter((r) => !r.completed);
+    if (deaths.length > 0) {
+      const gapDeaths  = deaths.filter((r) => r.deathReason === 'gap').length;
+      const spikeDeaths = deaths.filter((r) => r.deathReason === 'spike').length;
+      if (gapDeaths / deaths.length >= 0.5) {
+        targets.add('diesToGaps');
+        if (gapDeaths >= 3) targets.add('platformWeak');
+      }
+      if (spikeDeaths / deaths.length >= 0.5) targets.add('diesToSpikes');
+    }
+  }
+
+  return [...targets];
+}
+
+// Score a candidate segment type against player weaknesses.
+// Higher = better counter to player's identified habits.
+function scoreCandidateSegment(
+  type: SegmentType,
+  counterTargets: CounterTarget[],
+  _levelIndex: number,
+): number {
+  let score = SEGMENT_BASE_SCORES[type];
+
+  for (const target of counterTargets) {
+    switch (target) {
+      case 'jumpBiased':
+        if (type === 'lowCeilingCrouch' || type === 'jumpThenCrouch' || type === 'headClearanceJump') score += 3;
+        else if (type === 'choiceThenPunish') score += 2;
+        break;
+      case 'crouchBiased':
+        if (type === 'crouchThenJump' || type === 'longGapPlatforms') score += 3;
+        else if (type === 'doubleSpikeTiming' || type === 'pressureCombo') score += 2;
+        break;
+      case 'lateReactor':
+        if (type === 'pressureCombo' || type === 'headClearanceJump') score += 3;
+        else if (type === 'doubleSpikeTiming') score += 2;
+        break;
+      case 'predictablePattern':
+        if (type === 'choiceThenPunish' || type === 'pressureCombo') score += 3;
+        else if (type === 'headClearanceJump') score += 2;
+        break;
+      case 'diesToGaps':
+      case 'platformWeak':
+        if (type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo') score += 3;
+        break;
+      case 'diesToSpikes':
+        if (type === 'pressureCombo' || type === 'doubleSpikeTiming') score += 3;
+        else if (type === 'jumpThenCrouch' || type === 'crouchThenJump') score += 2;
+        break;
+      case 'overusesChoiceJump':
+        if (type === 'choiceThenPunish' || type === 'headClearanceJump') score += 3;
+        break;
+      case 'overusesChoiceCrouch':
+        if (type === 'choiceThenPunish') score += 3;
+        else if (type === 'longGapPlatforms') score += 2;
+        break;
+    }
+  }
+
+  return score;
+}
+
+function buildAdaptationReasons(counterTargets: CounterTarget[]): string[] {
+  const descriptions: Record<CounterTarget, string> = {
+    jumpBiased:           'Prioritized ceiling/crouch combos to punish jump reliance',
+    crouchBiased:         'Added gap pressure and spike sequences to punish crouch habit',
+    platformWeak:         'Increased platform segment frequency where you struggle most',
+    lateReactor:          'Tightened obstacle spacing to punish late reactions',
+    predictablePattern:   'Inserted choice+pressure combos to break predictable routing',
+    diesToGaps:           'Focused on gap-heavy segments where you consistently die',
+    diesToSpikes:         'Added spike pressure sequences targeting your weak spot',
+    overusesChoiceJump:   'Chained choice obstacles into ceilings to punish jump choices',
+    overusesChoiceCrouch: 'Chained choice obstacles into gaps to punish crouch choices',
+  };
+  return counterTargets.map((t) => descriptions[t]);
 }
 
 // ── Strategy selection ─────────────────────────────────────────────

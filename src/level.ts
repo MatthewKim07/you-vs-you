@@ -27,6 +27,8 @@ export interface AdaptiveDebugInfo {
   totalDifficultyScore: number;
   requiredDifficultyScore: number;
   segmentScores: number[];
+  counterTargets: string[];
+  adaptationReasons: string[];
 }
 
 export interface LevelData {
