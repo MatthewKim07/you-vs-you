@@ -20,6 +20,101 @@ html, body {
   display: block;
 }
 
+/* ── Start Menu + Controls ─────────────────────────────── */
+
+#start-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 20px;
+  background: linear-gradient(180deg, rgba(4, 10, 18, 0.38), rgba(4, 10, 18, 0.62));
+  backdrop-filter: blur(2px);
+  padding: 16px;
+}
+
+.menu-card {
+  text-align: center;
+  color: #fff;
+  background: rgba(6, 17, 28, 0.6);
+  border: 1px solid rgba(160, 220, 255, 0.4);
+  border-radius: 14px;
+  padding: 18px 20px 14px;
+  min-width: min(92vw, 360px);
+}
+
+.menu-card h1 {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: clamp(28px, 8vw, 52px);
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.menu-card p {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: clamp(14px, 3.6vw, 19px);
+  color: rgba(235, 247, 255, 0.92);
+}
+
+#play-btn {
+  min-width: 180px;
+  min-height: 64px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #1dd1a1, #10ac84);
+  color: #052418;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 24px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+.play-arrow {
+  width: 0;
+  height: 0;
+  border-top: 10px solid transparent;
+  border-bottom: 10px solid transparent;
+  border-left: 16px solid #063524;
+  margin-left: 4px;
+}
+
+#game-controls {
+  position: fixed;
+  top: 56px;
+  left: 12px;
+  right: 12px;
+  z-index: 120;
+  display: none;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.game-control-btn {
+  pointer-events: auto;
+  min-height: 46px;
+  min-width: 96px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.52);
+  color: #fff;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
 /* ── Debug Panel ─────────────────────────────────────────── */
 
 #debug-toggle {

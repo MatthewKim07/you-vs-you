@@ -30,14 +30,16 @@ export class Renderer {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  drawLevel(level: LevelData, cameraX: number, placementPulse: number = 0) {
+  drawLevel(level: LevelData, cameraX: number, placementPulse: number = 0, showFlag: boolean = true) {
     const { groundY, worldWidth, flagX, obstacles } = level;
     const segments = getGroundSegments(worldWidth, obstacles);
 
     this.drawGround(segments, groundY, cameraX);
     this.drawObstacles(obstacles, groundY, cameraX, placementPulse, level.index > 0);
     this.drawLandingMarkers(level.aiLandingMarkersX ?? [], groundY, cameraX);
-    this.drawFlag(flagX - cameraX, groundY);
+    if (showFlag) {
+      this.drawFlag(flagX - cameraX, groundY);
+    }
   }
 
   private drawLandingMarkers(markers: number[], groundY: number, cameraX: number) {
@@ -409,6 +411,37 @@ export class Renderer {
     ctx.fillStyle = 'white';
     ctx.font = `${Math.min(20, canvas.width / 19)}px sans-serif`;
     ctx.fillText(`Tap for Level ${nextLevelNum}`, cx, cy + 24);
+  }
+
+  drawPausedOverlay(canvas: HTMLCanvasElement) {
+    const { ctx } = this;
+    ctx.fillStyle = 'rgba(0,0,0,0.42)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${Math.min(46, canvas.width / 8)}px sans-serif`;
+    ctx.fillText('Paused', cx, cy - 12);
+    ctx.font = `${Math.min(20, canvas.width / 19)}px sans-serif`;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText('Tap Pause to resume', cx, cy + 26);
+  }
+
+  drawCountdownOverlay(canvas: HTMLCanvasElement, count: number, alpha: number) {
+    const { ctx } = this;
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+
+    ctx.save();
+    ctx.fillStyle = `rgba(0,0,0,${0.15 * alpha})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255,255,255,${Math.max(0.2, alpha)})`;
+    ctx.font = `900 ${Math.min(110, canvas.width / 3.5)}px sans-serif`;
+    ctx.fillText(String(count), cx, cy + 34);
+    ctx.restore();
   }
 
   drawAIGameMasterMessage(message: string, alpha: number) {

@@ -6,16 +6,28 @@ import { RunTracker } from './runTracker';
 import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
-import { deathMessage, introMessage, levelCompleteMessage, levelStartMessage } from './aiGameMaster';
+import { introMessage } from './aiGameMaster';
 import { PlayerModel } from './telemetry';
 import { analyzePlayer } from './playerAnalyzer';
 import { JUMP_CUT_FACTOR } from './movementTuning';
+import {
+  StrategyBrief,
+  StrategistPhase,
+  StrategyBriefInput,
+  createLocalStrategyBrief,
+  maybeFetchStrategyBrief,
+  summarizeRecentRuns,
+} from './aiStrategist';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
 const SAMPLE_INTERVAL = 0.2;    // seconds between position samples
 const LEVEL_HIGHLIGHT_SECS = 2.4;
 const AI_MESSAGE_SECS = 2.6;
+const START_COUNTDOWN_SECS = 3.0;
+const PREVIEW_PATTERN_START = 340;
+const PREVIEW_PATTERN_SPAN = 1200;
+const PREVIEW_PATTERN_REPEAT_COUNT = 18;
 const LOW_CEILING_THICKNESS = 16; // keep in sync with renderer low-ceiling draw thickness
 const CHOICE_BAR_THICKNESS = 12;  // keep in sync with renderer choice-obstacle draw thickness
 const SUPPORT_EDGE_INSET = 2;     // use a tiny inset so visual edge contact still counts
@@ -28,7 +40,7 @@ export class Game {
   private renderer!: Renderer;
   private tracker: RunTracker;
   private debugPanel: DebugPanel;
-  private state: GameState = 'playing';
+  private state: GameState = 'menu';
   private cameraX = 0;
   private lastTime = 0;
   private levelIndex = 0;
@@ -39,6 +51,15 @@ export class Game {
   private aiMessageTimeLeft = 0;
   private introShown = false;
   private playerModel: PlayerModel = analyzePlayer([]);
+  private strategistRequestSeq = 0;
+  private hasSpawnedPlayer = false;
+  private countdownSec = 0;
+  private previewLastJumpObstacleX = Number.NEGATIVE_INFINITY;
+  private menuOverlay!: HTMLDivElement;
+  private playButton!: HTMLButtonElement;
+  private controlBar!: HTMLDivElement;
+  private pauseButton!: HTMLButtonElement;
+  private exitButton!: HTMLButtonElement;
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
@@ -53,7 +74,8 @@ export class Game {
     this.debugPanel = new DebugPanel(this.tracker);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.setupResize();
-    this.startLevel(0);
+    this.setupUi();
+    this.enterMenu();
   }
 
   private resizeCanvas() {
@@ -61,15 +83,16 @@ export class Game {
     this.canvas.height = window.innerHeight;
   }
 
-  private startLevel(index: number) {
+  private startLevel(index: number, startMode: 'immediate' | 'countdown' = 'immediate') {
     this.refreshPlayerModel();
     this.resizeCanvas();
     this.levelIndex = index;
     this.level = this.buildLevelForIndex(index);
     this.level.groundY = this.canvas.height - 80;
     this.spawnPlayer();
+    this.hasSpawnedPlayer = true;
     this.cameraX = 0;
-    this.state = 'playing';
+    this.state = startMode === 'countdown' ? 'countdown' : 'playing';
     this.resetFrameTracking();
     this.tracker.startRun(index, this.attempts, this.level.obstacles, {
       difficulty: this.level.aiDebug?.difficulty,
@@ -80,12 +103,14 @@ export class Game {
     this.debugPanel.setAdaptiveSnapshot(this.level);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
+    this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
+    this.syncUiVisibility();
 
     if (!this.introShown && index === 0) {
       this.showAIMessage(introMessage());
       this.introShown = true;
     } else if (index > 0) {
-      this.showAIMessage(levelStartMessage(this.level, this.tracker.getProfile(), index + 1));
+      this.publishStrategyBrief('levelStart');
     }
   }
 
@@ -95,6 +120,7 @@ export class Game {
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
+    this.hasSpawnedPlayer = true;
     this.resetFrameTracking();
     this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
       difficulty: this.level.aiDebug?.difficulty,
@@ -102,6 +128,10 @@ export class Game {
       density: this.level.aiDebug?.density,
       variants: this.level.aiDebug?.variants,
     });
+    if (this.levelIndex > 0) {
+      this.publishStrategyBrief('levelStart');
+    }
+    this.syncUiVisibility();
   }
 
   private buildLevelForIndex(index: number): LevelData {
@@ -145,10 +175,211 @@ export class Game {
     window.addEventListener('resize', () => {
       this.resizeCanvas();
       this.level.groundY = this.canvas.height - 80;
-      if (this.state === 'playing') {
+      if ((this.state === 'playing' || this.state === 'paused') && this.hasSpawnedPlayer) {
         this.player.pos.y = Math.min(this.player.pos.y, this.level.groundY - this.player.height);
       }
     });
+  }
+
+  private setupUi() {
+    this.controlBar = document.createElement('div');
+    this.controlBar.id = 'game-controls';
+
+    this.pauseButton = document.createElement('button');
+    this.pauseButton.id = 'pause-btn';
+    this.pauseButton.className = 'game-control-btn';
+    this.pauseButton.textContent = 'II Pause';
+    this.pauseButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.togglePause();
+    });
+    this.pauseButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    this.exitButton = document.createElement('button');
+    this.exitButton.id = 'exit-btn';
+    this.exitButton.className = 'game-control-btn';
+    this.exitButton.textContent = 'Exit';
+    this.exitButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.enterMenu();
+    });
+    this.exitButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    this.controlBar.appendChild(this.pauseButton);
+    this.controlBar.appendChild(this.exitButton);
+    document.body.appendChild(this.controlBar);
+
+    this.menuOverlay = document.createElement('div');
+    this.menuOverlay.id = 'start-menu';
+    this.menuOverlay.innerHTML = `
+      <div class="menu-card">
+        <h1>You vs You</h1>
+        <p>The level learns you.</p>
+      </div>
+    `;
+
+    this.playButton = document.createElement('button');
+    this.playButton.id = 'play-btn';
+    this.playButton.innerHTML = '<span class="play-arrow"></span><span>Play</span>';
+    this.playButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.startFromMenu();
+    });
+    this.playButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    this.menuOverlay.appendChild(this.playButton);
+    document.body.appendChild(this.menuOverlay);
+    this.syncUiVisibility();
+  }
+
+  private enterMenu() {
+    if (this.state === 'playing' || this.state === 'paused') {
+      this.tracker.finishRun(false);
+      this.refreshPlayerModel();
+      this.debugPanel.setPlayerModel(this.playerModel);
+    }
+
+    this.resizeCanvas();
+    this.levelIndex = 0;
+    this.attempts = 1;
+    this.level = this.buildMenuPreviewLevel();
+    this.level.groundY = this.canvas.height - 80;
+    this.cameraX = 0;
+    this.levelAgeSec = 0;
+    this.countdownSec = 0;
+    this.aiMessage = '';
+    this.aiMessageTimeLeft = 0;
+    this.spawnPreviewPlayer();
+    this.hasSpawnedPlayer = true;
+    this.state = 'menu';
+    this.debugPanel.setAdaptiveSnapshot(this.level);
+    this.syncUiVisibility();
+  }
+
+  private startFromMenu() {
+    this.attempts = 1;
+    this.startLevel(0, 'countdown');
+  }
+
+  private togglePause() {
+    if (this.state === 'playing') {
+      this.state = 'paused';
+    } else if (this.state === 'paused') {
+      this.state = 'playing';
+    } else {
+      return;
+    }
+    this.pauseButton.textContent = this.state === 'paused' ? 'Resume' : 'II Pause';
+    this.syncUiVisibility();
+  }
+
+  private syncUiVisibility() {
+    const inMenu = this.state === 'menu';
+    this.menuOverlay.style.display = inMenu ? 'flex' : 'none';
+    this.controlBar.style.display = inMenu ? 'none' : 'flex';
+    this.pauseButton.textContent = this.state === 'paused' ? 'Resume' : 'II Pause';
+  }
+
+  private buildMenuPreviewLevel(): LevelData {
+    const pattern: Obstacle[] = [
+      { kind: 'spike', x: 140, width: 44, height: 52 },
+      { kind: 'lowCeiling', x: 310, width: 170, height: 34 },
+      { kind: 'doubleSpike', x: 620, width: 104, height: 52 },
+      { kind: 'choiceObstacle', x: 920, width: 100, height: 34 },
+    ];
+
+    const obstacles: Obstacle[] = [];
+    for (let i = 0; i < PREVIEW_PATTERN_REPEAT_COUNT; i++) {
+      const offset = PREVIEW_PATTERN_START + i * PREVIEW_PATTERN_SPAN;
+      for (const p of pattern) {
+        obstacles.push({
+          kind: p.kind,
+          x: offset + p.x,
+          width: p.width,
+          height: p.height,
+        });
+      }
+    }
+
+    const worldWidth = PREVIEW_PATTERN_START + PREVIEW_PATTERN_REPEAT_COUNT * PREVIEW_PATTERN_SPAN + 560;
+
+    return {
+      index: 0,
+      worldWidth,
+      groundY: this.canvas.height - 80,
+      flagX: worldWidth - 240,
+      obstacles,
+    };
+  }
+
+  private spawnPreviewPlayer() {
+    const spawnY = this.level.groundY - 48;
+    if (!this.player) {
+      this.player = new Player(SPAWN_X, spawnY);
+    } else {
+      this.player.reset(SPAWN_X, spawnY);
+    }
+    this.player.onGround = true;
+    this.player.setCrouch(false);
+    this.wasOnGround = true;
+    this.airStartMs = null;
+    this.canCutCurrentJump = false;
+    this.sampleTimer = 0;
+    this.previewLastJumpObstacleX = Number.NEGATIVE_INFINITY;
+  }
+
+  private updateMenuPreview(dt: number) {
+    const player = this.player;
+    const obstacles = this.level.obstacles;
+    const playerFront = player.pos.x + player.width;
+    const upcoming = obstacles
+      .filter((o) => o.x + o.width > player.pos.x - 24)
+      .sort((a, b) => a.x - b.x)[0];
+
+    let wantsCrouch = false;
+    if (upcoming && (upcoming.kind === 'lowCeiling' || upcoming.kind === 'choiceObstacle')) {
+      const crouchStart = upcoming.x - 30;
+      const crouchEnd = upcoming.x + upcoming.width + 26;
+      wantsCrouch = playerFront >= crouchStart && player.pos.x <= crouchEnd;
+    }
+
+    if (wantsCrouch && player.onGround && !player.isCrouching) {
+      player.setCrouch(true);
+    } else if (!wantsCrouch && player.isCrouching && (upcoming?.x ?? Infinity) - playerFront > 14) {
+      player.setCrouch(false);
+    }
+
+    if (upcoming && player.onGround && !player.isCrouching) {
+      const jumpDistance = upcoming.x - playerFront;
+      const shouldJump =
+        (upcoming.kind === 'spike' && jumpDistance <= 70 && jumpDistance >= 36)
+        || (upcoming.kind === 'doubleSpike' && jumpDistance <= 54 && jumpDistance >= 24);
+      if (shouldJump && this.previewLastJumpObstacleX !== upcoming.x) {
+        this.previewLastJumpObstacleX = upcoming.x;
+        player.jump();
+      }
+    }
+
+    const playerLeft = player.pos.x + SUPPORT_EDGE_INSET;
+    const playerRight = player.pos.x + player.width - SUPPORT_EDGE_INSET;
+    const playerBottom = player.pos.y + player.height;
+    const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
+    player.update(dt, effectiveFloor ?? this.level.groundY, effectiveFloor !== null);
+
+    const targetX = player.pos.x - this.canvas.width * 0.32;
+    this.cameraX = Math.max(0, Math.min(targetX, this.level.worldWidth - this.canvas.width));
+
+    const wrapThreshold = PREVIEW_PATTERN_START + PREVIEW_PATTERN_SPAN * 2.6;
+    if (player.pos.x > wrapThreshold) {
+      player.pos.x -= PREVIEW_PATTERN_SPAN;
+      this.cameraX = Math.max(0, this.cameraX - PREVIEW_PATTERN_SPAN);
+      this.previewLastJumpObstacleX = Number.NEGATIVE_INFINITY;
+    }
+
+    if (this.hitSpike() || this.hitChoiceObstacle() || this.hitLowCeiling() || player.pos.y > this.level.groundY + 80) {
+      this.spawnPreviewPlayer();
+      this.cameraX = 0;
+    }
   }
 
   start() {
@@ -164,12 +395,35 @@ export class Game {
   };
 
   private update(dt: number) {
-    this.levelAgeSec += dt;
-    if (this.aiMessageTimeLeft > 0) {
+    if (this.state !== 'menu' && this.state !== 'countdown') {
+      this.levelAgeSec += dt;
+    }
+    if (this.aiMessageTimeLeft > 0 && this.state !== 'paused' && this.state !== 'menu' && this.state !== 'countdown') {
       this.aiMessageTimeLeft = Math.max(0, this.aiMessageTimeLeft - dt);
     }
 
     switch (this.state) {
+      case 'menu':
+        this.updateMenuPreview(dt);
+        this.input.consumeJump();
+        this.input.consumeJumpRelease();
+        break;
+
+      case 'countdown':
+        this.input.consumeJump();
+        this.input.consumeJumpRelease();
+        this.countdownSec = Math.max(0, this.countdownSec - dt);
+        if (this.countdownSec <= 0) {
+          this.state = 'playing';
+        }
+        break;
+
+      case 'paused':
+        // Drain jump input while paused so resume does not trigger a jump.
+        this.input.consumeJump();
+        this.input.consumeJumpRelease();
+        break;
+
       case 'dead':
         this.deathTimer += dt;
         if (this.deathTimer >= DEATH_INPUT_DELAY && this.input.consumeJump()) {
@@ -282,10 +536,7 @@ export class Game {
 
     // --- Win check ---
     if (player.pos.x + player.width >= level.flagX) {
-      const currentRun = tracker.getCurrentRun();
-      const landingEvents = currentRun?.landings ?? [];
-      const lastLandingX = landingEvents.length > 0 ? landingEvents[landingEvents.length - 1].x : undefined;
-      this.showAIMessage(levelCompleteMessage(lastLandingX, tracker.getProfile().jumpStyle));
+      this.publishStrategyBrief('levelComplete');
       tracker.finishRun(true);
       this.refreshPlayerModel();
       this.debugPanel.setPlayerModel(this.playerModel);
@@ -379,12 +630,87 @@ export class Game {
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
-    this.showAIMessage(deathMessage(reason, deathX, this.tracker.getProfile().jumpStyle));
+    this.publishStrategyBrief('death', { reason, x: deathX });
     this.tracker.finishRun(false, reason, deathX);
     this.refreshPlayerModel();
     this.debugPanel.setPlayerModel(this.playerModel);
     this.state = 'dead';
     this.deathTimer = 0;
+  }
+
+  private publishStrategyBrief(
+    phase: StrategistPhase,
+    latestDeathOverride?: { reason?: 'spike' | 'gap'; x?: number },
+  ) {
+    const context = this.makeStrategistInput(phase, latestDeathOverride);
+    const localBrief = createLocalStrategyBrief(context);
+    this.applyStrategyBrief(localBrief, phase);
+
+    const requestId = ++this.strategistRequestSeq;
+    const expectedLevelIndex = this.levelIndex;
+    const expectedState = this.state;
+
+    void maybeFetchStrategyBrief(context).then((remote) => {
+      if (!remote) return;
+      if (requestId !== this.strategistRequestSeq) return;
+      if (expectedLevelIndex !== this.levelIndex) return;
+      if (phase === 'levelStart' && this.state !== expectedState) return;
+      if (phase === 'levelComplete' && this.state !== 'playing' && this.state !== 'levelComplete') return;
+      if (phase === 'death' && this.state !== 'playing' && this.state !== 'dead') return;
+      this.applyStrategyBrief(remote, phase);
+    });
+  }
+
+  private applyStrategyBrief(brief: StrategyBrief, phase: StrategistPhase) {
+    this.debugPanel.setStrategyBrief(brief);
+    if (phase === 'levelStart') {
+      this.showAIMessage(brief.taunt);
+      return;
+    }
+    if (phase === 'levelComplete') {
+      this.showAIMessage(brief.nextPlan);
+      return;
+    }
+    this.showAIMessage(brief.summary);
+  }
+
+  private makeStrategistInput(
+    phase: StrategistPhase,
+    latestDeathOverride?: { reason?: 'spike' | 'gap'; x?: number },
+  ): StrategyBriefInput {
+    const profile = this.tracker.getProfile();
+    const allRuns = this.tracker.getAllRuns();
+    const currentRun = this.tracker.getCurrentRun();
+    const recentRuns = summarizeRecentRuns(currentRun ? [...allRuns, currentRun] : allRuns, 5);
+    const latestFinished = allRuns[allRuns.length - 1];
+    const latestDeath = latestDeathOverride ?? {
+      reason: latestFinished?.deathReason,
+      x: latestFinished?.deathX,
+    };
+
+    const liveLandingZones = currentRun?.landings.slice(-3).map((l) => l.x) ?? [];
+    const latestLandingZones = liveLandingZones.length > 0
+      ? liveLandingZones
+      : profile.commonLandingZones.slice(0, 3);
+
+    return {
+      phase,
+      levelNumber: this.levelIndex + 1,
+      playerModel: this.playerModel,
+      playerProfile: profile,
+      recentRuns,
+      aiDebug: this.level.aiDebug
+        ? {
+          strategy: this.level.aiDebug.strategy,
+          difficulty: this.level.aiDebug.difficulty,
+          variants: this.level.aiDebug.variants,
+          density: this.level.aiDebug.density,
+          patterns: this.level.aiDebug.patterns,
+        }
+        : undefined,
+      latestDeath,
+      latestLandingZones,
+    };
   }
 
   private showAIMessage(text: string) {
@@ -397,21 +723,34 @@ export class Game {
     const obstaclePulse = this.level.index > 0
       ? Math.max(0, 1 - this.levelAgeSec / LEVEL_HIGHLIGHT_SECS)
       : 0;
-    this.renderer.drawLevel(this.level, this.cameraX, obstaclePulse);
-    this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead');
-    this.renderer.drawHUD(
-      this.player.pos.x,
-      this.level.flagX,
-      this.canvas.width,
-      this.canvas.height,
-      this.levelIndex + 1,
-      this.attempts,
-    );
+    const showFlag = this.state !== 'menu' && this.state !== 'countdown';
+    this.renderer.drawLevel(this.level, this.cameraX, obstaclePulse, showFlag);
+    if (this.hasSpawnedPlayer) {
+      this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead');
+    }
+    if (this.state !== 'menu' && this.hasSpawnedPlayer) {
+      this.renderer.drawHUD(
+        this.player.pos.x,
+        this.level.flagX,
+        this.canvas.width,
+        this.canvas.height,
+        this.levelIndex + 1,
+        this.attempts,
+      );
+    }
 
     if (this.state === 'dead') {
       this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
     } else if (this.state === 'levelComplete') {
       this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2);
+    } else if (this.state === 'paused') {
+      this.renderer.drawPausedOverlay(this.canvas);
+    }
+
+    if (this.state === 'countdown') {
+      const count = Math.max(1, Math.ceil(this.countdownSec));
+      const fadeAlpha = 0.25 + (this.countdownSec - Math.floor(this.countdownSec));
+      this.renderer.drawCountdownOverlay(this.canvas, count, fadeAlpha);
     }
 
     if (this.aiMessageTimeLeft > 0) {
