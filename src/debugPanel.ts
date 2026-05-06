@@ -3,6 +3,17 @@ import { LevelData, AdaptiveDebugInfo } from './level';
 import { PlayerModel } from './telemetry';
 import { StrategyBrief } from './aiStrategist';
 
+interface RealtimeTrapDebugView {
+  phase: string;
+  activeTrap: string;
+  trapState: string;
+  predictedAction: string;
+  predictedLandingX?: number;
+  trapReason: string;
+  confidence: number;
+  lastMutation: string;
+}
+
 // HTML overlay — hidden by default, toggled via "AI Data" button.
 // Reads from RunTracker only; no game logic here.
 export class DebugPanel {
@@ -12,6 +23,16 @@ export class DebugPanel {
   private aiDebugInfo: AdaptiveDebugInfo | undefined;
   private currentLevelIndex = 0;
   private strategyBrief: StrategyBrief | undefined;
+  private realtimeTrapDebug: RealtimeTrapDebugView = {
+    phase: 'observe',
+    activeTrap: 'none',
+    trapState: 'none',
+    predictedAction: 'unknown',
+    predictedLandingX: undefined,
+    trapReason: 'none',
+    confidence: 0,
+    lastMutation: 'none',
+  };
   private playerModel: PlayerModel = {
     prefersJump: true,
     prefersCrouch: false,
@@ -22,8 +43,10 @@ export class DebugPanel {
     riskProfile: 'balanced',
     choiceJumpRate: 0,
     choiceCrouchRate: 0,
+    choiceConfidence: 0,
     preferredChoiceAction: 'unknown',
     choiceConsistency: 'unknown',
+    perObstacleChoiceStats: {},
   };
 
   constructor(private tracker: RunTracker) {
@@ -54,6 +77,7 @@ export class DebugPanel {
     const activeTraps = dbg?.activeTraps ?? [];
     const trapReasons = dbg?.trapReasons ?? [];
     const predictedX = dbg?.predictedLandingX;
+    const rt = this.realtimeTrapDebug;
 
     this.panel.innerHTML = `
       <div class="dbg-section">
@@ -64,6 +88,17 @@ export class DebugPanel {
         <div class="dbg-row"><span>Active traps</span><span>${activeTraps.join(', ') || 'none'}</span></div>
         <div class="dbg-row"><span>Trap reason</span><span>${trapReasons[0] || '—'}</span></div>
         <div class="dbg-row"><span>Predicted land</span><span>${predictedX ? `${Math.round(predictedX)}px` : '—'}</span></div>
+      </div>
+      <div class="dbg-section">
+        <div class="dbg-title">TRAP RUNTIME</div>
+        <div class="dbg-row"><span>AI Phase</span><span>${formatStyle(rt.phase)}</span></div>
+        <div class="dbg-row"><span>Active Trap</span><span>${rt.activeTrap}</span></div>
+        <div class="dbg-row"><span>Trap State</span><span>${rt.trapState}</span></div>
+        <div class="dbg-row"><span>Predicted Action</span><span>${formatStyle(rt.predictedAction)}</span></div>
+        <div class="dbg-row"><span>Predicted Landing X</span><span>${rt.predictedLandingX !== undefined ? `${Math.round(rt.predictedLandingX)}px` : '—'}</span></div>
+        <div class="dbg-row"><span>Trap Reason</span><span>${rt.trapReason || '—'}</span></div>
+        <div class="dbg-row"><span>Confidence</span><span>${(rt.confidence * 100).toFixed(0)}%</span></div>
+        <div class="dbg-row"><span>Last Mutation</span><span>${rt.lastMutation || '—'}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">THIS RUN</div>
@@ -83,8 +118,19 @@ export class DebugPanel {
         <div class="dbg-row"><span>Most common landing</span><span>${mostCommonLanding ? `~${fmt(mostCommonLanding)}px` : '—'}</span></div>
         <div class="dbg-row"><span>Choice jump rate</span><span>${(model.choiceJumpRate * 100).toFixed(0)}%</span></div>
         <div class="dbg-row"><span>Choice crouch rate</span><span>${(model.choiceCrouchRate * 100).toFixed(0)}%</span></div>
+        <div class="dbg-row"><span>Choice confidence</span><span>${(model.choiceConfidence * 100).toFixed(0)}%</span></div>
         <div class="dbg-row"><span>Preferred choice</span><span>${formatStyle(model.preferredChoiceAction)}</span></div>
         <div class="dbg-row"><span>Choice consistency</span><span>${formatStyle(model.choiceConsistency)}</span></div>
+      </div>
+      <div class="dbg-section">
+        <div class="dbg-title">CHOICE GATE LEARNING</div>
+        <div class="dbg-row"><span>Global pref</span><span>${formatStyle(model.preferredChoiceAction)} @ ${(model.choiceConfidence * 100).toFixed(0)}% conf</span></div>
+        <div class="dbg-row"><span>Mutation target</span><span>${dbg?.mutationTargetObstacleId ?? '—'}</span></div>
+        <div class="dbg-row"><span>Fallback used</span><span>${dbg?.mutationFallbackUsed ? 'yes' : 'no'}</span></div>
+        ${Object.values(model.perObstacleChoiceStats ?? {}).slice(0, 4).map((s) =>
+          `<div class="dbg-row"><span>${s.obstacleId.slice(-12)}</span><span>J:${(s.jumpRate * 100).toFixed(0)}% C:${(s.crouchRate * 100).toFixed(0)}% (${s.total} samples, conf ${(s.confidence * 100).toFixed(0)}%)</span></div>`
+        ).join('')}
+        ${Object.keys(model.perObstacleChoiceStats ?? {}).length === 0 ? '<div class="dbg-row"><span>—</span><span>no gate decisions yet</span></div>' : ''}
       </div>
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>
@@ -135,6 +181,11 @@ export class DebugPanel {
   setStrategyBrief(brief: StrategyBrief): void {
     this.strategyBrief = brief;
   }
+
+  setRealtimeTrapDebug(debug: RealtimeTrapDebugView): void {
+    this.realtimeTrapDebug = debug;
+  }
+
 
   private makeButton(): HTMLButtonElement {
     const btn = document.createElement('button');

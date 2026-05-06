@@ -134,6 +134,7 @@ function compactInput(input: StrategyBriefInput) {
       crouchFrequency: round2(input.playerModel.crouchFrequency),
       choiceJumpRate: round2(input.playerModel.choiceJumpRate),
       choiceCrouchRate: round2(input.playerModel.choiceCrouchRate),
+      choiceConfidence: round2(input.playerModel.choiceConfidence),
       preferredChoiceAction: input.playerModel.preferredChoiceAction,
       choiceConsistency: input.playerModel.choiceConsistency,
     },
@@ -299,6 +300,8 @@ function buildTaunt(input: StrategyBriefInput): string {
         }
         return 'I can predict your next move before you make it.';
       }
+      case 'dominate':
+        return 'I know your habits now. Every trap is live.';
     }
   }
 
