@@ -16,6 +16,13 @@ const SAFE_FLAG_GAP = 240;
 const FLAG_OFFSET = 240;
 const PLAYER_WIDTH = 32;
 const PLAYER_STANDING_HEIGHT = 48;
+const MIN_PLATFORM_ELEVATION = PLAYER_STANDING_HEIGHT + 44;
+const ISOLATED_PLATFORM_MIN_ELEVATION = PLAYER_STANDING_HEIGHT + 76;
+const PLATFORM_NEAR_RADIUS = 260;
+const PLATFORM_CHAIN_RADIUS = 170;
+const SPIKE_NEAR_RADIUS = 180;
+const MIN_PLATFORM_GAP_FLAT = 72;
+const MIN_PLATFORM_GAP_RISE = 96;
 const MIN_LANDING_WIDTH = PLAYER_WIDTH + 10;
 const LANDING_BUFFER = 6;
 const MAX_GENERATION_ATTEMPTS = 4;
@@ -27,7 +34,7 @@ const DOUBLE_SPIKE_H = 52;
 const LOW_CEILING_MIN_W = 150;
 const LOW_CEILING_MAX_W = 230;
 const LOW_CEILING_CLEARANCE = 34;
-const CHOICE_OBS_W = 100;
+const CHOICE_OBS_W = 116;
 const CHOICE_OBS_H = 34;
 
 // ── Difficulty score system ────────────────────────────────────────
@@ -48,6 +55,7 @@ type SegmentType =
   | 'choiceThenPunish'
   | 'pressureCombo'
   | 'mixedPlatformCombo'
+  | 'routeTriad'
   | 'adaptiveChoiceGate'
   | 'dualPathGate'
   | 'baitChoiceTrap';
@@ -69,6 +77,7 @@ const SEGMENT_BASE_SCORES: Record<SegmentType, number> = {
   staircaseClimb:       5,
   pressureCombo:        6,
   mixedPlatformCombo:   6,
+  routeTriad:           7,
 };
 
 // Required total difficulty score per level. Strictly increases every level.
@@ -98,7 +107,10 @@ type CounterTarget =
   | 'diesToGaps'
   | 'diesToSpikes'
   | 'overusesChoiceJump'
-  | 'overusesChoiceCrouch';
+  | 'overusesChoiceCrouch'
+  | 'routeUpperBias'
+  | 'routeLowerBias'
+  | 'routeSwitcher';
 
 type DensityLabel = 'low' | 'medium' | 'high' | 'extreme';
 
@@ -189,6 +201,33 @@ export function generateAdaptiveLevel(
   };
 
   const requiredRules = requiredRulesForLevel(levelIndex);
+
+  if (levelIndex <= 6) {
+    const curated = buildEarlyStrategicLayout(levelIndex, canvasWidth);
+    return finalizeLevel(
+      levelIndex,
+      segmentCtx,
+      strategy,
+      curated,
+      curated.segmentBuilds.map((s) => ({ type: s.type })),
+      requiredRules,
+      previousRuns,
+      latestRun,
+      latestSuccess,
+      ['Curated early split layout (minimal clutter)'],
+      'valid',
+      [],
+      counterTargets,
+      knowledge,
+      'observe',
+      [],
+      [],
+      undefined,
+      false,
+      undefined,
+    );
+  }
+
   let lastWarnings: string[] = [];
 
   for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt++) {
@@ -336,6 +375,14 @@ function finalizeLevel(
   const totalDiffScore = built.segmentBuilds.reduce((sum, s) => sum + s.difficultyScore, 0);
   const reqDiffScore   = requiredDifficultyScore(levelIndex);
   const segScores      = built.segmentBuilds.map((s) => s.difficultyScore);
+  const routeUsage = { lower: 0, mid: 0, upper: 0 };
+  for (const o of obstacles) {
+    if (o.routeLayer) routeUsage[o.routeLayer]++;
+  }
+  const routesUsed = (['lower', 'mid', 'upper'] as const).filter((r) => routeUsage[r] > 0);
+  const routeSwitchPoints = obstacles.filter((o) => (o.routeId ?? '').includes('switch')).length;
+  const routeConnectivityStatus: 'valid' | 'weak' =
+    routesUsed.length >= 2 && routeSwitchPoints >= 2 ? 'valid' : 'weak';
 
   // Task 5: Get AI learning data
   const safeKnowledge = knowledge ?? {
@@ -397,6 +444,15 @@ function finalizeLevel(
       predictedLandingX,
       mutationFallbackUsed: mutationFallbackUsed ?? false,
       mutationTargetObstacleId,
+      preferredRoute: segmentCtx.playerModel.preferredRoute,
+      routeConfidence: segmentCtx.playerModel.routeConfidence,
+      routeRiskStyle: segmentCtx.playerModel.routeRiskStyle,
+      routeUsage,
+      routesUsed,
+      routeSwitchPoints,
+      routeConnectivityStatus,
+      routeTargeted: segmentCtx.playerModel.preferredRoute,
+      routeMutationCounts: { lower: 0, mid: 0, upper: 0 },
     },
     aiKnowledge: safeKnowledge,
   };
@@ -418,9 +474,9 @@ function densityLabelForLevel(levelIndex: number): DensityLabel {
 
 // Segment count cap — score accumulation drives the actual count, this is the ceiling.
 function segmentCountForLevel(levelIndex: number, attempt: number): number {
-  const base = Math.min(16, 5 + Math.ceil(levelIndex * 0.9));
-  if (attempt >= 2) return Math.min(18, base + 3);
-  if (attempt >= 1) return Math.min(18, base + 2);
+  const base = Math.min(12, 3 + Math.ceil(levelIndex * 0.7));
+  if (attempt >= 2) return Math.min(14, base + 2);
+  if (attempt >= 1) return Math.min(14, base + 1);
   return base;
 }
 
@@ -447,8 +503,14 @@ function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
   if (levelIndex >= 3 && levelIndex < 5) {
     rules.push({ tag: 'platformChallenge', types: ['longGapPlatforms', 'staircaseClimb'], minCount: 1 });
   }
-  if (levelIndex >= 2) {
-    rules.push({ tag: 'upperRoute', types: ['upperCorridorBridge', 'dualPathGate'], minCount: 1 });
+  if (levelIndex >= 4) {
+    rules.push({ tag: 'upperRoute', types: ['routeTriad', 'upperCorridorBridge', 'dualPathGate'], minCount: 1 });
+  }
+  if (levelIndex >= 1) {
+    rules.push({ tag: 'routeTriad', types: ['routeTriad'], minCount: 1 });
+  }
+  if (levelIndex >= 5) {
+    rules.push({ tag: 'routeTriad', types: ['routeTriad', 'upperCorridorBridge'], minCount: 2 });
   }
   if (levelIndex >= 5) {
     rules.push({ tag: 'longGapPlatforms', types: ['longGapPlatforms'], minCount: 1 });
@@ -585,6 +647,7 @@ function upgradeSegmentType(type: SegmentType): SegmentType {
     case 'choiceThenPunish':   return 'pressureCombo';
     case 'longGapPlatforms':   return 'mixedPlatformCombo';
     case 'staircaseClimb':     return 'mixedPlatformCombo';
+    case 'upperCorridorBridge': return 'routeTriad';
     default:                   return type; // pressureCombo/mixedPlatformCombo = max score
   }
 }
@@ -626,6 +689,7 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
     'choiceThenPunish',
     'pressureCombo',
     'mixedPlatformCombo',
+    'routeTriad',
   ];
 
   // Remove trivial patterns — banned outright so score accumulation never picks them.
@@ -643,6 +707,9 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
   if (levelIndex >= 6) {
     all.push('adaptiveChoiceGate', 'baitChoiceTrap');
   }
+  if (levelIndex >= 3) {
+    all.push('routeTriad');
+  }
 
   return applyStrategyBias(all, ctx);
 }
@@ -651,10 +718,10 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
 function applyStrategyBias(pool: SegmentType[], ctx: SegmentContext): SegmentType[] {
   const bias: SegmentType[] = [...pool];
   if (ctx.playerModel.prefersJump) {
-    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish', 'adaptiveChoiceGate', 'baitChoiceTrap');
+    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish', 'adaptiveChoiceGate', 'baitChoiceTrap', 'routeTriad');
   }
   if (ctx.playerModel.prefersCrouch) {
-    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo', 'adaptiveChoiceGate', 'baitChoiceTrap');
+    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo', 'adaptiveChoiceGate', 'baitChoiceTrap', 'routeTriad');
   }
   if (ctx.playerModel.reactionTiming === 'late') {
     bias.push('pressureCombo', 'doubleSpikeTiming', 'headClearanceJump');
@@ -743,13 +810,13 @@ function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
     specs.push({ type: 'staircaseClimb' });
   }
 
-  const hasUpperRoute = specs.some((s) => s.type === 'upperCorridorBridge' || s.type === 'dualPathGate');
+  const hasUpperRoute = specs.some((s) => s.type === 'upperCorridorBridge' || s.type === 'dualPathGate' || s.type === 'routeTriad');
   if (levelIndex >= 2 && !hasUpperRoute) {
     replaceFirstNonRequired(specs, 'upperCorridorBridge');
   }
   if (levelIndex >= 6) {
-    const upperCount = specs.filter((s) => s.type === 'upperCorridorBridge' || s.type === 'dualPathGate').length;
-    if (upperCount < 2) {
+    const upperCount = specs.filter((s) => s.type === 'upperCorridorBridge' || s.type === 'dualPathGate' || s.type === 'routeTriad').length;
+    if (upperCount < 1) {
       specs.push({ type: 'upperCorridorBridge' });
     }
   }
@@ -825,15 +892,17 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
 
     const built = buildSegment(spec.type, cursor, ctx, ctx.levelIndex * 97 + i * 17 + attempt * 11);
     if (built.obstacles.length === 0) continue;
+    const routedBuilt = annotateRoutesForSegment(built, i);
 
-    builds.push(built);
-    obstacles.push(...built.obstacles);
-    cursor += built.length;
+    builds.push(routedBuilt);
+    obstacles.push(...routedBuilt.obstacles);
+    cursor += routedBuilt.length;
 
     if (spec.requiredTag) requiredTagsPlaced.push(spec.requiredTag);
   }
 
   obstacles.sort((a, b) => a.x - b.x);
+  applyPlatformOrganization(obstacles);
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX = worldWidth - FLAG_OFFSET;
   const maxQuietGap = computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP);
@@ -843,14 +912,96 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
 
 // Tighter connector distances — less breathing room between segments at higher levels.
 function connectorDistanceForLevel(levelIndex: number, attempt: number): number {
-  let base = 110;
-  if (levelIndex >= 2) base = 88;
-  if (levelIndex >= 4) base = 70;
-  if (levelIndex >= 6) base = 55;
-  if (levelIndex >= 8) base = 42;
+  let base = 130;
+  if (levelIndex >= 2) base = 118;
+  if (levelIndex >= 4) base = 98;
+  if (levelIndex >= 6) base = 82;
+  if (levelIndex >= 8) base = 68;
   if (attempt > 0) base -= 8;
   if (attempt > 1) base -= 6;
-  return Math.max(36, base);
+  return Math.max(52, base);
+}
+
+function applyPlatformOrganization(obstacles: Obstacle[]): void {
+  const platforms = obstacles.filter((o) => o.kind === 'platform');
+  if (platforms.length === 0) return;
+
+  const firstPlatform = platforms.reduce((left, p) => (p.x < left.x ? p : left), platforms[0]);
+  const spikes = obstacles.filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike');
+
+  for (const p of platforms) {
+    const pCenter = p.x + p.width * 0.5;
+    let nearPlatformCount = 0;
+    let nearestPlatformDx = Number.POSITIVE_INFINITY;
+    for (const other of platforms) {
+      if (other === p) continue;
+      const otherCenter = other.x + other.width * 0.5;
+      const dx = Math.abs(otherCenter - pCenter);
+      nearestPlatformDx = Math.min(nearestPlatformDx, dx);
+      if (dx <= PLATFORM_NEAR_RADIUS) {
+        nearPlatformCount++;
+      }
+    }
+    const nearSpike = spikes.some((s) => {
+      const sx = s.x + s.width * 0.5;
+      return Math.abs(sx - pCenter) <= SPIKE_NEAR_RADIUS;
+    });
+
+    const isFirst = p === firstPlatform;
+    const inReachChain = nearestPlatformDx <= PLATFORM_CHAIN_RADIUS;
+    const isIsolated = (!inReachChain || nearPlatformCount === 0) && !nearSpike;
+    if (isFirst || isIsolated) {
+      p.height = Math.max(p.height, ISOLATED_PLATFORM_MIN_ELEVATION);
+    }
+  }
+
+  spreadPlatformChains(platforms);
+}
+
+function spreadPlatformChains(platforms: Obstacle[]): void {
+  const layers: Array<'mid' | 'upper'> = ['mid', 'upper'];
+  for (const layer of layers) {
+    const chain = platforms
+      .filter((p) => p.routeLayer === layer)
+      .sort((a, b) => a.x - b.x);
+    for (let i = 1; i < chain.length; i++) {
+      const prev = chain[i - 1];
+      const curr = chain[i];
+      const gap = curr.x - (prev.x + prev.width);
+      const rise = curr.height - prev.height;
+      const required = rise > 18 ? MIN_PLATFORM_GAP_RISE : MIN_PLATFORM_GAP_FLAT;
+      if (gap < required) {
+        curr.x += required - gap;
+      }
+    }
+  }
+}
+
+function annotateRoutesForSegment(segment: SegmentBuild, segmentIndex: number): SegmentBuild {
+  const segKey = `seg_${segmentIndex}_${segment.type}`;
+  const obstacles = segment.obstacles.map((o) => {
+    const routeLayer = o.routeLayer ?? inferRouteLayerForObstacle(o);
+    const routeId = o.routeId ?? `${segKey}_${routeLayer}`;
+    const solid = o.kind === 'platform' ? (o.solid ?? true) : o.solid;
+    const height =
+      o.kind === 'platform'
+        ? Math.max(o.height, MIN_PLATFORM_ELEVATION)
+        : o.height;
+    return { ...o, height, routeLayer, routeId, solid };
+  });
+  return { ...segment, obstacles };
+}
+
+function inferRouteLayerForObstacle(o: Obstacle): 'lower' | 'mid' | 'upper' {
+  if (o.kind === 'gap' || o.kind === 'spike' || o.kind === 'doubleSpike') return 'lower';
+  if (o.kind === 'choiceObstacle') return 'mid';
+  if (o.kind === 'lowCeiling') return o.height >= 52 ? 'mid' : 'lower';
+  if (o.kind === 'platform') {
+    if (o.height >= 90) return 'upper';
+    if (o.height >= 48) return 'mid';
+    return 'lower';
+  }
+  return 'lower';
 }
 
 function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
@@ -983,7 +1134,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
     }
 
     case 'adaptiveChoiceGate': {
-      const w = clampInt(CHOICE_OBS_W + ctx.levelIndex * 4, CHOICE_OBS_W, 140);
+      const w = CHOICE_OBS_W;
       const gateId = `choice_lvl${ctx.levelIndex}_${Math.round(startX)}`;
       return {
         type,
@@ -1006,7 +1157,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
 
     case 'dualPathGate': {
       const gateId = `dual_choice_lvl${ctx.levelIndex}_${Math.round(startX)}`;
-      const gateW = clampInt(CHOICE_OBS_W + ctx.levelIndex * 5, 105, 148);
+      const gateW = CHOICE_OBS_W;
       const topStepW = clampInt(92 + ctx.levelIndex * 3, 94, 136);
       const topStepH = clampInt(66 + ctx.levelIndex * 2, 66, 88);
       const gateX = startX + 22;
@@ -1053,7 +1204,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
     }
 
     case 'baitChoiceTrap': {
-      const w = clampInt(CHOICE_OBS_W + ctx.levelIndex * 3, CHOICE_OBS_W, 130);
+      const w = CHOICE_OBS_W;
       const gateId = `bait_choice_lvl${ctx.levelIndex}_${Math.round(startX)}`;
       const obs: Obstacle = {
         kind: 'choiceObstacle',
@@ -1145,12 +1296,15 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
         difficultyScore: 6,
       };
     }
+
+    case 'routeTriad':
+      return buildRouteTriad(startX, ctx, seed);
   }
 }
 
 function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
-  const tierCount = ctx.levelIndex <= 1 ? 2 : ctx.levelIndex <= 3 ? 3 : 4;
-  const requestedPlatformCount = clampInt(tierCount + (seed % 2 === 0 ? 0 : 1), 2, 4);
+  const tierCount = ctx.levelIndex <= 3 ? 2 : 3;
+  const requestedPlatformCount = clampInt(tierCount + (seed % 2 === 0 ? 0 : 1), 2, 3);
 
   const allWidths = Array.from({ length: requestedPlatformCount }, (_, i) => {
     const base = ctx.levelIndex >= 5 ? 62 : ctx.levelIndex >= 3 ? 70 : 82;
@@ -1215,20 +1369,20 @@ function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number
 
 function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
   const variantMode = seed % 3;
-  const steps = clampInt(ctx.levelIndex >= 5 ? 5 : ctx.levelIndex >= 3 ? 4 : 3, 3, 5);
+  const steps = clampInt(ctx.levelIndex >= 5 ? 4 : 3, 3, 4);
   const widths = Array.from({ length: steps }, (_, i) => clampInt(74 - i * 2, 60, 80));
   const baseJump = clampInt(ctx.maxJumpDistance * 0.52, 92, 160);
 
   const heights: number[] = [];
   for (let i = 0; i < steps; i++) {
     if (variantMode === 0) {
-      heights.push(clampInt(20 + i * 11, 18, 76));
+      heights.push(clampInt(34 + i * 20, 30, 136));
     } else if (variantMode === 1) {
-      const h = i < steps - 1 ? 20 + i * 12 : 24 + Math.max(0, steps - 3) * 6;
-      heights.push(clampInt(h, 18, 78));
+      const h = i < steps - 1 ? 36 + i * 19 : 40 + Math.max(0, steps - 3) * 14;
+      heights.push(clampInt(h, 34, 134));
     } else {
-      const h = i === Math.floor(steps / 2) ? 26 : 18 + i * 10;
-      heights.push(clampInt(h + ((seed + i) % 2) * 4, 18, 80));
+      const h = i === Math.floor(steps / 2) ? 58 : 34 + i * 18;
+      heights.push(clampInt(h + ((seed + i) % 2) * 8, 32, 138));
     }
   }
 
@@ -1272,13 +1426,14 @@ function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number):
 // alternate high route. Player can jump up onto the first platform and walk
 // across the corridor. The AI can arm collapsingPlatform traps on these surfaces.
 function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: number): SegmentBuild {
-  const platformCount = clampInt(3 + (seed % 2), 3, 4);
-  const platformH = 82; // constant height — walkable upper floor
+  const platformCount = clampInt(2 + (seed % 2), 2, 3);
+  const platformH = 156; // clearly separated upper lane
   const platformW = clampInt(90 + (seed % 3) * 10, 88, 112);
-  const betweenGap = clampInt(58 + (seed % 4) * 8, 52, 80); // gap between platforms (jumpable)
+  const betweenGap = clampInt(96 + (seed % 4) * 10, 92, 132); // wider, cleaner spacing
 
   const obstacles: Obstacle[] = [];
-  let px = startX + 28;
+  // Delay upper route start so it doesn't begin on top of lower hazards.
+  let px = startX + 176;
 
   for (let i = 0; i < platformCount; i++) {
     obstacles.push({ kind: 'platform', x: px, width: platformW, height: platformH });
@@ -1289,8 +1444,13 @@ function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: nu
     }
   }
 
-  // Spike on the ground under the entry gap to incentivize using the upper route.
-  const entrySpike: Obstacle = { kind: 'spike', x: startX + 28 + platformW + 8, width: SPIKE_W, height: SPIKE_H };
+  // Spike before the climb-in to encourage route choice, not directly under upper floor.
+  const entrySpike: Obstacle = {
+    kind: 'spike',
+    x: startX + 112,
+    width: SPIKE_W,
+    height: SPIKE_H,
+  };
   obstacles.push(entrySpike);
 
   const totalLength = px - startX + 32;
@@ -1303,6 +1463,299 @@ function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: nu
     advanced: true,
     platform: true,
     difficultyScore: 4,
+  };
+}
+
+// Multi-route segment: lower (ground), mid corridor, upper corridor.
+// All routes reconnect near the end so completion is always possible.
+function buildRouteTriad(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
+  const obstacles: Obstacle[] = [];
+  const routeKey = `triad_${ctx.levelIndex}_${Math.round(startX)}`;
+  const midStepW = 78;
+  const midStepStride = 92;
+  const midEntryHeights = [52, 86, 126];
+  const midEntryX = startX + 34;
+  for (let i = 0; i < midEntryHeights.length; i++) {
+    obstacles.push({
+      kind: 'platform',
+      x: midEntryX + i * midStepStride,
+      width: midStepW,
+      height: midEntryHeights[i],
+      solid: true,
+      routeLayer: 'mid',
+      routeId: `${routeKey}_switch_entry_mid`,
+    });
+  }
+  const entryEndX = midEntryX + (midEntryHeights.length - 1) * midStepStride + midStepW;
+
+  const midStart = entryEndX + 40;
+  const midCount = ctx.levelIndex >= 5 ? 4 : 3;
+  const midGap = clampInt(62 + (seed % 2) * 8, 62, 78);
+  const midWidth = 110;
+  for (let i = 0; i < midCount; i++) {
+    obstacles.push({
+      kind: 'platform',
+      x: midStart + i * (midWidth + midGap),
+      width: midWidth,
+      height: 118,
+      solid: true,
+      routeLayer: 'mid',
+      routeId: `${routeKey}_mid_lane`,
+    });
+  }
+  const midLaneEndX = midStart + (midCount - 1) * (midWidth + midGap) + midWidth;
+
+  const choiceX = midStart + (midWidth + midGap) + 18;
+  obstacles.push({
+    kind: 'choiceObstacle',
+    x: choiceX,
+    width: CHOICE_OBS_W,
+    height: CHOICE_OBS_H,
+    trapType: 'adaptiveChoiceGate',
+    trapGroupId: `${routeKey}_choice_mid`,
+    routeLayer: 'mid',
+    routeId: `${routeKey}_mid_lane`,
+  });
+
+  // Start upper lane later so it does not crowd lower hazards.
+  const upperSwitchX = midStart + (midWidth + midGap) * 2 + 42;
+  const upperSwitchHeights = [160, 202];
+  const upperSwitchW = 76;
+  const upperSwitchStride = 104;
+  for (let i = 0; i < upperSwitchHeights.length; i++) {
+    obstacles.push({
+      kind: 'platform',
+      x: upperSwitchX + i * upperSwitchStride,
+      width: upperSwitchW,
+      height: upperSwitchHeights[i],
+      solid: true,
+      routeLayer: 'upper',
+      routeId: `${routeKey}_switch_up`,
+    });
+  }
+  const upperEntryEndX =
+    upperSwitchX + (upperSwitchHeights.length - 1) * upperSwitchStride + upperSwitchW;
+
+  const upperStart = upperEntryEndX + 26;
+  const upperCount = ctx.levelIndex >= 4 ? 3 : 2;
+  const upperGap = clampInt(102 + (seed % 3) * 10, 98, 136);
+  const upperWidth = 96;
+  for (let i = 0; i < upperCount; i++) {
+    obstacles.push({
+      kind: 'platform',
+      x: upperStart + i * (upperWidth + upperGap),
+      width: upperWidth,
+      height: 202,
+      solid: true,
+      routeLayer: 'upper',
+      routeId: `${routeKey}_upper_lane`,
+    });
+  }
+  const upperLaneEndX = upperStart + (upperCount - 1) * (upperWidth + upperGap) + upperWidth;
+
+  const upperExitX = upperLaneEndX + 28;
+  const upperExitHeights = [202, 150];
+  for (let i = 0; i < upperExitHeights.length; i++) {
+    obstacles.push({
+      kind: 'platform',
+      x: upperExitX + i * upperSwitchStride,
+      width: upperSwitchW,
+      height: upperExitHeights[i],
+      solid: true,
+      routeLayer: 'upper',
+      routeId: `${routeKey}_switch_exit_upper`,
+    });
+  }
+
+  const midExitX = upperExitX + upperSwitchStride * 2 + upperSwitchW + 34;
+  const midExitHeights = [118, 82, 46];
+  for (let i = 0; i < midExitHeights.length; i++) {
+    obstacles.push({
+      kind: 'platform',
+      x: midExitX + i * 82,
+      width: 72,
+      height: midExitHeights[i],
+      solid: true,
+      routeLayer: 'mid',
+      routeId: `${routeKey}_switch_exit_mid`,
+    });
+  }
+  const exitEndX = midExitX + (midExitHeights.length - 1) * 82 + 72;
+
+  // Lower-route hazards are constrained to the lane core and never touch switch zones.
+  const lowerLaneStart = entryEndX + 170;
+  const lowerLaneEnd = Math.max(midLaneEndX + 40, midExitX - 110);
+  const lowerStep = clampInt(ctx.reactionSpacing * 0.95, 148, 208);
+  const lowerHazards: Obstacle[] = [
+    {
+      kind: 'spike',
+      x: lowerLaneStart,
+      width: SPIKE_W,
+      height: SPIKE_H,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower_lane`,
+    },
+    {
+      kind: 'doubleSpike',
+      x: lowerLaneStart + lowerStep,
+      width: DOUBLE_SPIKE_W,
+      height: DOUBLE_SPIKE_H,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower_lane`,
+    },
+    {
+      kind: 'spike',
+      x: lowerLaneStart + lowerStep * 2,
+      width: SPIKE_W,
+      height: SPIKE_H,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower_lane`,
+    },
+  ];
+  for (const hazard of lowerHazards) {
+    if (hazard.x + hazard.width + 24 < lowerLaneEnd) {
+      obstacles.push(hazard);
+    }
+  }
+
+  if (lowerLaneEnd - lowerLaneStart > 320) {
+    const lowCeilX = clampInt(
+      lowerLaneStart + Math.round((lowerLaneEnd - lowerLaneStart) * 0.58),
+      lowerLaneStart + 120,
+      lowerLaneEnd - 180,
+    );
+    obstacles.push({
+      kind: 'lowCeiling',
+      x: lowCeilX,
+      width: clampInt(LOW_CEILING_MIN_W + 8, 156, 210),
+      height: LOW_CEILING_CLEARANCE,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower_lane`,
+    });
+  }
+
+  obstacles.push({
+    kind: 'spike',
+    x: exitEndX + 52,
+    width: SPIKE_W,
+    height: SPIKE_H,
+    routeLayer: 'lower',
+    routeId: `${routeKey}_lower_lane`,
+  });
+
+  const length = Math.max(680, exitEndX - startX + 126);
+
+  return {
+    type: 'routeTriad',
+    variant: `routeTriad_${upperCount}u_${midCount}m_structured`,
+    obstacles,
+    length,
+    combo: true,
+    advanced: true,
+    platform: true,
+    difficultyScore: 7,
+  };
+}
+
+function buildEarlyStrategicLayout(levelIndex: number, canvasWidth: number): BuildResult {
+  const startX = SAFE_SPAWN_END + 56;
+  const routeKey = `early_split_${levelIndex}`;
+  const spikeOneX = startX + 254;
+  const blackCeilingX = spikeOneX + 186;
+  const blackCeilingW = 188;
+  const upperEntryX = spikeOneX + 96; // after spike 1, before black ceiling
+  const upperBypassX = upperEntryX + 108 + MIN_PLATFORM_GAP_RISE;
+  const choiceX = blackCeilingX + blackCeilingW + 234; // large decision window before purple
+  const spikeTwoX = choiceX + 292;
+
+  const obstacles: Obstacle[] = [
+    // First spike: ground decision starts here.
+    {
+      kind: 'spike',
+      x: spikeOneX,
+      width: SPIKE_W,
+      height: SPIKE_H,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower`,
+    },
+    // One setup tile only (no clutter): after spike 1 and before black ceiling.
+    {
+      kind: 'platform',
+      x: upperEntryX,
+      width: 108,
+      height: PLAYER_STANDING_HEIGHT + 24, // slightly taller than standing player
+      solid: true,
+      routeLayer: 'upper',
+      routeId: `${routeKey}_upper`,
+    },
+    // Upper bypass tile above black ceiling zone.
+    {
+      kind: 'platform',
+      x: upperBypassX,
+      width: 162,
+      height: ISOLATED_PLATFORM_MIN_ELEVATION + 10,
+      solid: true,
+      routeLayer: 'upper',
+      routeId: `${routeKey}_upper`,
+    },
+    // Black ceiling lane: player can crouch through entire section.
+    {
+      kind: 'lowCeiling',
+      x: blackCeilingX,
+      width: blackCeilingW,
+      height: LOW_CEILING_CLEARANCE,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower`,
+    },
+    // Purple choice gate deliberately spaced after black section so both options are possible.
+    {
+      kind: 'choiceObstacle',
+      x: choiceX,
+      width: CHOICE_OBS_W,
+      height: CHOICE_OBS_H,
+      trapType: 'adaptiveChoiceGate',
+      trapGroupId: `${routeKey}_choice`,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower`,
+    },
+    {
+      kind: levelIndex >= 2 ? 'doubleSpike' : 'spike',
+      x: spikeTwoX,
+      width: levelIndex >= 2 ? DOUBLE_SPIKE_W : SPIKE_W,
+      height: levelIndex >= 2 ? DOUBLE_SPIKE_H : SPIKE_H,
+      routeLayer: 'lower',
+      routeId: `${routeKey}_lower`,
+    },
+  ];
+
+  applyPlatformOrganization(obstacles);
+  obstacles.sort((a, b) => a.x - b.x);
+
+  const segmentEnd = Math.max(...obstacles.map((o) => o.x + o.width));
+  const worldWidth = Math.max(
+    Math.round(canvasWidth * 2),
+    Math.round(segmentEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 200),
+  );
+  const flagX = worldWidth - FLAG_OFFSET;
+
+  const segment: SegmentBuild = {
+    type: 'routeTriad',
+    variant: `early_split_${levelIndex}`,
+    obstacles: [...obstacles],
+    length: segmentEnd - startX + 120,
+    combo: true,
+    advanced: false,
+    platform: true,
+    difficultyScore: levelIndex >= 2 ? 7 : 6,
+  };
+
+  return {
+    segmentBuilds: [segment],
+    obstacles,
+    worldWidth,
+    flagX,
+    requiredTagsPlaced: ['routeTriad', 'upperRoute', 'choiceDecision', 'dualPathGate'],
+    maxQuietGap: computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP),
   };
 }
 
@@ -1386,11 +1839,52 @@ function validateBuild(args: {
   }
   warnings.push(...pathValidation.warnings);
 
+  const routeValidation = validateRouteConnectivity(built.obstacles, levelIndex);
+  if (!routeValidation.ok) {
+    ok = false;
+    notes.push(...routeValidation.notes.slice(0, 2));
+  }
+  warnings.push(...routeValidation.warnings);
+
   return {
     ok,
     notes: dedupeStrings(notes, 8),
     warnings: dedupeStrings(warnings, 8),
   };
+}
+
+function validateRouteConnectivity(
+  obstacles: Obstacle[],
+  levelIndex: number,
+): { ok: boolean; notes: string[]; warnings: string[] } {
+  const counts = { lower: 0, mid: 0, upper: 0 };
+  for (const o of obstacles) {
+    if (!o.routeLayer) continue;
+    counts[o.routeLayer]++;
+  }
+  const activeLayers = (['lower', 'mid', 'upper'] as const).filter((k) => counts[k] >= 4);
+  const switchCount = obstacles.filter((o) => (o.routeId ?? '').includes('switch')).length;
+  const notes: string[] = [];
+  const warnings: string[] = [];
+  let ok = true;
+
+  if (levelIndex >= 1 && activeLayers.length < 2) {
+    ok = false;
+    notes.push('route connectivity: fewer than 2 meaningful routes');
+  }
+  if (levelIndex >= 4 && (counts.lower < 3 || counts.mid < 3 || counts.upper < 3)) {
+    ok = false;
+    notes.push('route connectivity: missing robust 3-layer section');
+  }
+  if (levelIndex >= 2 && switchCount < 3) {
+    ok = false;
+    notes.push('route connectivity: insufficient route switch points');
+  }
+
+  if (switchCount < 2) warnings.push('low route switching opportunities');
+  if (counts.upper === 0) warnings.push('upper route missing');
+
+  return { ok, notes, warnings };
 }
 
 function validateGapCrossability(obstacles: Obstacle[], maxJumpDistance: number): boolean {
@@ -1688,6 +2182,9 @@ function classifyPlayerCounters(model: PlayerModel, recentRuns: RunData[]): Coun
   // Fallback to global rates if choice data is sparse
   if (model.choiceJumpRate === 0 && model.prefersJump && model.crouchFrequency < 0.1) targets.add('overusesChoiceJump');
   if (model.choiceCrouchRate === 0 && model.prefersCrouch && model.jumpFrequency < 0.1) targets.add('overusesChoiceCrouch');
+  if (model.preferredRoute === 'upper' && model.routeConfidence > 0.45) targets.add('routeUpperBias');
+  if (model.preferredRoute === 'lower' && model.routeConfidence > 0.45) targets.add('routeLowerBias');
+  if (model.routeRiskStyle === 'opportunist') targets.add('routeSwitcher');
 
   const recent = recentRuns.slice(-5);
   if (recent.length >= 2) {
@@ -1749,6 +2246,15 @@ function scoreCandidateSegment(
         if (type === 'choiceThenPunish' || type === 'baitChoiceTrap') score += 3;
         else if (type === 'longGapPlatforms' || type === 'adaptiveChoiceGate' || type === 'dualPathGate') score += 2;
         break;
+      case 'routeUpperBias':
+        if (type === 'routeTriad' || type === 'upperCorridorBridge' || type === 'staircaseClimb') score += 3;
+        break;
+      case 'routeLowerBias':
+        if (type === 'routeTriad' || type === 'longGapPlatforms' || type === 'choiceThenPunish') score += 3;
+        break;
+      case 'routeSwitcher':
+        if (type === 'routeTriad' || type === 'dualPathGate') score += 2;
+        break;
     }
   }
 
@@ -1766,6 +2272,9 @@ function buildAdaptationReasons(counterTargets: CounterTarget[]): string[] {
     diesToSpikes:         'Added spike pressure sequences targeting your weak spot',
     overusesChoiceJump:   'Chained choice obstacles into ceilings to punish jump choices',
     overusesChoiceCrouch: 'Chained choice obstacles into gaps to punish crouch choices',
+    routeUpperBias:       'Targeted upper-route preference with lane-specific counter traps',
+    routeLowerBias:       'Targeted lower-route commitment with pop-up punishers',
+    routeSwitcher:        'Added lane-switch traps to punish frequent route swapping',
   };
   return counterTargets.map((t) => descriptions[t]);
 }
@@ -1793,7 +2302,8 @@ function isComboSegment(type: SegmentType): boolean {
     || type === 'headClearanceJump'
     || type === 'longGapPlatforms'
     || type === 'staircaseClimb'
-    || type === 'upperCorridorBridge';
+    || type === 'upperCorridorBridge'
+    || type === 'routeTriad';
 }
 
 function isBasicSegment(type: SegmentType): boolean {
@@ -1801,7 +2311,7 @@ function isBasicSegment(type: SegmentType): boolean {
 }
 
 function isPlatformSegment(type: SegmentType): boolean {
-  return type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo' || type === 'dualPathGate' || type === 'upperCorridorBridge';
+  return type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo' || type === 'dualPathGate' || type === 'upperCorridorBridge' || type === 'routeTriad';
 }
 
 // ── Repair ────────────────────────────────────────────────────────
@@ -1907,11 +2417,11 @@ function rebuildBuildResultFromSegments(
 function buildKnownSafeFallback(levelIndex: number, ctx: SegmentContext, canvasWidth: number): BuildResult {
   let types: SegmentType[];
   if (levelIndex >= 6) {
-    types = ['adaptiveChoiceGate', 'dualPathGate', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'mixedPlatformCombo', 'baitChoiceTrap'];
+    types = ['adaptiveChoiceGate', 'dualPathGate', 'routeTriad', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'mixedPlatformCombo', 'baitChoiceTrap'];
   } else if (levelIndex >= 4) {
-    types = ['adaptiveChoiceGate', 'dualPathGate', 'jumpThenCrouch', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'baitChoiceTrap'];
+    types = ['adaptiveChoiceGate', 'dualPathGate', 'routeTriad', 'jumpThenCrouch', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'baitChoiceTrap'];
   } else if (levelIndex >= 2) {
-    types = ['adaptiveChoiceGate', 'dualPathGate', 'doubleSpikeTiming', 'jumpThenCrouch', 'longGapPlatforms', 'crouchThenJump'];
+    types = ['adaptiveChoiceGate', 'dualPathGate', 'routeTriad', 'doubleSpikeTiming', 'jumpThenCrouch', 'longGapPlatforms', 'crouchThenJump'];
   } else {
     types = ['adaptiveChoiceGate', 'doubleSpikeTiming', 'lowCeilingCrouch', 'dualPathGate'];
   }

@@ -38,6 +38,15 @@ export interface AdaptiveDebugInfo {
   predictedLandingX?: number;
   mutationFallbackUsed?: boolean;
   mutationTargetObstacleId?: string;
+  preferredRoute?: string;
+  routeConfidence?: number;
+  routeRiskStyle?: string;
+  routeUsage?: { lower: number; mid: number; upper: number };
+  routesUsed?: string[];
+  routeSwitchPoints?: number;
+  routeConnectivityStatus?: 'valid' | 'weak';
+  routeTargeted?: string;
+  routeMutationCounts?: { lower: number; mid: number; upper: number };
 }
 
 export interface LevelData {
@@ -59,11 +68,27 @@ export interface GroundSegment {
 // Static tutorial fallback only. Levels 2+ are adaptive in game.ts.
 const LEVEL_DEFINITIONS: Array<{ obstacles: Obstacle[] }> = [
   {
-    // Level 1 tutorial challenge: jump + crouch + decision.
+    // Level 1 tutorial challenge: one clear split.
+    // Option A: crouch under black->purple section.
+    // Option B: jump to upper route tile over black section.
     obstacles: [
-      { kind: 'spike', x: 430, width: 44, height: 52 },
-      { kind: 'lowCeiling', x: 760, width: 170, height: 34 },
-      { kind: 'choiceObstacle', x: 1110, width: 100, height: 34, trapType: 'adaptiveChoiceGate', trapGroupId: 'tutorial_choice_1' },
+      // First hazard.
+      { kind: 'spike', x: 636, width: 44, height: 52, routeLayer: 'lower', routeId: 'tutorial_lower' },
+
+      // One setup tile after spike, before black ceiling (slightly above standing height).
+      { kind: 'platform', x: 770, width: 108, height: 64, solid: true, routeLayer: 'upper', routeId: 'tutorial_upper' },
+
+      // Black crouch section.
+      { kind: 'lowCeiling', x: 968, width: 186, height: 34, routeLayer: 'lower', routeId: 'tutorial_lower' },
+
+      // Upper bypass tile above black section.
+      { kind: 'platform', x: 1010, width: 152, height: 114, solid: true, routeLayer: 'upper', routeId: 'tutorial_upper' },
+
+      // Purple section with explicit spacing from black for actual decision window.
+      { kind: 'choiceObstacle', x: 1300, width: 116, height: 34, trapType: 'adaptiveChoiceGate', trapGroupId: 'tutorial_choice_1', routeLayer: 'lower', routeId: 'tutorial_lower' },
+
+      // Final ground hazard. No extra end tiles near flag.
+      { kind: 'spike', x: 1564, width: 44, height: 52, routeLayer: 'lower', routeId: 'tutorial_lower' },
     ],
   },
 ];
@@ -72,9 +97,9 @@ export function buildLevel(index: number, canvasHeight: number): LevelData {
   const def = LEVEL_DEFINITIONS[index] ?? LEVEL_DEFINITIONS[0];
   return {
     index,
-    worldWidth: 1900,
+    worldWidth: 2200,
     groundY: canvasHeight - 80,
-    flagX: 1620,
+    flagX: 1980,
     obstacles: def.obstacles,
   };
 }
