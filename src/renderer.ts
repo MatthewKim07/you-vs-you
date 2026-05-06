@@ -349,6 +349,9 @@ export class Renderer {
     // Underside highlight strip
     ctx.fillStyle = P_CEIL_LT;
     ctx.fillRect(sx, topY + CEIL_THICKNESS - 3, px(obs.width), 3);
+
+    // Danger spikes on top surface — signals "can't land/jump on this"
+    this.drawTopSpikes(sx, topY, px(obs.width), obs.x, cameraX);
   }
 
   private drawChoiceObstacle(obs: Obstacle, groundY: number, cameraX: number) {
@@ -373,6 +376,63 @@ export class Renderer {
       ctx.fillRect(px(dotX), topY + 4, 4, 4);
       dotX += 16;
     }
+
+    // Danger spikes on top surface — signals "can't land/jump on this"
+    this.drawTopSpikes(sx, topY, w, obs.x, cameraX);
+  }
+
+  // Upward-pointing pixel spikes on the top surface of a ceiling obstacle.
+  // World-aligned so pattern stays fixed as camera pans.
+  private drawTopSpikes(sx: number, surfaceY: number, width: number, worldX: number, cameraX: number) {
+    const { ctx } = this;
+    const spikeW = 8;
+    const spikeH = 8;
+    const pitch  = 16; // one spike per tile
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sx, surfaceY - spikeH - 1, width, spikeH + 1);
+    ctx.clip();
+
+    const n0 = Math.floor(worldX / pitch);
+    let wx = n0 * pitch;
+
+    while (wx < worldX + width + pitch) {
+      const left = px(wx - cameraX);
+      const tipX = px(wx - cameraX + spikeW / 2);
+      const tipY = surfaceY - spikeH;
+
+      // Shadow (offset right face)
+      ctx.fillStyle = P_SPIKE_DK;
+      ctx.beginPath();
+      ctx.moveTo(tipX + 2, tipY + 6);
+      ctx.lineTo(left + spikeW, surfaceY);
+      ctx.lineTo(left,          surfaceY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Main spike
+      ctx.fillStyle = P_SPIKE;
+      ctx.beginPath();
+      ctx.moveTo(tipX,              tipY);
+      ctx.lineTo(left + spikeW - 2, surfaceY);
+      ctx.lineTo(left + 2,          surfaceY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Left-face highlight
+      ctx.fillStyle = 'rgba(255,150,150,0.45)';
+      ctx.beginPath();
+      ctx.moveTo(tipX,     tipY);
+      ctx.lineTo(tipX - 3, tipY + 10);
+      ctx.lineTo(left + 2, surfaceY);
+      ctx.closePath();
+      ctx.fill();
+
+      wx += pitch;
+    }
+
+    ctx.restore();
   }
 
   private drawFlag(screenX: number, groundY: number) {
