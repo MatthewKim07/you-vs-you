@@ -1,6 +1,7 @@
 import { RunTracker } from './runTracker';
 import { LevelData, AdaptiveDebugInfo } from './level';
 import { PlayerModel } from './telemetry';
+import { StrategyBrief } from './aiStrategist';
 
 // HTML overlay — hidden by default, toggled via "AI Data" button.
 // Reads from RunTracker only; no game logic here.
@@ -10,6 +11,7 @@ export class DebugPanel {
   private visible = false;
   private aiDebugInfo: AdaptiveDebugInfo | undefined;
   private currentLevelIndex = 0;
+  private strategyBrief: StrategyBrief | undefined;
   private playerModel: PlayerModel = {
     prefersJump: true,
     prefersCrouch: false,
@@ -64,6 +66,16 @@ export class DebugPanel {
         <div class="dbg-row"><span>Max jump</span><span>${dbg?.maxJumpDistance ?? '—'}px</span></div>
         <div class="dbg-row"><span>Strategy</span><span>${dbg?.strategy ?? '—'}</span></div>
         <div class="dbg-row"><span>Density</span><span>${dbg?.density ?? '—'}</span></div>
+        <div class="dbg-row"><span>Challenge zones</span><span>${dbg?.challengeZones ?? '—'}</span></div>
+        <div class="dbg-row"><span>Required</span><span>${dbg?.requiredPatterns.join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Placed required</span><span>${dbg?.placedRequiredPatterns.join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Unique patterns</span><span>${dbg?.uniquePatternTypes ?? '—'}</span></div>
+        <div class="dbg-row"><span>Combo count</span><span>${dbg?.comboCount ?? '—'}</span></div>
+        <div class="dbg-row"><span>Advanced count</span><span>${dbg?.advancedCount ?? '—'}</span></div>
+        <div class="dbg-row"><span>Platform</span><span>${dbg?.platformUsed ? 'yes' : 'no'}</span></div>
+        <div class="dbg-row"><span>Difficulty trend</span><span>${dbg?.difficultyIncreasing ? 'increasing' : 'flat'}</span></div>
+        <div class="dbg-row"><span>Validation</span><span>${dbg?.validationStatus ?? '—'}</span></div>
+        <div class="dbg-row"><span>Warnings</span><span>${dbg?.validationWarnings.join(' | ') || 'none'}</span></div>
         <div class="dbg-row"><span>Attempted</span><span>${dbg?.attempted ?? '—'}</span></div>
         <div class="dbg-row"><span>Placed</span><span>${dbg?.patterns.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Obstacles</span><span>${dbg?.obstacleCount ?? '—'}</span></div>
@@ -71,6 +83,16 @@ export class DebugPanel {
         <div class="dbg-row"><span>Variants</span><span>${dbg?.variants.join(', ') || '—'}</span></div>
         <div class="dbg-row"><span>Anti-repeat</span><span>${dbg?.antiRepeat.join(' | ') || 'none'}</span></div>
         <div class="dbg-row"><span>Dropped</span><span>${dbg?.dropped.join(', ') || 'none'}</span></div>
+      </div>
+      <div class="dbg-section">
+        <div class="dbg-title">AI BRAIN</div>
+        <div class="dbg-row"><span>Strategy</span><span>${dbg?.strategy ?? '—'}</span></div>
+        <div class="dbg-row"><span>Difficulty</span><span>${dbg?.difficulty ?? '—'}</span></div>
+        <div class="dbg-row"><span>Variants</span><span>${dbg?.variants.join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Player read</span><span>${this.strategyBrief?.playerRead ?? '—'}</span></div>
+        <div class="dbg-row"><span>AI plan</span><span>${this.strategyBrief?.nextPlan ?? '—'}</span></div>
+        <div class="dbg-row"><span>Summary</span><span>${this.strategyBrief?.summary ?? '—'}</span></div>
+        <div class="dbg-row"><span>Taunt</span><span>${this.strategyBrief?.taunt ?? '—'}</span></div>
       </div>
     `;
   }
@@ -82,6 +104,10 @@ export class DebugPanel {
 
   setPlayerModel(model: PlayerModel): void {
     this.playerModel = model;
+  }
+
+  setStrategyBrief(brief: StrategyBrief): void {
+    this.strategyBrief = brief;
   }
 
   private makeButton(): HTMLButtonElement {
