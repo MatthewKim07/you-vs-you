@@ -79,16 +79,16 @@ const LEVEL_DEFINITIONS: Array<{ obstacles: Obstacle[] }> = [
       { kind: 'platform', x: 770, width: 108, height: 64, solid: true, routeLayer: 'upper', routeId: 'tutorial_upper' },
 
       // Black crouch section.
-      { kind: 'lowCeiling', x: 968, width: 186, height: 34, routeLayer: 'lower', routeId: 'tutorial_lower' },
+      { kind: 'lowCeiling', x: 1028, width: 186, height: 34, routeLayer: 'lower', routeId: 'tutorial_lower' },
 
       // Upper bypass tile above black section.
-      { kind: 'platform', x: 1010, width: 152, height: 114, solid: true, routeLayer: 'upper', routeId: 'tutorial_upper' },
+      { kind: 'platform', x: 1086, width: 152, height: 114, solid: true, routeLayer: 'upper', routeId: 'tutorial_upper' },
 
       // Purple section with explicit spacing from black for actual decision window.
-      { kind: 'choiceObstacle', x: 1300, width: 116, height: 34, trapType: 'adaptiveChoiceGate', trapGroupId: 'tutorial_choice_1', routeLayer: 'lower', routeId: 'tutorial_lower' },
+      { kind: 'choiceObstacle', x: 1368, width: 116, height: 34, trapType: 'adaptiveChoiceGate', trapGroupId: 'tutorial_choice_1', routeLayer: 'lower', routeId: 'tutorial_lower' },
 
       // Final ground hazard. No extra end tiles near flag.
-      { kind: 'spike', x: 1564, width: 44, height: 52, routeLayer: 'lower', routeId: 'tutorial_lower' },
+      { kind: 'spike', x: 1664, width: 44, height: 52, routeLayer: 'lower', routeId: 'tutorial_lower' },
     ],
   },
 ];

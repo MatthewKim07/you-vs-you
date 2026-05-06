@@ -25,6 +25,11 @@ const MIN_PLATFORM_GAP_FLAT = 72;
 const MIN_PLATFORM_GAP_RISE = 96;
 const MIN_LANDING_WIDTH = PLAYER_WIDTH + 10;
 const LANDING_BUFFER = 6;
+// Physics: JUMP_FORCE=620, GRAVITY=1400 → apex ≈ 137px above feet.
+// MAX_JUMP_FROM_GROUND is a safe margin so isolated platforms stay reachable.
+// MAX_JUMP_FROM_PLATFORM applies between chained platforms (same margin, stepping allowed).
+const MAX_JUMP_FROM_GROUND = 130;
+const MAX_JUMP_BETWEEN_PLATFORMS = 130;
 const MAX_GENERATION_ATTEMPTS = 4;
 
 const SPIKE_W = 44;
@@ -58,7 +63,8 @@ type SegmentType =
   | 'routeTriad'
   | 'adaptiveChoiceGate'
   | 'dualPathGate'
-  | 'baitChoiceTrap';
+  | 'baitChoiceTrap'
+  | 'persistentLayout';
 
 // Score per segment type — used for planning and validation.
 const SEGMENT_BASE_SCORES: Record<SegmentType, number> = {
@@ -78,6 +84,7 @@ const SEGMENT_BASE_SCORES: Record<SegmentType, number> = {
   pressureCombo:        6,
   mixedPlatformCombo:   6,
   routeTriad:           7,
+  persistentLayout:    10,
 };
 
 // Required total difficulty score per level. Strictly increases every level.
@@ -202,29 +209,24 @@ export function generateAdaptiveLevel(
 
   const requiredRules = requiredRulesForLevel(levelIndex);
 
-  if (levelIndex <= 6) {
-    const curated = buildEarlyStrategicLayout(levelIndex, canvasWidth);
+  // Levels 1–6: fixed-arena persistent layout that escalates each level.
+  // AI trap director still runs on top. Level 7+ uses full adaptive generation.
+  if (levelIndex >= 1 && levelIndex <= 6) {
+    const built = buildPersistentAdaptiveLayout(levelIndex, playerModel, canvasWidth);
+    const trapResult = directTraps(
+      phase, knowledge, playerModel, profile,
+      built.obstacles, levelIndex, segmentCtx.reactionSpacing,
+    );
+    const trappedBuild: BuildResult = { ...built, obstacles: trapResult.obstacles };
     return finalizeLevel(
-      levelIndex,
-      segmentCtx,
-      strategy,
-      curated,
-      curated.segmentBuilds.map((s) => ({ type: s.type })),
-      requiredRules,
-      previousRuns,
-      latestRun,
-      latestSuccess,
-      ['Curated early split layout (minimal clutter)'],
-      'valid',
-      [],
-      counterTargets,
-      knowledge,
-      'observe',
-      [],
-      [],
-      undefined,
-      false,
-      undefined,
+      levelIndex, segmentCtx, strategy, trappedBuild,
+      [{ type: 'persistentLayout' }],
+      requiredRules, previousRuns, latestRun, latestSuccess,
+      [`Level ${levelIndex}: persistent escalating layout`],
+      'valid', [], counterTargets, knowledge, phase,
+      trapResult.activeTraps, trapResult.trapReasons,
+      trapResult.predictedLandingX, trapResult.mutationFallbackUsed,
+      trapResult.mutationTargetObstacleId,
     );
   }
 
@@ -903,6 +905,7 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
 
   obstacles.sort((a, b) => a.x - b.x);
   applyPlatformOrganization(obstacles);
+  enforceReachablePlatforms(obstacles);
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX = worldWidth - FLAG_OFFSET;
   const maxQuietGap = computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP);
@@ -973,6 +976,48 @@ function spreadPlatformChains(platforms: Obstacle[]): void {
       if (gap < required) {
         curr.x += required - gap;
       }
+    }
+  }
+}
+
+// Universal reachability enforcement: every platform must be reachable via
+// a chain of jumps starting from the ground.  Works as a graph propagation:
+//   1. Seed: platforms with height ≤ MAX_JUMP_FROM_GROUND are reachable directly.
+//   2. Propagate: a platform P is reachable if some already-reachable platform R
+//      has height < P.height, the vertical gap ≤ MAX_JUMP_BETWEEN_PLATFORMS, and
+//      the horizontal centre-to-centre distance ≤ 210px (safe jump width).
+//   3. Any platform still unreachable gets its height clamped to MAX_JUMP_FROM_GROUND.
+function enforceReachablePlatforms(obstacles: Obstacle[]): void {
+  const platforms = obstacles.filter((o) => o.kind === 'platform');
+  if (platforms.length === 0) return;
+
+  const reachable = new Set<Obstacle>();
+  for (const p of platforms) {
+    if (p.height <= MAX_JUMP_FROM_GROUND) reachable.add(p);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const p of platforms) {
+      if (reachable.has(p)) continue;
+      const canReach = platforms.some((r) => {
+        if (!reachable.has(r)) return false;
+        const hDiff = p.height - r.height;
+        if (hDiff <= 0 || hDiff > MAX_JUMP_BETWEEN_PLATFORMS) return false;
+        const xDist = Math.abs((p.x + p.width * 0.5) - (r.x + r.width * 0.5));
+        return xDist <= 210;
+      });
+      if (canReach) {
+        reachable.add(p);
+        changed = true;
+      }
+    }
+  }
+
+  for (const p of platforms) {
+    if (!reachable.has(p)) {
+      p.height = MAX_JUMP_FROM_GROUND;
     }
   }
 }
@@ -1299,7 +1344,147 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
 
     case 'routeTriad':
       return buildRouteTriad(startX, ctx, seed);
+
+    case 'persistentLayout':
+      // Sentinel — persistent layout is built directly, never via buildSegment.
+      return buildSegment('spikeJump', startX, ctx, seed);
   }
+}
+
+// ── Persistent escalating layout (levels 1–6) ─────────────────────
+// Fixed zone positions every level so the arena feels recognizable.
+// Each level adds / tightens one or two parameters. AI trap director
+// runs on top unchanged.
+//
+// Zone map  (world x):
+//   A  450  – spike hazard (double spike from level 3+)
+//   B  660  – low ceiling (clearance shrinks, width grows each level)
+//   C  900  – ground gap (unlocks level 2, widens each level)
+//   D  1110 – choice gate 1 (always present from level 1)
+//   UC 800+ – upper corridor platforms above B–D (level 2+)
+//   E  1360 – second hazard (level 3+, double spike from level 5+)
+//   F  1560 – choice gate 2 (level 3+)
+function buildPersistentAdaptiveLayout(
+  levelIndex: number,
+  playerModel: PlayerModel,
+  canvasWidth: number,
+): BuildResult {
+  const obs: Obstacle[] = [];
+
+  const ZA = 450;
+  const ZB = 660;
+  const ZC = 900;
+  const ZD = 1110;
+  const ZE = 1360;
+  const ZF = 1560;
+
+  // ── Zone A: spike → double spike at level 3+ ──────────────────────
+  if (levelIndex >= 3) {
+    obs.push({ kind: 'doubleSpike', x: ZA, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H, routeLayer: 'lower' });
+  } else {
+    obs.push({ kind: 'spike', x: ZA + 30, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower' });
+  }
+
+  // ── Zone B: low ceiling ────────────────────────────────────────────
+  // Clearance 40 at level 1, minus 2 per level (floor 28).
+  // Extra -3 if player jumps through gates (AI observation).
+  const jumpAdj = playerModel.prefersJump ? -3 : 0;
+  const ceilClearance = Math.max(28, 40 - (levelIndex - 1) * 2 + jumpAdj);
+  const ceilWidth = Math.min(200, 160 + (levelIndex - 1) * 8);
+  obs.push({ kind: 'lowCeiling', x: ZB, width: ceilWidth, height: ceilClearance, routeLayer: 'lower' });
+
+  // ── Zone C: gap (unlocks level 2, widens each level) ──────────────
+  if (levelIndex >= 2) {
+    const crouchAdj = playerModel.prefersCrouch ? 12 : 0;
+    const gapWidth = Math.min(130, 65 + (levelIndex - 2) * 15 + crouchAdj);
+    obs.push({ kind: 'gap', x: ZC, width: gapWidth, height: 0, routeLayer: 'lower' });
+  }
+
+  // ── Zone D: choice gate 1 ──────────────────────────────────────────
+  const gate1Id = `persistent_gate1_l${levelIndex}`;
+  obs.push({
+    kind: 'choiceObstacle',
+    x: ZD,
+    width: CHOICE_OBS_W,
+    height: CHOICE_OBS_H,
+    trapGroupId: gate1Id,
+    trapType: 'adaptiveChoiceGate',
+    routeLayer: 'mid',
+  });
+
+  // ── Upper corridor (level 2+) ──────────────────────────────────────
+  // Platforms at height=112 — well below jump apex (~137px), above 'mid' threshold (90px).
+  if (levelIndex >= 2) {
+    const upH = 112;
+    const platformCount = levelIndex >= 5 ? 4 : 3;
+    for (let i = 0; i < platformCount; i++) {
+      obs.push({
+        kind: 'platform',
+        x: 800 + i * 126,
+        width: 88,
+        height: upH,
+        solid: true,
+        routeLayer: 'upper',
+        routeId: `persistent_upper_l${levelIndex}`,
+      });
+    }
+  }
+
+  // ── Zone E: second hazard (level 3+) ──────────────────────────────
+  if (levelIndex >= 3) {
+    if (levelIndex >= 5) {
+      obs.push({ kind: 'doubleSpike', x: ZE, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H, routeLayer: 'lower' });
+    } else {
+      obs.push({ kind: 'spike', x: ZE + 20, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower' });
+    }
+    // Level 6: extra spike cluster for additional pressure
+    if (levelIndex >= 6) {
+      obs.push({ kind: 'spike', x: ZE + 150, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower' });
+    }
+  }
+
+  // ── Zone F: choice gate 2 (level 3+) ──────────────────────────────
+  if (levelIndex >= 3) {
+    const gate2Id = `persistent_gate2_l${levelIndex}`;
+    obs.push({
+      kind: 'choiceObstacle',
+      x: ZF,
+      width: CHOICE_OBS_W,
+      height: CHOICE_OBS_H,
+      trapGroupId: gate2Id,
+      trapType: 'adaptiveChoiceGate',
+      routeLayer: 'mid',
+    });
+  }
+
+  // ── World geometry ─────────────────────────────────────────────────
+  obs.sort((a, b) => a.x - b.x);
+  const lastEnd = obs.reduce((max, o) => Math.max(max, o.x + o.width), 0);
+  const worldWidth = Math.max(
+    Math.round(canvasWidth * 2),
+    Math.round(lastEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120),
+  );
+  const flagX = worldWidth - FLAG_OFFSET;
+
+  const sentinelBuild: SegmentBuild = {
+    type: 'persistentLayout',
+    variant: `persistent_l${levelIndex}`,
+    obstacles: [...obs],
+    length: Math.max(0, lastEnd - SAFE_SPAWN_END),
+    combo: true,
+    advanced: levelIndex >= 3,
+    platform: levelIndex >= 2,
+    difficultyScore: SEGMENT_BASE_SCORES['persistentLayout'],
+  };
+
+  return {
+    segmentBuilds: [sentinelBuild],
+    obstacles: obs,
+    worldWidth,
+    flagX,
+    requiredTagsPlaced: ['choiceDecision', 'dualPathGate', 'forcedAction'],
+    maxQuietGap: computeMaxQuietGap(obs, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP),
+  };
 }
 
 function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
@@ -1427,7 +1612,7 @@ function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number):
 // across the corridor. The AI can arm collapsingPlatform traps on these surfaces.
 function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: number): SegmentBuild {
   const platformCount = clampInt(2 + (seed % 2), 2, 3);
-  const platformH = 156; // clearly separated upper lane
+  const platformH = 112; // must stay below MAX_JUMP_FROM_GROUND (130px apex safety margin)
   const platformW = clampInt(90 + (seed % 3) * 10, 88, 112);
   const betweenGap = clampInt(96 + (seed % 4) * 10, 92, 132); // wider, cleaner spacing
 
@@ -1654,108 +1839,6 @@ function buildRouteTriad(startX: number, ctx: SegmentContext, seed: number): Seg
     advanced: true,
     platform: true,
     difficultyScore: 7,
-  };
-}
-
-function buildEarlyStrategicLayout(levelIndex: number, canvasWidth: number): BuildResult {
-  const startX = SAFE_SPAWN_END + 56;
-  const routeKey = `early_split_${levelIndex}`;
-  const spikeOneX = startX + 254;
-  const blackCeilingX = spikeOneX + 186;
-  const blackCeilingW = 188;
-  const upperEntryX = spikeOneX + 96; // after spike 1, before black ceiling
-  const upperBypassX = upperEntryX + 108 + MIN_PLATFORM_GAP_RISE;
-  const choiceX = blackCeilingX + blackCeilingW + 234; // large decision window before purple
-  const spikeTwoX = choiceX + 292;
-
-  const obstacles: Obstacle[] = [
-    // First spike: ground decision starts here.
-    {
-      kind: 'spike',
-      x: spikeOneX,
-      width: SPIKE_W,
-      height: SPIKE_H,
-      routeLayer: 'lower',
-      routeId: `${routeKey}_lower`,
-    },
-    // One setup tile only (no clutter): after spike 1 and before black ceiling.
-    {
-      kind: 'platform',
-      x: upperEntryX,
-      width: 108,
-      height: PLAYER_STANDING_HEIGHT + 24, // slightly taller than standing player
-      solid: true,
-      routeLayer: 'upper',
-      routeId: `${routeKey}_upper`,
-    },
-    // Upper bypass tile above black ceiling zone.
-    {
-      kind: 'platform',
-      x: upperBypassX,
-      width: 162,
-      height: ISOLATED_PLATFORM_MIN_ELEVATION + 10,
-      solid: true,
-      routeLayer: 'upper',
-      routeId: `${routeKey}_upper`,
-    },
-    // Black ceiling lane: player can crouch through entire section.
-    {
-      kind: 'lowCeiling',
-      x: blackCeilingX,
-      width: blackCeilingW,
-      height: LOW_CEILING_CLEARANCE,
-      routeLayer: 'lower',
-      routeId: `${routeKey}_lower`,
-    },
-    // Purple choice gate deliberately spaced after black section so both options are possible.
-    {
-      kind: 'choiceObstacle',
-      x: choiceX,
-      width: CHOICE_OBS_W,
-      height: CHOICE_OBS_H,
-      trapType: 'adaptiveChoiceGate',
-      trapGroupId: `${routeKey}_choice`,
-      routeLayer: 'lower',
-      routeId: `${routeKey}_lower`,
-    },
-    {
-      kind: levelIndex >= 2 ? 'doubleSpike' : 'spike',
-      x: spikeTwoX,
-      width: levelIndex >= 2 ? DOUBLE_SPIKE_W : SPIKE_W,
-      height: levelIndex >= 2 ? DOUBLE_SPIKE_H : SPIKE_H,
-      routeLayer: 'lower',
-      routeId: `${routeKey}_lower`,
-    },
-  ];
-
-  applyPlatformOrganization(obstacles);
-  obstacles.sort((a, b) => a.x - b.x);
-
-  const segmentEnd = Math.max(...obstacles.map((o) => o.x + o.width));
-  const worldWidth = Math.max(
-    Math.round(canvasWidth * 2),
-    Math.round(segmentEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 200),
-  );
-  const flagX = worldWidth - FLAG_OFFSET;
-
-  const segment: SegmentBuild = {
-    type: 'routeTriad',
-    variant: `early_split_${levelIndex}`,
-    obstacles: [...obstacles],
-    length: segmentEnd - startX + 120,
-    combo: true,
-    advanced: false,
-    platform: true,
-    difficultyScore: levelIndex >= 2 ? 7 : 6,
-  };
-
-  return {
-    segmentBuilds: [segment],
-    obstacles,
-    worldWidth,
-    flagX,
-    requiredTagsPlaced: ['routeTriad', 'upperRoute', 'choiceDecision', 'dualPathGate'],
-    maxQuietGap: computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP),
   };
 }
 
@@ -2399,6 +2482,7 @@ function rebuildBuildResultFromSegments(
   requiredTagsPlaced: string[] = [],
 ): BuildResult {
   const obstacles  = segmentBuilds.flatMap((s) => s.obstacles).sort((a, b) => a.x - b.x);
+  enforceReachablePlatforms(obstacles);
   const maxEnd     = obstacles.length > 0 ? Math.max(...obstacles.map((o) => o.x + o.width)) : canvasWidth;
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(maxEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX      = worldWidth - FLAG_OFFSET;
