@@ -9,7 +9,6 @@ html, body {
   height: 100%;
   background: #000;
   overflow: hidden;
-  /* Prevent scroll/zoom on mobile */
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -18,9 +17,11 @@ html, body {
 
 #game {
   display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
-/* ── Start Menu + Controls ─────────────────────────────── */
+/* ── Start Menu ────────────────────────────────────────── */
 
 #start-menu {
   position: fixed;
@@ -31,51 +32,58 @@ html, body {
   justify-content: center;
   flex-direction: column;
   gap: 20px;
-  background: linear-gradient(180deg, rgba(4, 10, 18, 0.38), rgba(4, 10, 18, 0.62));
-  backdrop-filter: blur(2px);
+  background: rgba(4, 10, 18, 0.55);
   padding: 16px;
 }
 
 .menu-card {
   text-align: center;
   color: #fff;
-  background: rgba(6, 17, 28, 0.6);
-  border: 1px solid rgba(160, 220, 255, 0.4);
-  border-radius: 14px;
-  padding: 18px 20px 14px;
+  background: #0D1B2A;
+  border: 3px solid #F2C94C;
+  padding: 22px 24px 18px;
   min-width: min(92vw, 360px);
+  image-rendering: pixelated;
 }
 
 .menu-card h1 {
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: clamp(28px, 8vw, 52px);
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(18px, 5.5vw, 36px);
   letter-spacing: 0.04em;
-  margin-bottom: 6px;
+  margin-bottom: 12px;
+  color: #F2C94C;
+  text-shadow: 3px 3px 0 #8B6800;
 }
 
 .menu-card p {
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: clamp(14px, 3.6vw, 19px);
-  color: rgba(235, 247, 255, 0.92);
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(9px, 2.4vw, 13px);
+  color: rgba(200, 230, 255, 0.9);
+  line-height: 1.8;
 }
 
 #play-btn {
   min-width: 180px;
-  min-height: 64px;
+  min-height: 60px;
   border: 0;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #1dd1a1, #10ac84);
+  border-bottom: 6px solid #0A7A52;
+  background: #1dd1a1;
   color: #052418;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: 24px;
-  font-weight: 800;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(14px, 3.5vw, 20px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
   cursor: pointer;
   touch-action: manipulation;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  image-rendering: pixelated;
+  padding: 0 24px;
+}
+
+#play-btn:active {
+  border-bottom-width: 2px;
+  transform: translateY(4px);
 }
 
 .play-arrow {
@@ -87,11 +95,13 @@ html, body {
   margin-left: 4px;
 }
 
+/* ── In-game Controls ──────────────────────────────────── */
+
 #game-controls {
   position: fixed;
-  top: 56px;
-  left: 12px;
-  right: 12px;
+  top: 44px;
+  left: 10px;
+  right: 10px;
   z-index: 120;
   display: none;
   justify-content: space-between;
@@ -101,33 +111,38 @@ html, body {
 
 .game-control-btn {
   pointer-events: auto;
-  min-height: 46px;
-  min-width: 96px;
-  padding: 10px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.26);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.52);
+  min-height: 40px;
+  min-width: 88px;
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 4px solid rgba(0,0,0,0.5);
+  background: rgba(0, 0, 0, 0.72);
   color: #fff;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: 16px;
-  font-weight: 700;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(9px, 2.2vw, 12px);
   cursor: pointer;
   touch-action: manipulation;
+  outline: 2px solid rgba(255,255,255,0.18);
 }
 
-/* ── Debug Panel ─────────────────────────────────────────── */
+.game-control-btn:active {
+  border-bottom-width: 1px;
+  transform: translateY(3px);
+}
+
+/* ── Debug Panel ───────────────────────────────────────── */
 
 #debug-toggle {
   position: fixed;
   bottom: 16px;
   right: 16px;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.72);
   color: #aaa;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 6px;
+  border: 0;
+  outline: 1px solid rgba(255,255,255,0.2);
   padding: 7px 13px;
-  font-size: 12px;
+  font-size: 11px;
   font-family: monospace;
   cursor: pointer;
   touch-action: auto;
@@ -135,21 +150,21 @@ html, body {
 }
 
 #debug-toggle.active {
-  color: #FFD700;
-  border-color: rgba(255, 215, 0, 0.5);
+  color: #F2C94C;
+  outline-color: rgba(242, 201, 76, 0.5);
 }
 
 #debug-panel {
   position: fixed;
-  bottom: 52px;
+  bottom: 50px;
   right: 16px;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(0, 0, 0, 0.88);
   color: #eee;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
+  border: 0;
+  outline: 1px solid rgba(255,255,255,0.12);
   padding: 12px 16px;
-  font-size: 13px;
+  font-size: 12px;
   font-family: monospace;
   min-width: 210px;
   max-width: 270px;
@@ -160,7 +175,7 @@ html, body {
 
 .dbg-title {
   font-size: 9px;
-  color: #FFD700;
+  color: #F2C94C;
   letter-spacing: 1.5px;
   margin-bottom: 6px;
 }
@@ -168,7 +183,7 @@ html, body {
 .dbg-section + .dbg-section {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid rgba(255,255,255,0.1);
 }
 
 .dbg-row {
