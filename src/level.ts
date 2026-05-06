@@ -30,12 +30,14 @@ export interface AdaptiveDebugInfo {
   counterTargets: string[];
   adaptationReasons: string[];
   // AI Learning fields (Task 5)
-  aiPhase: string; // 'observe' | 'test' | 'counter' | 'predict'
+  aiPhase: string; // 'observe' | 'test' | 'counter' | 'predict' | 'dominate'
   activeTraps: string[];
   trapReasons: string[];
   overallConfidence: number;
   topLearnedHabit: string;
   predictedLandingX?: number;
+  mutationFallbackUsed?: boolean;
+  mutationTargetObstacleId?: string;
 }
 
 export interface LevelData {
@@ -61,7 +63,7 @@ const LEVEL_DEFINITIONS: Array<{ obstacles: Obstacle[] }> = [
     obstacles: [
       { kind: 'spike', x: 430, width: 44, height: 52 },
       { kind: 'lowCeiling', x: 760, width: 170, height: 34 },
-      { kind: 'choiceObstacle', x: 1110, width: 100, height: 34 },
+      { kind: 'choiceObstacle', x: 1110, width: 100, height: 34, trapType: 'adaptiveChoiceGate', trapGroupId: 'tutorial_choice_1' },
     ],
   },
 ];
@@ -81,16 +83,18 @@ export function buildLevel(index: number, canvasHeight: number): LevelData {
 export function getGroundSegments(worldWidth: number, obstacles: Obstacle[]): GroundSegment[] {
   const gaps = obstacles
     .filter(o => o.kind === 'gap')
-    .sort((a, b) => a.x - b.x);
+    .sort((a, b) => (a.currentX ?? a.x) - (b.currentX ?? b.x));
 
   const segments: GroundSegment[] = [];
   let cursor = 0;
 
   for (const gap of gaps) {
-    if (gap.x > cursor) {
-      segments.push({ x: cursor, width: gap.x - cursor });
+    const gapX = gap.currentX ?? gap.x;
+    const gapW = gap.currentWidth ?? gap.width;
+    if (gapX > cursor) {
+      segments.push({ x: cursor, width: gapX - cursor });
     }
-    cursor = gap.x + gap.width;
+    cursor = gapX + gapW;
   }
   if (cursor < worldWidth) {
     segments.push({ x: cursor, width: worldWidth - cursor });

@@ -43,28 +43,32 @@ type SegmentType =
   | 'crouchThenJump'
   | 'longGapPlatforms'
   | 'staircaseClimb'
+  | 'upperCorridorBridge'
   | 'headClearanceJump'
   | 'choiceThenPunish'
   | 'pressureCombo'
   | 'mixedPlatformCombo'
-  | 'choiceGate'
-  | 'baitChoice';
+  | 'adaptiveChoiceGate'
+  | 'dualPathGate'
+  | 'baitChoiceTrap';
 
 // Score per segment type — used for planning and validation.
 const SEGMENT_BASE_SCORES: Record<SegmentType, number> = {
-  spikeJump:          1,
-  doubleSpikeTiming:  2,
-  lowCeilingCrouch:   2,
-  choiceGate:         2,
-  jumpThenCrouch:     3,
-  crouchThenJump:     3,
-  baitChoice:         3,
-  headClearanceJump:  4,
-  choiceThenPunish:   4,
-  longGapPlatforms:   5,
-  staircaseClimb:     5,
-  pressureCombo:      6,
-  mixedPlatformCombo: 6,
+  spikeJump:            1,
+  doubleSpikeTiming:    2,
+  lowCeilingCrouch:     2,
+  adaptiveChoiceGate:   2,
+  dualPathGate:         3,
+  jumpThenCrouch:       3,
+  crouchThenJump:       3,
+  baitChoiceTrap:       4,
+  headClearanceJump:    4,
+  choiceThenPunish:     4,
+  upperCorridorBridge:  4,
+  longGapPlatforms:     5,
+  staircaseClimb:       5,
+  pressureCombo:        6,
+  mixedPlatformCombo:   6,
 };
 
 // Required total difficulty score per level. Strictly increases every level.
@@ -171,7 +175,7 @@ export function generateAdaptiveLevel(
 
   // Task 5: AI Learning - calculate knowledge and determine phase
   const knowledge = calculateKnowledge(previousRuns, playerModel);
-  const phase = determinePhase(knowledge, levelIndex);
+  const phase = determinePhase(knowledge, levelIndex, playerModel, previousRuns);
 
   const segmentCtx: SegmentContext = {
     levelIndex,
@@ -239,6 +243,8 @@ export function generateAdaptiveLevel(
         trapResult.activeTraps,
         trapResult.trapReasons,
         trapResult.predictedLandingX,
+        trapResult.mutationFallbackUsed,
+        trapResult.mutationTargetObstacleId,
       );
     }
   }
@@ -281,6 +287,8 @@ export function generateAdaptiveLevel(
     trapResult.activeTraps,
     trapResult.trapReasons,
     trapResult.predictedLandingX,
+    trapResult.mutationFallbackUsed,
+    trapResult.mutationTargetObstacleId,
   );
 }
 
@@ -303,6 +311,8 @@ function finalizeLevel(
   activeTraps?: string[],
   trapReasons?: string[],
   predictedLandingX?: number,
+  mutationFallbackUsed?: boolean,
+  mutationTargetObstacleId?: string,
 ): LevelData {
   const obstacles = [...built.obstacles].sort((a, b) => a.x - b.x);
   const notes: string[] = [];
@@ -385,6 +395,8 @@ function finalizeLevel(
       overallConfidence: safeKnowledge.overallConfidence,
       topLearnedHabit: topHabit ?? '—',
       predictedLandingX,
+      mutationFallbackUsed: mutationFallbackUsed ?? false,
+      mutationTargetObstacleId,
     },
     aiKnowledge: safeKnowledge,
   };
@@ -419,10 +431,8 @@ function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
 
   // Decision-based obstacles are required from level 1 onward
   if (levelIndex >= 1) {
-    rules.push({ tag: 'choiceDecision', types: ['choiceGate', 'choiceThenPunish', 'baitChoice'], minCount: 1 });
-  }
-  if (levelIndex >= 2) {
-    rules.push({ tag: 'choiceDecision', types: ['choiceGate', 'choiceThenPunish', 'baitChoice'], minCount: 1 });
+    rules.push({ tag: 'choiceDecision', types: ['adaptiveChoiceGate', 'dualPathGate', 'baitChoiceTrap', 'choiceThenPunish'], minCount: 2 });
+    rules.push({ tag: 'dualPathGate', types: ['adaptiveChoiceGate', 'dualPathGate'], minCount: 1 });
   }
   if (levelIndex >= 1) {
     rules.push({ tag: 'forcedAction', types: ['spikeJump', 'doubleSpikeTiming', 'lowCeilingCrouch', 'jumpThenCrouch', 'crouchThenJump', 'headClearanceJump'], minCount: 1 });
@@ -436,6 +446,9 @@ function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
   }
   if (levelIndex >= 3 && levelIndex < 5) {
     rules.push({ tag: 'platformChallenge', types: ['longGapPlatforms', 'staircaseClimb'], minCount: 1 });
+  }
+  if (levelIndex >= 2) {
+    rules.push({ tag: 'upperRoute', types: ['upperCorridorBridge', 'dualPathGate'], minCount: 1 });
   }
   if (levelIndex >= 5) {
     rules.push({ tag: 'longGapPlatforms', types: ['longGapPlatforms'], minCount: 1 });
@@ -563,10 +576,11 @@ function upgradeSegmentType(type: SegmentType): SegmentType {
     case 'spikeJump':          return 'doubleSpikeTiming';
     case 'doubleSpikeTiming':  return 'jumpThenCrouch';
     case 'lowCeilingCrouch':   return 'crouchThenJump';
-    case 'choiceGate':         return 'baitChoice';
+    case 'adaptiveChoiceGate': return 'dualPathGate';
+    case 'dualPathGate':       return 'baitChoiceTrap';
     case 'jumpThenCrouch':     return 'headClearanceJump';
     case 'crouchThenJump':     return 'choiceThenPunish';
-    case 'baitChoice':         return 'choiceThenPunish';
+    case 'baitChoiceTrap':     return 'choiceThenPunish';
     case 'headClearanceJump':  return 'pressureCombo';
     case 'choiceThenPunish':   return 'pressureCombo';
     case 'longGapPlatforms':   return 'mixedPlatformCombo';
@@ -600,12 +614,14 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
     'spikeJump',
     'doubleSpikeTiming',
     'lowCeilingCrouch',
-    'choiceGate',
+    'adaptiveChoiceGate',
+    'dualPathGate',
     'jumpThenCrouch',
     'crouchThenJump',
-    'baitChoice',
+    'baitChoiceTrap',
     'longGapPlatforms',
     'staircaseClimb',
+    'upperCorridorBridge',
     'headClearanceJump',
     'choiceThenPunish',
     'pressureCombo',
@@ -615,16 +631,17 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
   // Remove trivial patterns — banned outright so score accumulation never picks them.
   if (levelIndex > 1) all = all.filter((t) => t !== 'spikeJump');
   if (levelIndex > 2) all = all.filter((t) => t !== 'lowCeilingCrouch');
+  if (levelIndex < 2) all = all.filter((t) => t !== 'upperCorridorBridge');
 
   // Bias toward choice segments as levels progress
   if (levelIndex >= 2) {
-    all.push('choiceGate');
+    all.push('adaptiveChoiceGate', 'dualPathGate');
   }
   if (levelIndex >= 4) {
-    all.push('baitChoice', 'choiceThenPunish');
+    all.push('baitChoiceTrap', 'choiceThenPunish');
   }
   if (levelIndex >= 6) {
-    all.push('choiceGate', 'baitChoice');
+    all.push('adaptiveChoiceGate', 'baitChoiceTrap');
   }
 
   return applyStrategyBias(all, ctx);
@@ -634,17 +651,17 @@ function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
 function applyStrategyBias(pool: SegmentType[], ctx: SegmentContext): SegmentType[] {
   const bias: SegmentType[] = [...pool];
   if (ctx.playerModel.prefersJump) {
-    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish', 'choiceGate', 'baitChoice');
+    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish', 'adaptiveChoiceGate', 'baitChoiceTrap');
   }
   if (ctx.playerModel.prefersCrouch) {
-    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo', 'choiceGate', 'baitChoice');
+    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo', 'adaptiveChoiceGate', 'baitChoiceTrap');
   }
   if (ctx.playerModel.reactionTiming === 'late') {
     bias.push('pressureCombo', 'doubleSpikeTiming', 'headClearanceJump');
   }
   // Always bias toward more choice segments so AI has data to learn from
-  bias.push('choiceGate', 'choiceThenPunish');
-  if (ctx.levelIndex >= 4) bias.push('baitChoice');
+  bias.push('adaptiveChoiceGate', 'choiceThenPunish');
+  if (ctx.levelIndex >= 4) bias.push('baitChoiceTrap');
   return bias.filter((t) => pool.includes(t));
 }
 
@@ -725,17 +742,25 @@ function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
     specs.push({ type: 'longGapPlatforms' });
     specs.push({ type: 'staircaseClimb' });
   }
+
+  const hasUpperRoute = specs.some((s) => s.type === 'upperCorridorBridge' || s.type === 'dualPathGate');
+  if (levelIndex >= 2 && !hasUpperRoute) {
+    replaceFirstNonRequired(specs, 'upperCorridorBridge');
+  }
+  if (levelIndex >= 6) {
+    const upperCount = specs.filter((s) => s.type === 'upperCorridorBridge' || s.type === 'dualPathGate').length;
+    if (upperCount < 2) {
+      specs.push({ type: 'upperCorridorBridge' });
+    }
+  }
 }
 
 function enforceChoiceMinimums(specs: SegmentSpec[], levelIndex: number, pool: SegmentType[]) {
-  const choiceTypes: SegmentType[] = ['choiceGate', 'choiceThenPunish', 'baitChoice'];
+  const choiceTypes: SegmentType[] = ['adaptiveChoiceGate', 'dualPathGate', 'choiceThenPunish', 'baitChoiceTrap'];
   let choiceCount = specs.filter((s) => choiceTypes.includes(s.type)).length;
 
   const minChoices =
-    levelIndex >= 8 ? 3 :
-    levelIndex >= 5 ? 2 :
-    levelIndex >= 3 ? 2 :
-    levelIndex >= 1 ? 1 : 0;
+    levelIndex >= 1 ? 2 : 0;
 
   if (choiceCount >= minChoices) return;
 
@@ -755,7 +780,7 @@ function enforceChoiceMinimums(specs: SegmentSpec[], levelIndex: number, pool: S
 
   // If still not enough, append choice segments
   while (choiceCount < minChoices) {
-    const choice = availableChoices[seed % availableChoices.length] ?? 'choiceGate';
+    const choice = availableChoices[seed % availableChoices.length] ?? 'adaptiveChoiceGate';
     specs.push({ type: choice });
     seed++;
     choiceCount++;
@@ -933,6 +958,9 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
     case 'staircaseClimb':
       return buildStaircaseClimb(startX, ctx, seed);
 
+    case 'upperCorridorBridge':
+      return buildUpperCorridorBridge(startX, ctx, seed);
+
     case 'headClearanceJump': {
       const shortGap    = clampInt(ctx.reactionSpacing * 0.62, 100, 180);
       const ceilW       = clampInt(LOW_CEILING_MIN_W + 24, 160, 220);
@@ -954,12 +982,20 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
       };
     }
 
-    case 'choiceGate': {
+    case 'adaptiveChoiceGate': {
       const w = clampInt(CHOICE_OBS_W + ctx.levelIndex * 4, CHOICE_OBS_W, 140);
+      const gateId = `choice_lvl${ctx.levelIndex}_${Math.round(startX)}`;
       return {
         type,
-        variant: 'choiceGate',
-        obstacles: [{ kind: 'choiceObstacle', x: startX + 20, width: w, height: CHOICE_OBS_H }],
+        variant: 'adaptiveChoiceGate',
+        obstacles: [{
+          kind: 'choiceObstacle',
+          x: startX + 20,
+          width: w,
+          height: CHOICE_OBS_H,
+          trapGroupId: gateId,
+          trapType: 'adaptiveChoiceGate',
+        }],
         length: w + 50,
         combo: false,
         advanced: false,
@@ -968,21 +1004,71 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
       };
     }
 
-    case 'baitChoice': {
+    case 'dualPathGate': {
+      const gateId = `dual_choice_lvl${ctx.levelIndex}_${Math.round(startX)}`;
+      const gateW = clampInt(CHOICE_OBS_W + ctx.levelIndex * 5, 105, 148);
+      const topStepW = clampInt(92 + ctx.levelIndex * 3, 94, 136);
+      const topStepH = clampInt(66 + ctx.levelIndex * 2, 66, 88);
+      const gateX = startX + 22;
+      // Put platform after the gate so it cannot become a free bypass over gate spikes.
+      const stepX = gateX + gateW + clampInt(ctx.reactionSpacing * 0.35, 56, 94);
+      const followGap = clampInt(ctx.reactionSpacing * 0.44, 86, 136);
+      const followSpikeX = stepX + topStepW + followGap;
+      const obstacles: Obstacle[] = [
+        {
+          kind: 'choiceObstacle',
+          x: gateX,
+          width: gateW,
+          height: CHOICE_OBS_H,
+          trapGroupId: gateId,
+          trapType: 'dualPathGate',
+        },
+        {
+          kind: 'platform',
+          x: stepX,
+          width: topStepW,
+          height: topStepH,
+          solid: true,
+          trapGroupId: gateId,
+        },
+        {
+          kind: 'spike',
+          x: followSpikeX,
+          width: SPIKE_W,
+          height: SPIKE_H,
+          trapGroupId: gateId,
+        },
+      ];
+      const segEnd = Math.max(gateX + gateW, stepX + topStepW, followSpikeX + SPIKE_W);
+      return {
+        type,
+        variant: 'dualPathGate',
+        obstacles,
+        length: segEnd - startX + 64,
+        combo: true,
+        advanced: ctx.levelIndex >= 2,
+        platform: true,
+        difficultyScore: 4,
+      };
+    }
+
+    case 'baitChoiceTrap': {
       const w = clampInt(CHOICE_OBS_W + ctx.levelIndex * 3, CHOICE_OBS_W, 130);
+      const gateId = `bait_choice_lvl${ctx.levelIndex}_${Math.round(startX)}`;
       const obs: Obstacle = {
         kind: 'choiceObstacle',
         x: startX + 20,
         width: w,
         height: CHOICE_OBS_H,
         trapHost: true,
-        trapType: 'baitChoice',
+        trapType: 'baitChoiceTrap',
+        trapGroupId: gateId,
         trapState: 'idle',
         trapReason: 'Choice bar that AI will mutate based on learned preference',
       };
       return {
         type,
-        variant: 'baitChoice',
+        variant: 'baitChoiceTrap',
         obstacles: [obs],
         length: w + 50,
         combo: false,
@@ -995,7 +1081,15 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
     case 'choiceThenPunish': {
       const gap  = clampInt(ctx.reactionSpacing, 120, 210);
       const mode = seed % 3;
-      const first: Obstacle = { kind: 'choiceObstacle', x: startX + 20, width: CHOICE_OBS_W, height: CHOICE_OBS_H };
+      const gateId = `choice_then_lvl${ctx.levelIndex}_${Math.round(startX)}`;
+      const first: Obstacle = {
+        kind: 'choiceObstacle',
+        x: startX + 20,
+        width: CHOICE_OBS_W,
+        height: CHOICE_OBS_H,
+        trapGroupId: gateId,
+        trapType: 'adaptiveChoiceGate',
+      };
       if (mode === 0) {
         const second: Obstacle = { kind: 'spike', x: first.x + CHOICE_OBS_W + gap, width: SPIKE_W, height: SPIKE_H };
         return { type, variant: 'choice_then_spike', obstacles: [first, second], length: second.x + second.width - startX + 30, combo: true, advanced: true, platform: false, difficultyScore: 4 };
@@ -1174,6 +1268,44 @@ function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number):
   };
 }
 
+// Upper corridor: a series of elevated platforms at constant height forming an
+// alternate high route. Player can jump up onto the first platform and walk
+// across the corridor. The AI can arm collapsingPlatform traps on these surfaces.
+function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: number): SegmentBuild {
+  const platformCount = clampInt(3 + (seed % 2), 3, 4);
+  const platformH = 82; // constant height — walkable upper floor
+  const platformW = clampInt(90 + (seed % 3) * 10, 88, 112);
+  const betweenGap = clampInt(58 + (seed % 4) * 8, 52, 80); // gap between platforms (jumpable)
+
+  const obstacles: Obstacle[] = [];
+  let px = startX + 28;
+
+  for (let i = 0; i < platformCount; i++) {
+    obstacles.push({ kind: 'platform', x: px, width: platformW, height: platformH });
+    if (i < platformCount - 1) {
+      px += platformW + betweenGap;
+    } else {
+      px += platformW;
+    }
+  }
+
+  // Spike on the ground under the entry gap to incentivize using the upper route.
+  const entrySpike: Obstacle = { kind: 'spike', x: startX + 28 + platformW + 8, width: SPIKE_W, height: SPIKE_H };
+  obstacles.push(entrySpike);
+
+  const totalLength = px - startX + 32;
+  return {
+    type: 'upperCorridorBridge',
+    variant: `corridor_${platformCount}p`,
+    obstacles,
+    length: totalLength,
+    combo: true,
+    advanced: true,
+    platform: true,
+    difficultyScore: 4,
+  };
+}
+
 // ── Validation ─────────────────────────────────────────────────────
 
 function validateBuild(args: {
@@ -1291,16 +1423,47 @@ function validatePlayablePath(built: BuildResult, ctx: SegmentContext): { ok: bo
   const sorted = [...built.obstacles].sort((a, b) => a.x - b.x);
   for (let i = 0; i < sorted.length - 1; i++) {
     const a = sorted[i];
-    const b = sorted[i + 1];
-    if (b.x - (a.x + a.width) < 0) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const b = sorted[j];
+      if (b.x >= a.x + a.width) break;
+      if (!hasPhysicalOverlap(a, b)) continue;
       ok = false;
       notes.push('overlapping obstacle hitboxes found');
       warnings.push(`overlap: ${a.kind} with ${b.kind}`);
+      i = sorted.length;
       break;
     }
   }
 
   return { ok, notes: dedupeStrings(notes, 8), warnings: dedupeStrings(warnings, 8) };
+}
+
+function obstacleBounds(ob: Obstacle): { left: number; right: number; top: number; bottom: number } | null {
+  const left = ob.x;
+  const right = ob.x + ob.width;
+  switch (ob.kind) {
+    case 'gap':
+      return null;
+    case 'spike':
+    case 'doubleSpike':
+      return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP };
+    case 'lowCeiling':
+      return { left, right, top: GROUND_TOP - ob.height - 16, bottom: GROUND_TOP - ob.height };
+    case 'choiceObstacle':
+      return { left, right, top: GROUND_TOP - ob.height - 12, bottom: GROUND_TOP - ob.height };
+    case 'platform':
+      return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP - ob.height + 16 };
+  }
+}
+
+function hasPhysicalOverlap(a: Obstacle, b: Obstacle): boolean {
+  if (a.kind === 'gap' || b.kind === 'gap') return false;
+  const ra = obstacleBounds(a);
+  const rb = obstacleBounds(b);
+  if (!ra || !rb) return false;
+  const xOverlap = ra.right > rb.left && ra.left < rb.right;
+  const yOverlap = ra.bottom > rb.top && ra.top < rb.bottom;
+  return xOverlap && yOverlap;
 }
 
 function validateSegmentSafety(seg: SegmentBuild, allObstacles: Obstacle[], ctx: SegmentContext): string[] {
@@ -1326,6 +1489,8 @@ function validateSegmentSafety(seg: SegmentBuild, allObstacles: Obstacle[], ctx:
     issues.push(...validateLongGapSegment(seg, allObstacles, ctx));
   } else if (seg.type === 'staircaseClimb') {
     issues.push(...validateStaircaseSegment(seg, allObstacles));
+  } else if (seg.type === 'dualPathGate') {
+    issues.push(...validateDualPathGateSegment(seg, allObstacles));
   } else if (seg.type === 'headClearanceJump') {
     issues.push(...validateHeadClearanceSegment(seg, allObstacles));
   } else if (seg.type === 'pressureCombo') {
@@ -1417,6 +1582,36 @@ function validateStaircaseSegment(seg: SegmentBuild, allObstacles: Obstacle[]): 
   }
 
   return dedupeStrings(issues, 6);
+}
+
+function validateDualPathGateSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
+  const issues: string[] = [];
+  const gate = seg.obstacles.find((o) => o.kind === 'choiceObstacle');
+  const upper = seg.obstacles.find((o) => o.kind === 'platform');
+  if (!gate || !upper) return ['dual-path gate missing route geometry'];
+
+  const overlapLeft = gate.x + 8;
+  const overlapRight = gate.x + gate.width - 8;
+  if (rangesOverlap(upper.x, upper.x + upper.width, overlapLeft, overlapRight)) {
+    issues.push('platform-over-choice helper layout is not allowed');
+  }
+
+  const safeTopStart = upper.x + LANDING_BUFFER;
+  const safeTopEnd = upper.x + upper.width - LANDING_BUFFER;
+  if (!hasSafeLandingWindow(safeTopStart, safeTopEnd, allObstacles)) {
+    issues.push('dual-path upper platform lacks safe landing top');
+  }
+
+  const hasFollowHazard = seg.obstacles.some((o) => {
+    if (o === gate || o === upper) return false;
+    if (o.x < upper.x + upper.width + 28) return false;
+    return o.kind === 'spike' || o.kind === 'doubleSpike' || o.kind === 'gap' || o.kind === 'lowCeiling';
+  });
+  if (!hasFollowHazard) {
+    issues.push('dual-path gate lacks follow-up hazard');
+  }
+
+  return dedupeStrings(issues, 5);
 }
 
 function validateHeadClearanceSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
@@ -1547,12 +1742,12 @@ function scoreCandidateSegment(
         else if (type === 'jumpThenCrouch' || type === 'crouchThenJump') score += 2;
         break;
       case 'overusesChoiceJump':
-        if (type === 'choiceThenPunish' || type === 'headClearanceJump' || type === 'baitChoice') score += 3;
-        else if (type === 'choiceGate') score += 2;
+        if (type === 'choiceThenPunish' || type === 'headClearanceJump' || type === 'baitChoiceTrap') score += 3;
+        else if (type === 'adaptiveChoiceGate' || type === 'dualPathGate') score += 2;
         break;
       case 'overusesChoiceCrouch':
-        if (type === 'choiceThenPunish' || type === 'baitChoice') score += 3;
-        else if (type === 'longGapPlatforms' || type === 'choiceGate') score += 2;
+        if (type === 'choiceThenPunish' || type === 'baitChoiceTrap') score += 3;
+        else if (type === 'longGapPlatforms' || type === 'adaptiveChoiceGate' || type === 'dualPathGate') score += 2;
         break;
     }
   }
@@ -1591,19 +1786,22 @@ function isComboSegment(type: SegmentType): boolean {
   return type === 'jumpThenCrouch'
     || type === 'crouchThenJump'
     || type === 'choiceThenPunish'
+    || type === 'dualPathGate'
+    || type === 'baitChoiceTrap'
     || type === 'pressureCombo'
     || type === 'mixedPlatformCombo'
     || type === 'headClearanceJump'
     || type === 'longGapPlatforms'
-    || type === 'staircaseClimb';
+    || type === 'staircaseClimb'
+    || type === 'upperCorridorBridge';
 }
 
 function isBasicSegment(type: SegmentType): boolean {
-  return type === 'spikeJump' || type === 'lowCeilingCrouch' || type === 'doubleSpikeTiming';
+  return type === 'spikeJump' || type === 'lowCeilingCrouch' || type === 'doubleSpikeTiming' || type === 'adaptiveChoiceGate';
 }
 
 function isPlatformSegment(type: SegmentType): boolean {
-  return type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo';
+  return type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo' || type === 'dualPathGate' || type === 'upperCorridorBridge';
 }
 
 // ── Repair ────────────────────────────────────────────────────────
@@ -1630,6 +1828,13 @@ function repairUnsafeBuild(
         warnings.push('Replaced unsafe headClearanceJump with jumpThenCrouch');
         changed = true;
       }
+    } else if (seg.type === 'dualPathGate') {
+      const issues = validateDualPathGateSegment(seg, built.obstacles);
+      if (issues.length > 0) {
+        next = buildSegment('dualPathGate', segmentStart, ctx, attempt * 23 + i * 17 + 5);
+        warnings.push('Rebuilt dualPathGate to avoid gate/platform overlap');
+        changed = true;
+      }
     } else if (seg.type === 'pressureCombo') {
       const issues = validatePressureComboSegment(seg, built.obstacles);
       if (issues.length > 0) {
@@ -1639,7 +1844,7 @@ function repairUnsafeBuild(
       }
     }
 
-    if (next.type === 'longGapPlatforms' || next.type === 'staircaseClimb' || next.type === 'mixedPlatformCombo') {
+    if (next.type === 'longGapPlatforms' || next.type === 'staircaseClimb' || next.type === 'mixedPlatformCombo' || next.type === 'upperCorridorBridge') {
       const cleaned = stripSpikesUnsafeAroundPlatforms(next);
       if (cleaned.removed > 0) {
         next = cleaned.segment;
@@ -1702,13 +1907,13 @@ function rebuildBuildResultFromSegments(
 function buildKnownSafeFallback(levelIndex: number, ctx: SegmentContext, canvasWidth: number): BuildResult {
   let types: SegmentType[];
   if (levelIndex >= 6) {
-    types = ['longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'mixedPlatformCombo', 'pressureCombo', 'longGapPlatforms'];
+    types = ['adaptiveChoiceGate', 'dualPathGate', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'mixedPlatformCombo', 'baitChoiceTrap'];
   } else if (levelIndex >= 4) {
-    types = ['jumpThenCrouch', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'crouchThenJump'];
+    types = ['adaptiveChoiceGate', 'dualPathGate', 'jumpThenCrouch', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'baitChoiceTrap'];
   } else if (levelIndex >= 2) {
-    types = ['doubleSpikeTiming', 'jumpThenCrouch', 'longGapPlatforms', 'crouchThenJump', 'staircaseClimb'];
+    types = ['adaptiveChoiceGate', 'dualPathGate', 'doubleSpikeTiming', 'jumpThenCrouch', 'longGapPlatforms', 'crouchThenJump'];
   } else {
-    types = ['doubleSpikeTiming', 'lowCeilingCrouch', 'longGapPlatforms'];
+    types = ['adaptiveChoiceGate', 'doubleSpikeTiming', 'lowCeilingCrouch', 'dualPathGate'];
   }
 
   const segmentBuilds: SegmentBuild[] = [];
