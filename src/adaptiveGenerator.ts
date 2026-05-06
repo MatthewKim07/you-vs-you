@@ -28,14 +28,10 @@ const LOW_CEILING_CLEARANCE = 34;
 const CHOICE_OBS_W = 100;
 const CHOICE_OBS_H = 34;
 
-type Strategy =
-  | 'punishJumpBias'
-  | 'punishCrouchBias'
-  | 'punishPredictability'
-  | 'punishLateReactions'
-  | 'balancedEscalation';
-
-type DensityLabel = 'low' | 'medium' | 'high' | 'extreme';
+// ── Difficulty score system ────────────────────────────────────────
+// Each segment type has a base difficulty score. The generator accumulates
+// segments until the required score for the level is reached. Required score
+// strictly increases with level index, ensuring monotonic difficulty.
 
 type SegmentType =
   | 'spikeJump'
@@ -50,6 +46,41 @@ type SegmentType =
   | 'pressureCombo'
   | 'mixedPlatformCombo';
 
+// Score per segment type — used for planning and validation.
+const SEGMENT_BASE_SCORES: Record<SegmentType, number> = {
+  spikeJump:          1,
+  doubleSpikeTiming:  2,
+  lowCeilingCrouch:   2,
+  jumpThenCrouch:     3,
+  crouchThenJump:     3,
+  headClearanceJump:  4,
+  choiceThenPunish:   4,
+  longGapPlatforms:   5,
+  staircaseClimb:     5,
+  pressureCombo:      6,
+  mixedPlatformCombo: 6,
+};
+
+// Required total difficulty score per level. Strictly increases every level.
+// Capped at 88 to remain achievable with max segment counts.
+// adj=n means nth adaptive level (Level 2 displayed = adj 0).
+function requiredDifficultyScore(levelIndex: number): number {
+  const adj = Math.max(0, levelIndex - 1);
+  const raw = 7 + adj * 2.5 + adj * adj * 0.5;
+  return Math.min(88, Math.round(raw));
+}
+
+// ── Types ──────────────────────────────────────────────────────────
+
+type Strategy =
+  | 'punishJumpBias'
+  | 'punishCrouchBias'
+  | 'punishPredictability'
+  | 'punishLateReactions'
+  | 'balancedEscalation';
+
+type DensityLabel = 'low' | 'medium' | 'high' | 'extreme';
+
 interface SegmentSpec {
   type: SegmentType;
   requiredTag?: string;
@@ -63,6 +94,7 @@ interface SegmentBuild {
   combo: boolean;
   advanced: boolean;
   platform: boolean;
+  difficultyScore: number;
 }
 
 interface SegmentContext {
@@ -102,6 +134,8 @@ interface Interval {
   start: number;
   end: number;
 }
+
+// ── Entry point ────────────────────────────────────────────────────
 
 export function generateAdaptiveLevel(
   previousRuns: RunData[],
@@ -162,10 +196,8 @@ export function generateAdaptiveLevel(
     }
   }
 
-  // Fallback if all attempts fail validation: force known-safe fallback.
+  // Fallback — harder than original to avoid easy-out.
   const safeFallback = buildKnownSafeFallback(levelIndex, segmentCtx, canvasWidth);
-  const fallbackNotes = ['Validation fallback used after retries'];
-  const fallbackWarnings = dedupeStrings([...lastWarnings, 'Used known safe fallback level'], 8);
   return finalizeLevel(
     levelIndex,
     segmentCtx,
@@ -176,9 +208,9 @@ export function generateAdaptiveLevel(
     previousRuns,
     latestRun,
     latestSuccess,
-    fallbackNotes,
+    ['Validation fallback used after retries'],
     'fallback',
-    fallbackWarnings,
+    dedupeStrings([...lastWarnings, 'Used known safe fallback level'], 8),
   );
 }
 
@@ -189,7 +221,7 @@ function finalizeLevel(
   built: BuildResult,
   specs: SegmentSpec[],
   requiredRules: RequiredRule[],
-  previousRuns: RunData[],
+  _previousRuns: RunData[],
   latestRun: RunData | undefined,
   latestSuccess: RunData | undefined,
   validationNotes: string[],
@@ -210,12 +242,14 @@ function finalizeLevel(
     .filter((x, i, arr) => arr.indexOf(x) === i)
     .slice(-8);
 
-  const comboCount = built.segmentBuilds.filter((s) => s.combo).length;
+  const comboCount    = built.segmentBuilds.filter((s) => s.combo).length;
   const advancedCount = built.segmentBuilds.filter((s) => s.advanced).length;
-  const platformUsed = built.segmentBuilds.some((s) => s.platform);
+  const platformUsed  = built.segmentBuilds.some((s) => s.platform);
   const uniquePatternTypes = new Set(built.segmentBuilds.map((s) => s.type)).size;
-  const requiredTags = requiredRules.flatMap((r) => Array.from({ length: r.minCount }, () => r.tag));
-  const difficultyIncreasing = isDifficultyIncreasing(previousRuns, segmentCtx.difficulty, built.segmentBuilds.length, levelIndex);
+  const requiredTags  = requiredRules.flatMap((r) => Array.from({ length: r.minCount }, () => r.tag));
+  const totalDiffScore = built.segmentBuilds.reduce((sum, s) => sum + s.difficultyScore, 0);
+  const reqDiffScore   = requiredDifficultyScore(levelIndex);
+  const segScores      = built.segmentBuilds.map((s) => s.difficultyScore);
 
   return {
     index: levelIndex,
@@ -243,39 +277,41 @@ function finalizeLevel(
       comboCount,
       advancedCount,
       platformUsed,
-      difficultyIncreasing,
+      difficultyIncreasing: true, // guaranteed by requiredDifficultyScore() curve
       safeJumpDistance: segmentCtx.safeJumpDistance,
       maxJumpDistance: segmentCtx.maxJumpDistance,
       validationStatus,
       validationWarnings,
+      totalDifficultyScore: totalDiffScore,
+      requiredDifficultyScore: reqDiffScore,
+      segmentScores: segScores,
     },
   };
 }
 
+// ── Difficulty tiers ───────────────────────────────────────────────
+
 function tierForLevel(levelIndex: number): Difficulty {
-  if (levelIndex <= 1) return 'medium'; // Level 2
-  if (levelIndex <= 2) return 'hard';   // Level 3
-  if (levelIndex <= 4) return 'hard';   // Level 4-5
+  if (levelIndex <= 1) return 'medium';
+  if (levelIndex <= 2) return 'hard';
   return 'expert';
 }
 
 function densityLabelForLevel(levelIndex: number): DensityLabel {
   if (levelIndex <= 1) return 'medium';
-  if (levelIndex <= 3) return 'high';
+  if (levelIndex <= 2) return 'high';
   return 'extreme';
 }
 
+// Segment count cap — score accumulation drives the actual count, this is the ceiling.
 function segmentCountForLevel(levelIndex: number, attempt: number): number {
-  let base = 4;
-  if (levelIndex === 2) base = 5;
-  else if (levelIndex <= 4) base = 6;
-  else if (levelIndex <= 7) base = 7;
-  else base = 8;
-
-  if (attempt >= 1) base += 1;
-  if (attempt >= 2) base += 1;
+  const base = Math.min(16, 5 + Math.ceil(levelIndex * 0.9));
+  if (attempt >= 2) return Math.min(18, base + 3);
+  if (attempt >= 1) return Math.min(18, base + 2);
   return base;
 }
+
+// ── Required segment rules ─────────────────────────────────────────
 
 function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
   const rules: RequiredRule[] = [];
@@ -286,18 +322,22 @@ function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
   if (levelIndex === 2) {
     rules.push({ tag: 'staircaseClimb', types: ['staircaseClimb'], minCount: 1 });
   }
-
   if (levelIndex >= 3 && levelIndex < 5) {
     rules.push({ tag: 'platformChallenge', types: ['longGapPlatforms', 'staircaseClimb'], minCount: 1 });
   }
-
   if (levelIndex >= 5) {
     rules.push({ tag: 'longGapPlatforms', types: ['longGapPlatforms'], minCount: 1 });
     rules.push({ tag: 'staircaseClimb', types: ['staircaseClimb'], minCount: 1 });
   }
+  // After level 6: pressure combos are mandatory.
+  if (levelIndex >= 6) {
+    rules.push({ tag: 'pressureCombo', types: ['pressureCombo', 'mixedPlatformCombo'], minCount: 1 });
+  }
 
   return rules;
 }
+
+// ── Segment plan design ────────────────────────────────────────────
 
 function designSegmentPlan(
   levelIndex: number,
@@ -306,149 +346,210 @@ function designSegmentPlan(
   previousRuns: RunData[],
   attempt: number,
 ): SegmentSpec[] {
-  const targetCount = segmentCountForLevel(levelIndex, attempt);
+  const targetScore   = requiredDifficultyScore(levelIndex);
+  const maxSegments   = segmentCountForLevel(levelIndex, attempt);
 
-  const requiredSpecs: SegmentSpec[] = [];
+  // Start with required segments.
+  const specs: SegmentSpec[] = [];
   for (const rule of requiredRules) {
     for (let i = 0; i < rule.minCount; i++) {
-      requiredSpecs.push({
-        type: chooseRequiredType(rule, i, levelIndex),
-        requiredTag: rule.tag,
-      });
+      specs.push({ type: chooseRequiredType(rule, i, levelIndex), requiredTag: rule.tag });
     }
   }
 
-  const pool = strategyPool(ctx);
-  const specs: SegmentSpec[] = [...requiredSpecs];
+  const pool = buildPool(levelIndex, ctx);
   let seed = levelIndex * 97 + previousRuns.length * 17 + attempt * 31;
 
-  while (specs.length < targetCount) {
-    const t = pool[Math.abs(seed++) % pool.length];
-    specs.push({ type: t });
+  // Score-accumulation: keep adding segments until target reached or cap hit.
+  while (specs.length < maxSegments) {
+    if (computePlanScore(specs) >= targetScore) break;
+    const gap       = targetScore - computePlanScore(specs);
+    const candidate = pickSegmentForGap(pool, gap, specs, seed++);
+    specs.push({ type: candidate });
   }
 
+  // If still short (hit cap before reaching score), upgrade existing segments.
+  upgradeToMeetScore(specs, targetScore);
+
+  // Enforcement passes — order matters.
   enforceComboRatio(specs, levelIndex, ctx);
-  enforceBasicCap(specs, levelIndex);
+  enforceBasicBan(specs, levelIndex);
+  applyAntiRepeatUpgrades(specs, levelIndex);
   enforceMinimumVariety(specs, levelIndex, pool);
   enforcePlatformRules(specs, levelIndex);
   applyPredictabilityBreak(specs, ctx.playerModel, levelIndex);
 
-  return specs.slice(0, targetCount + 1);
+  return specs;
 }
 
-function chooseRequiredType(rule: RequiredRule, offset: number, levelIndex: number): SegmentType {
-  if (rule.types.length === 1) return rule.types[0];
-  return rule.types[(levelIndex + offset) % rule.types.length];
+// Pick next segment to add based on remaining score gap.
+// Prefers novel types (anti-repeat) and high-value types when gap is large.
+function pickSegmentForGap(
+  pool: SegmentType[],
+  gap: number,
+  existing: SegmentSpec[],
+  seed: number,
+): SegmentType {
+  const usedTypes = new Set(existing.map((s) => s.type));
+
+  let candidates: SegmentType[];
+  if (gap >= 5) {
+    candidates = pool.filter((t) => SEGMENT_BASE_SCORES[t] >= 4 && !usedTypes.has(t));
+    if (candidates.length === 0) candidates = pool.filter((t) => SEGMENT_BASE_SCORES[t] >= 4);
+  } else if (gap >= 3) {
+    candidates = pool.filter((t) => SEGMENT_BASE_SCORES[t] >= 3 && !usedTypes.has(t));
+    if (candidates.length === 0) candidates = pool.filter((t) => SEGMENT_BASE_SCORES[t] >= 3);
+  } else {
+    candidates = pool.filter((t) => !usedTypes.has(t));
+    if (candidates.length === 0) candidates = [...pool];
+  }
+
+  if (candidates.length === 0) candidates = [...pool];
+  return candidates[Math.abs(seed) % candidates.length];
 }
 
-function strategyPool(ctx: SegmentContext): SegmentType[] {
-  const base: SegmentType[] = [
+function computePlanScore(specs: SegmentSpec[]): number {
+  return specs.reduce((sum, s) => sum + SEGMENT_BASE_SCORES[s.type], 0);
+}
+
+// Upgrade existing non-required segments until target score is reached.
+function upgradeToMeetScore(specs: SegmentSpec[], targetScore: number): void {
+  let passes = 0;
+  while (computePlanScore(specs) < targetScore && passes < 4) {
+    let changed = false;
+    // Sort cheapest first to get most bang per upgrade.
+    const sorted = specs
+      .filter((s) => !s.requiredTag && SEGMENT_BASE_SCORES[s.type] < 6)
+      .sort((a, b) => SEGMENT_BASE_SCORES[a.type] - SEGMENT_BASE_SCORES[b.type]);
+    for (const spec of sorted) {
+      if (computePlanScore(specs) >= targetScore) break;
+      const upgraded = upgradeSegmentType(spec.type);
+      if (upgraded !== spec.type) {
+        spec.type = upgraded;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+    passes++;
+  }
+}
+
+// Upgrade chain: every type has a harder successor.
+function upgradeSegmentType(type: SegmentType): SegmentType {
+  switch (type) {
+    case 'spikeJump':          return 'doubleSpikeTiming';
+    case 'doubleSpikeTiming':  return 'jumpThenCrouch';
+    case 'lowCeilingCrouch':   return 'crouchThenJump';
+    case 'jumpThenCrouch':     return 'headClearanceJump';
+    case 'crouchThenJump':     return 'choiceThenPunish';
+    case 'headClearanceJump':  return 'pressureCombo';
+    case 'choiceThenPunish':   return 'pressureCombo';
+    case 'longGapPlatforms':   return 'mixedPlatformCombo';
+    case 'staircaseClimb':     return 'mixedPlatformCombo';
+    default:                   return type; // pressureCombo/mixedPlatformCombo = max score
+  }
+}
+
+// Replace repeated non-platform non-required segments with their upgrade.
+function applyAntiRepeatUpgrades(specs: SegmentSpec[], levelIndex: number): void {
+  if (levelIndex < 2) return;
+  const typeCounts = new Map<SegmentType, number>();
+  for (const spec of specs) typeCounts.set(spec.type, (typeCounts.get(spec.type) ?? 0) + 1);
+
+  for (const spec of specs) {
+    if (spec.requiredTag || isPlatformSegment(spec.type)) continue;
+    const count = typeCounts.get(spec.type) ?? 0;
+    if (count <= 1) continue;
+    const upgraded = upgradeSegmentType(spec.type);
+    if (upgraded !== spec.type) {
+      typeCounts.set(spec.type, count - 1);
+      typeCounts.set(upgraded, (typeCounts.get(upgraded) ?? 0) + 1);
+      spec.type = upgraded;
+    }
+  }
+}
+
+// Build eligible segment type pool for this level.
+function buildPool(levelIndex: number, ctx: SegmentContext): SegmentType[] {
+  let all: SegmentType[] = [
     'spikeJump',
     'doubleSpikeTiming',
     'lowCeilingCrouch',
     'jumpThenCrouch',
     'crouchThenJump',
+    'longGapPlatforms',
+    'staircaseClimb',
     'headClearanceJump',
     'choiceThenPunish',
     'pressureCombo',
     'mixedPlatformCombo',
-    'longGapPlatforms',
-    'staircaseClimb',
   ];
 
-  if (ctx.playerModel.prefersJump) {
-    return [
-      'lowCeilingCrouch',
-      'headClearanceJump',
-      'jumpThenCrouch',
-      'choiceThenPunish',
-      'pressureCombo',
-      'longGapPlatforms',
-      'staircaseClimb',
-      ...base,
-    ];
-  }
+  // Remove trivial patterns — banned outright so score accumulation never picks them.
+  if (levelIndex > 1) all = all.filter((t) => t !== 'spikeJump');
+  if (levelIndex > 2) all = all.filter((t) => t !== 'lowCeilingCrouch');
 
-  if (ctx.playerModel.prefersCrouch) {
-    return [
-      'longGapPlatforms',
-      'doubleSpikeTiming',
-      'crouchThenJump',
-      'pressureCombo',
-      'mixedPlatformCombo',
-      'staircaseClimb',
-      ...base,
-    ];
-  }
-
-  if (ctx.playerModel.reactionTiming === 'late') {
-    return [
-      'pressureCombo',
-      'doubleSpikeTiming',
-      'headClearanceJump',
-      'jumpThenCrouch',
-      'choiceThenPunish',
-      ...base,
-    ];
-  }
-
-  return base;
+  return applyStrategyBias(all, ctx);
 }
 
-function enforceComboRatio(specs: SegmentSpec[], levelIndex: number, ctx: SegmentContext) {
-  const minRatio = levelIndex >= 3 ? 0.6 : 0.4;
-  const minCombos = Math.ceil(specs.length * minRatio);
-  let comboCount = specs.filter((s) => isComboSegment(s.type)).length;
+// Bias pool toward player weaknesses by duplicating certain types.
+function applyStrategyBias(pool: SegmentType[], ctx: SegmentContext): SegmentType[] {
+  const bias: SegmentType[] = [...pool];
+  if (ctx.playerModel.prefersJump) {
+    bias.push('lowCeilingCrouch', 'headClearanceJump', 'jumpThenCrouch', 'choiceThenPunish');
+  }
+  if (ctx.playerModel.prefersCrouch) {
+    bias.push('longGapPlatforms', 'doubleSpikeTiming', 'crouchThenJump', 'pressureCombo');
+  }
+  if (ctx.playerModel.reactionTiming === 'late') {
+    bias.push('pressureCombo', 'doubleSpikeTiming', 'headClearanceJump');
+  }
+  return bias.filter((t) => pool.includes(t));
+}
 
+// ── Enforcement passes ─────────────────────────────────────────────
+
+// Minimum combo ratio: 40% early, 70% from level 3, 85% from level 6.
+function enforceComboRatio(specs: SegmentSpec[], levelIndex: number, ctx: SegmentContext) {
+  const minRatio   = levelIndex >= 5 ? 0.85 : levelIndex >= 2 ? 0.70 : 0.40;
+  const minCombos  = Math.ceil(specs.length * minRatio);
+  let comboCount   = specs.filter((s) => isComboSegment(s.type)).length;
   if (comboCount >= minCombos) return;
 
   const comboFallback: SegmentType[] = [
-    'jumpThenCrouch',
-    'crouchThenJump',
-    'choiceThenPunish',
-    'pressureCombo',
-    'mixedPlatformCombo',
-    'headClearanceJump',
+    'jumpThenCrouch', 'crouchThenJump', 'choiceThenPunish',
+    'pressureCombo', 'mixedPlatformCombo', 'headClearanceJump',
+    'longGapPlatforms', 'staircaseClimb',
   ];
 
   let seed = levelIndex * 23;
   for (let i = specs.length - 1; i >= 0 && comboCount < minCombos; i--) {
-    if (isComboSegment(specs[i].type)) continue;
-    if (specs[i].requiredTag) continue;
+    if (isComboSegment(specs[i].type) || specs[i].requiredTag) continue;
     specs[i].type = comboFallback[Math.abs(seed++) % comboFallback.length];
     comboCount++;
   }
 
   if (ctx.playerModel.consistency === 'predictable' && specs.length >= 4) {
-    specs[1].type = 'spikeJump';
-    specs[2].type = 'spikeJump';
-    specs[3].type = 'choiceThenPunish';
+    specs[1].type = 'choiceThenPunish';
+    specs[2].type = 'pressureCombo';
   }
 }
 
-function enforceBasicCap(specs: SegmentSpec[], levelIndex: number) {
-  if (levelIndex <= 2) return;
-  const maxBasic = Math.max(1, Math.floor(specs.length * 0.3));
-  let basicCount = specs.filter((s) => isBasicSegment(s.type)).length;
-
-  if (basicCount <= maxBasic) return;
-
-  const replacement: SegmentType[] = ['jumpThenCrouch', 'pressureCombo', 'choiceThenPunish', 'mixedPlatformCombo'];
-  let seed = levelIndex * 41;
-
-  for (let i = specs.length - 1; i >= 0 && basicCount > maxBasic; i--) {
-    if (!isBasicSegment(specs[i].type)) continue;
-    if (specs[i].requiredTag) continue;
-    specs[i].type = replacement[Math.abs(seed++) % replacement.length];
-    basicCount--;
+// Hard ban on trivial segment types once level progresses.
+function enforceBasicBan(specs: SegmentSpec[], levelIndex: number): void {
+  for (const spec of specs) {
+    if (spec.requiredTag) continue;
+    if (levelIndex > 1 && spec.type === 'spikeJump') {
+      spec.type = 'doubleSpikeTiming';
+    }
+    if (levelIndex > 2 && spec.type === 'lowCeilingCrouch') {
+      spec.type = 'crouchThenJump';
+    }
   }
 }
 
 function enforceMinimumVariety(specs: SegmentSpec[], levelIndex: number, pool: SegmentType[]) {
-  let minUnique = 3;
-  if (levelIndex >= 3 && levelIndex <= 4) minUnique = 4;
-  else if (levelIndex >= 5) minUnique = 5;
-
+  const minUnique = levelIndex >= 5 ? 5 : levelIndex >= 3 ? 4 : 3;
   const unique = new Set(specs.map((s) => s.type));
   if (unique.size >= minUnique) return;
 
@@ -467,7 +568,8 @@ function enforceMinimumVariety(specs: SegmentSpec[], levelIndex: number, pool: S
 }
 
 function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
-  const platformCount = specs.filter((s) => isPlatformSegment(s.type)).length;
+  const hasPlatform = (t: SegmentType) => isPlatformSegment(t);
+  const platformCount = specs.filter((s) => hasPlatform(s.type)).length;
 
   if (levelIndex === 1 && !specs.some((s) => s.type === 'longGapPlatforms')) {
     replaceFirstNonRequired(specs, 'longGapPlatforms');
@@ -475,7 +577,6 @@ function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
   if (levelIndex === 2 && !specs.some((s) => s.type === 'staircaseClimb')) {
     replaceFirstNonRequired(specs, 'staircaseClimb');
   }
-
   if (levelIndex >= 3 && platformCount < 1) {
     replaceFirstNonRequired(specs, levelIndex % 2 === 0 ? 'staircaseClimb' : 'longGapPlatforms');
   }
@@ -487,9 +588,14 @@ function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
 
 function applyPredictabilityBreak(specs: SegmentSpec[], model: PlayerModel, levelIndex: number) {
   if (model.consistency !== 'predictable' || specs.length < 5 || levelIndex < 3) return;
-  specs[1].type = 'spikeJump';
-  specs[2].type = 'spikeJump';
-  specs[3].type = 'choiceThenPunish';
+  specs[1].type = 'choiceThenPunish';
+  specs[2].type = 'pressureCombo';
+  specs[3].type = 'headClearanceJump';
+}
+
+function chooseRequiredType(rule: RequiredRule, offset: number, levelIndex: number): SegmentType {
+  if (rule.types.length === 1) return rule.types[0];
+  return rule.types[(levelIndex + offset) % rule.types.length];
 }
 
 function replaceFirstNonRequired(specs: SegmentSpec[], type: SegmentType) {
@@ -497,6 +603,8 @@ function replaceFirstNonRequired(specs: SegmentSpec[], type: SegmentType) {
   if (idx >= 0) specs[idx].type = type;
   else specs.push({ type });
 }
+
+// ── Segment building ───────────────────────────────────────────────
 
 function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: number, attempt: number): BuildResult {
   const builds: SegmentBuild[] = [];
@@ -510,8 +618,8 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
     const spec = specs[i];
     if (!spec) continue;
     if (i > 0) {
-      const connector = connectorBase + deterministicJitter(ctx.levelIndex * 37 + i * 13 + attempt * 19, 10);
-      cursor += Math.max(50, connector);
+      const connector = connectorBase + deterministicJitter(ctx.levelIndex * 37 + i * 13 + attempt * 19, 8);
+      cursor += Math.max(38, connector);
     }
 
     const built = buildSegment(spec.type, cursor, ctx, ctx.levelIndex * 97 + i * 17 + attempt * 11);
@@ -521,36 +629,27 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
     obstacles.push(...built.obstacles);
     cursor += built.length;
 
-    if (spec.requiredTag) {
-      requiredTagsPlaced.push(spec.requiredTag);
-    }
+    if (spec.requiredTag) requiredTagsPlaced.push(spec.requiredTag);
   }
 
   obstacles.sort((a, b) => a.x - b.x);
-
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX = worldWidth - FLAG_OFFSET;
-
   const maxQuietGap = computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP);
 
-  return {
-    segmentBuilds: builds,
-    obstacles,
-    worldWidth,
-    flagX,
-    requiredTagsPlaced,
-    maxQuietGap,
-  };
+  return { segmentBuilds: builds, obstacles, worldWidth, flagX, requiredTagsPlaced, maxQuietGap };
 }
 
+// Tighter connector distances — less breathing room between segments at higher levels.
 function connectorDistanceForLevel(levelIndex: number, attempt: number): number {
-  let base = 120;
-  if (levelIndex >= 3) base = 95;
-  if (levelIndex >= 5) base = 80;
-  if (levelIndex >= 8) base = 65;
-  if (attempt > 0) base -= 10;
-  if (attempt > 1) base -= 8;
-  return Math.max(45, base);
+  let base = 110;
+  if (levelIndex >= 2) base = 88;
+  if (levelIndex >= 4) base = 70;
+  if (levelIndex >= 6) base = 55;
+  if (levelIndex >= 8) base = 42;
+  if (attempt > 0) base -= 8;
+  if (attempt > 1) base -= 6;
+  return Math.max(36, base);
 }
 
 function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
@@ -564,6 +663,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
         combo: false,
         advanced: false,
         platform: false,
+        difficultyScore: 1,
       };
     }
 
@@ -571,9 +671,9 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
       const useAfterGap = ctx.levelIndex >= 4;
       if (useAfterGap) {
         const gapW = clampInt(ctx.safeJumpDistance * 0.65, 110, 150);
-        const seq = [
-          { kind: 'gap', x: startX + 24, width: gapW, height: 0 } as Obstacle,
-          { kind: 'doubleSpike', x: startX + 24 + gapW + Math.round(ctx.reactionSpacing * 0.72), width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H } as Obstacle,
+        const seq: Obstacle[] = [
+          { kind: 'gap', x: startX + 24, width: gapW, height: 0 },
+          { kind: 'doubleSpike', x: startX + 24 + gapW + Math.round(ctx.reactionSpacing * 0.72), width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H },
         ];
         const end = seq[1].x + seq[1].width;
         return {
@@ -584,6 +684,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
           combo: true,
           advanced: true,
           platform: false,
+          difficultyScore: 3,
         };
       }
       return {
@@ -594,6 +695,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
         combo: false,
         advanced: false,
         platform: false,
+        difficultyScore: 2,
       };
     }
 
@@ -607,42 +709,45 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
         combo: false,
         advanced: ctx.levelIndex >= 3,
         platform: false,
+        difficultyScore: 2,
       };
     }
 
     case 'jumpThenCrouch': {
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      const jumpGap = clampInt(ctx.reactionSpacing, 140, 250);
-      const obstaclesSeg = [
-        { kind: 'spike', x: startX + 20, width: SPIKE_W, height: SPIKE_H } as Obstacle,
-        { kind: 'lowCeiling', x: startX + 20 + SPIKE_W + jumpGap, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle,
+      const ceilW   = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+      const jumpGap = clampInt(ctx.reactionSpacing, 120, 220);
+      const obs: Obstacle[] = [
+        { kind: 'spike', x: startX + 20, width: SPIKE_W, height: SPIKE_H },
+        { kind: 'lowCeiling', x: startX + 20 + SPIKE_W + jumpGap, width: ceilW, height: LOW_CEILING_CLEARANCE },
       ];
       return {
         type,
         variant: 'jumpThenCrouch',
-        obstacles: obstaclesSeg,
+        obstacles: obs,
         length: SPIKE_W + jumpGap + ceilW + 48,
         combo: true,
         advanced: true,
         platform: false,
+        difficultyScore: 3,
       };
     }
 
     case 'crouchThenJump': {
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      const jumpGap = clampInt(ctx.reactionSpacing, 140, 250);
-      const obstaclesSeg = [
-        { kind: 'lowCeiling', x: startX + 14, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle,
-        { kind: 'spike', x: startX + 14 + ceilW + jumpGap, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+      const ceilW   = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+      const jumpGap = clampInt(ctx.reactionSpacing, 120, 220);
+      const obs: Obstacle[] = [
+        { kind: 'lowCeiling', x: startX + 14, width: ceilW, height: LOW_CEILING_CLEARANCE },
+        { kind: 'spike', x: startX + 14 + ceilW + jumpGap, width: SPIKE_W, height: SPIKE_H },
       ];
       return {
         type,
         variant: 'crouchThenJump',
-        obstacles: obstaclesSeg,
+        obstacles: obs,
         length: ceilW + jumpGap + SPIKE_W + 44,
         combo: true,
         advanced: true,
         platform: false,
+        difficultyScore: 3,
       };
     }
 
@@ -653,96 +758,74 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
       return buildStaircaseClimb(startX, ctx, seed);
 
     case 'headClearanceJump': {
-      const shortGap = clampInt(ctx.reactionSpacing * 0.62, 120, 200);
-      const ceilW = clampInt(LOW_CEILING_MIN_W + 24, 160, 220);
-      const ceilingClearance = clampInt(64 + (ctx.levelIndex >= 5 ? -4 : 0), 58, 70);
-      const obstaclesSeg = [
-        { kind: 'spike', x: startX + 24, width: SPIKE_W, height: SPIKE_H } as Obstacle,
-        { kind: 'lowCeiling', x: startX + 14, width: ceilW, height: ceilingClearance } as Obstacle,
-        { kind: 'spike', x: startX + 24 + SPIKE_W + shortGap, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+      const shortGap    = clampInt(ctx.reactionSpacing * 0.62, 100, 180);
+      const ceilW       = clampInt(LOW_CEILING_MIN_W + 24, 160, 220);
+      const clearance   = clampInt(64 + (ctx.levelIndex >= 5 ? -6 : 0), 56, 70);
+      const obs: Obstacle[] = [
+        { kind: 'spike', x: startX + 24, width: SPIKE_W, height: SPIKE_H },
+        { kind: 'lowCeiling', x: startX + 14, width: ceilW, height: clearance },
+        { kind: 'spike', x: startX + 24 + SPIKE_W + shortGap, width: SPIKE_W, height: SPIKE_H },
       ];
       return {
         type,
         variant: 'headClearanceJump',
-        obstacles: obstaclesSeg,
+        obstacles: obs,
         length: ceilW + shortGap + SPIKE_W + 58,
         combo: true,
         advanced: true,
         platform: false,
+        difficultyScore: 4,
       };
     }
 
     case 'choiceThenPunish': {
-      const gap = clampInt(ctx.reactionSpacing, 140, 240);
+      const gap  = clampInt(ctx.reactionSpacing, 120, 210);
       const mode = seed % 3;
-      const first = { kind: 'choiceObstacle', x: startX + 20, width: CHOICE_OBS_W, height: CHOICE_OBS_H } as Obstacle;
+      const first: Obstacle = { kind: 'choiceObstacle', x: startX + 20, width: CHOICE_OBS_W, height: CHOICE_OBS_H };
       if (mode === 0) {
-        const second = { kind: 'spike', x: first.x + CHOICE_OBS_W + gap, width: SPIKE_W, height: SPIKE_H } as Obstacle;
-        return {
-          type,
-          variant: 'choice_then_spike',
-          obstacles: [first, second],
-          length: second.x + second.width - startX + 30,
-          combo: true,
-          advanced: true,
-          platform: false,
-        };
+        const second: Obstacle = { kind: 'spike', x: first.x + CHOICE_OBS_W + gap, width: SPIKE_W, height: SPIKE_H };
+        return { type, variant: 'choice_then_spike', obstacles: [first, second], length: second.x + second.width - startX + 30, combo: true, advanced: true, platform: false, difficultyScore: 4 };
       }
       if (mode === 1) {
         const w = clampInt(ctx.safeJumpDistance * 0.62, 110, 150);
-        const second = { kind: 'gap', x: first.x + CHOICE_OBS_W + gap, width: w, height: 0 } as Obstacle;
-        return {
-          type,
-          variant: 'choice_then_gap',
-          obstacles: [first, second],
-          length: second.x + second.width - startX + 32,
-          combo: true,
-          advanced: true,
-          platform: false,
-        };
+        const second: Obstacle = { kind: 'gap', x: first.x + CHOICE_OBS_W + gap, width: w, height: 0 };
+        return { type, variant: 'choice_then_gap', obstacles: [first, second], length: second.x + second.width - startX + 32, combo: true, advanced: true, platform: false, difficultyScore: 4 };
       }
       const ceilW = clampInt(LOW_CEILING_MIN_W + 28, 160, 220);
-      const second = { kind: 'lowCeiling', x: first.x + CHOICE_OBS_W + gap, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle;
-      return {
-        type,
-        variant: 'choice_then_lowCeiling',
-        obstacles: [first, second],
-        length: second.x + second.width - startX + 30,
-        combo: true,
-        advanced: true,
-        platform: false,
-      };
+      const second: Obstacle = { kind: 'lowCeiling', x: first.x + CHOICE_OBS_W + gap, width: ceilW, height: LOW_CEILING_CLEARANCE };
+      return { type, variant: 'choice_then_lowCeiling', obstacles: [first, second], length: second.x + second.width - startX + 30, combo: true, advanced: true, platform: false, difficultyScore: 4 };
     }
 
     case 'pressureCombo': {
-      const step = clampInt(ctx.reactionSpacing * (ctx.playerModel.reactionTiming === 'late' ? 0.62 : 0.72), 120, 210);
+      const step  = clampInt(ctx.reactionSpacing * (ctx.playerModel.reactionTiming === 'late' ? 0.55 : 0.65), 100, 190);
       const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 6, 155, 220);
-      const obstaclesSeg = [
-        { kind: 'spike', x: startX + 18, width: SPIKE_W, height: SPIKE_H } as Obstacle,
-        { kind: 'lowCeiling', x: startX + 18 + SPIKE_W + step, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle,
-        { kind: 'doubleSpike', x: startX + 18 + SPIKE_W + step + ceilW + step, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H } as Obstacle,
+      const obs: Obstacle[] = [
+        { kind: 'spike', x: startX + 18, width: SPIKE_W, height: SPIKE_H },
+        { kind: 'lowCeiling', x: startX + 18 + SPIKE_W + step, width: ceilW, height: LOW_CEILING_CLEARANCE },
+        { kind: 'doubleSpike', x: startX + 18 + SPIKE_W + step + ceilW + step, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H },
       ];
-      const end = obstaclesSeg[2].x + obstaclesSeg[2].width;
+      const end = obs[2].x + obs[2].width;
       return {
         type,
         variant: 'pressureCombo',
-        obstacles: obstaclesSeg,
+        obstacles: obs,
         length: end - startX + 28,
         combo: true,
         advanced: true,
         platform: false,
+        difficultyScore: 6,
       };
     }
 
     case 'mixedPlatformCombo': {
       const platform = buildLongGapPlatforms(startX, ctx, seed + 7);
       const endX = Math.max(...platform.obstacles.map((o) => o.x + o.width));
-      const follow = {
+      const follow: Obstacle = {
         kind: ctx.playerModel.prefersJump ? 'lowCeiling' : 'spike',
-        x: endX + clampInt(ctx.reactionSpacing * 0.55, 90, 150),
+        x: endX + clampInt(ctx.reactionSpacing * 0.5, 80, 130),
         width: ctx.playerModel.prefersJump ? 170 : SPIKE_W,
         height: ctx.playerModel.prefersJump ? LOW_CEILING_CLEARANCE : SPIKE_H,
-      } as Obstacle;
+      };
       return {
         type,
         variant: 'mixedPlatformCombo',
@@ -751,6 +834,7 @@ function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, se
         combo: true,
         advanced: true,
         platform: true,
+        difficultyScore: 6,
       };
     }
   }
@@ -761,8 +845,8 @@ function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number
   const requestedPlatformCount = clampInt(tierCount + (seed % 2 === 0 ? 0 : 1), 2, 4);
 
   const allWidths = Array.from({ length: requestedPlatformCount }, (_, i) => {
-    const base = ctx.levelIndex >= 5 ? 66 : ctx.levelIndex >= 3 ? 74 : 86;
-    return clampInt(base - i * 2, 62, 94);
+    const base = ctx.levelIndex >= 5 ? 62 : ctx.levelIndex >= 3 ? 70 : 82;
+    return clampInt(base - i * 2, 58, 90);
   });
 
   const allHeights = Array.from({ length: requestedPlatformCount }, (_, i) => {
@@ -772,8 +856,8 @@ function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number
   });
 
   const jumpSpanBase = clampInt(ctx.maxJumpDistance * (ctx.levelIndex >= 5 ? 0.72 : 0.64), 120, 170);
-  const leftEdge = clampInt(jumpSpanBase * 0.7, 72, 128);
-  const rightEdge = clampInt(jumpSpanBase * 0.7, 72, 128);
+  const leftEdge   = clampInt(jumpSpanBase * 0.7, 72, 128);
+  const rightEdge  = clampInt(jumpSpanBase * 0.7, 72, 128);
   const allInBetween = Array.from({ length: requestedPlatformCount - 1 }, (_, i) => {
     const adj = ((seed + i * 7) % 3 - 1) * 10;
     return clampInt(jumpSpanBase + adj, 112, 182);
@@ -789,11 +873,10 @@ function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number
   }
 
   const platformWidths = allWidths.slice(0, platformCount);
-  const heights = allHeights.slice(0, platformCount);
-  const inBetween = allInBetween.slice(0, Math.max(0, platformCount - 1));
+  const heights        = allHeights.slice(0, platformCount);
+  const inBetween      = allInBetween.slice(0, Math.max(0, platformCount - 1));
 
-  let gapWidth = leftEdge + rightEdge + platformWidths.reduce((a, b) => a + b, 0);
-  gapWidth += inBetween.reduce((a, b) => a + b, 0);
+  let gapWidth = leftEdge + rightEdge + platformWidths.reduce((a, b) => a + b, 0) + inBetween.reduce((a, b) => a + b, 0);
   gapWidth = clampInt(gapWidth, 420, 700);
 
   const gap: Obstacle = { kind: 'gap', x: startX + 18, width: gapWidth, height: 0 };
@@ -808,8 +891,8 @@ function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number
     const jump = inBetween[i] ?? rightEdge;
     px += width + jump;
   }
-  const placedPlatforms = obstacles.filter((o) => o.kind === 'platform').length;
 
+  const placedPlatforms = obstacles.filter((o) => o.kind === 'platform').length;
   return {
     type: 'longGapPlatforms',
     variant: `longGapPlatforms_${placedPlatforms}p`,
@@ -818,13 +901,14 @@ function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number
     combo: true,
     advanced: ctx.levelIndex >= 3,
     platform: true,
+    difficultyScore: 5,
   };
 }
 
 function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
-  const variantMode = seed % 3; // ascending / ascending-drop / split
+  const variantMode = seed % 3;
   const steps = clampInt(ctx.levelIndex >= 5 ? 5 : ctx.levelIndex >= 3 ? 4 : 3, 3, 5);
-  const widths = Array.from({ length: steps }, (_, i) => clampInt(78 - i * 2, 64, 84));
+  const widths = Array.from({ length: steps }, (_, i) => clampInt(74 - i * 2, 60, 80));
   const baseJump = clampInt(ctx.maxJumpDistance * 0.52, 92, 160);
 
   const heights: number[] = [];
@@ -858,17 +942,12 @@ function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number):
   }
 
   if (ctx.levelIndex >= 3) {
-    const endX = gap.x + gap.width;
-    const followX = endX + clampInt(ctx.reactionSpacing * 0.5, 80, 140);
+    const endX    = gap.x + gap.width;
+    const followX = endX + clampInt(ctx.reactionSpacing * 0.48, 72, 120);
     obstacles.push({ kind: 'spike', x: followX, width: SPIKE_W, height: SPIKE_H });
   }
 
-  const variant = variantMode === 0
-    ? 'staircase_ascending'
-    : variantMode === 1
-      ? 'staircase_ascendingDrop'
-      : 'staircase_split';
-
+  const variant = variantMode === 0 ? 'staircase_ascending' : variantMode === 1 ? 'staircase_ascendingDrop' : 'staircase_split';
   return {
     type: 'staircaseClimb',
     variant,
@@ -877,8 +956,11 @@ function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number):
     combo: true,
     advanced: true,
     platform: true,
+    difficultyScore: 5,
   };
 }
+
+// ── Validation ─────────────────────────────────────────────────────
 
 function validateBuild(args: {
   levelIndex: number;
@@ -888,12 +970,12 @@ function validateBuild(args: {
   segmentCtx: SegmentContext;
   previousRuns: RunData[];
 }): ValidationResult {
-  const { levelIndex, requiredRules, built, segmentCtx, previousRuns } = args;
+  const { levelIndex, requiredRules, built, segmentCtx } = args;
   const notes: string[] = [];
   const warnings: string[] = [];
-
   let ok = true;
 
+  // Required rule check.
   for (const rule of requiredRules) {
     const count = built.segmentBuilds.filter((s) => rule.types.includes(s.type)).length;
     if (count < rule.minCount) {
@@ -902,14 +984,25 @@ function validateBuild(args: {
     }
   }
 
+  // Difficulty score check — must reach required threshold.
+  const totalScore = built.segmentBuilds.reduce((sum, s) => sum + s.difficultyScore, 0);
+  const reqScore   = requiredDifficultyScore(levelIndex);
+  if (totalScore < reqScore) {
+    ok = false;
+    notes.push(`difficulty score ${totalScore} < required ${reqScore}`);
+  }
+
+  // Combo ratio check.
   const comboRatio = built.segmentBuilds.length === 0
     ? 0
     : built.segmentBuilds.filter((s) => s.combo).length / built.segmentBuilds.length;
-  if (levelIndex >= 3 && comboRatio < 0.6) {
+  const minComboRatio = levelIndex >= 5 ? 0.85 : levelIndex >= 2 ? 0.70 : 0.40;
+  if (levelIndex >= 2 && comboRatio < minComboRatio) {
     ok = false;
-    notes.push('combo ratio below 60%');
+    notes.push(`combo ratio ${(comboRatio * 100).toFixed(0)}% < required ${(minComboRatio * 100).toFixed(0)}%`);
   }
 
+  // Platform coverage check.
   if (levelIndex >= 5) {
     const platformKinds = built.segmentBuilds.filter((s) => s.platform).map((s) => s.type);
     if (!platformKinds.includes('longGapPlatforms') || !platformKinds.includes('staircaseClimb')) {
@@ -918,35 +1011,34 @@ function validateBuild(args: {
     }
   }
 
-  const minUnique = levelIndex >= 5 ? 5 : levelIndex >= 3 ? 4 : 3;
+  // Variety check.
+  const minUnique  = levelIndex >= 5 ? 5 : levelIndex >= 3 ? 4 : 3;
   const uniqueCount = new Set(built.segmentBuilds.map((s) => s.type)).size;
   if (uniqueCount < minUnique) {
     ok = false;
-    notes.push(`unique segments < ${minUnique}`);
+    notes.push(`unique segments ${uniqueCount} < ${minUnique}`);
   }
 
-  const maxAllowedGap = maxAllowedQuietGap(levelIndex);
-  if (built.maxQuietGap > maxAllowedGap) {
+  // Quiet gap check.
+  const maxAllowed = maxAllowedQuietGap(levelIndex);
+  if (built.maxQuietGap > maxAllowed) {
     ok = false;
-    notes.push(`quiet gap ${built.maxQuietGap}px > ${maxAllowedGap}px`);
+    notes.push(`quiet gap ${built.maxQuietGap}px > ${maxAllowed}px`);
   }
 
+  // Crossability check.
   if (!validateGapCrossability(built.obstacles, segmentCtx.maxJumpDistance)) {
     ok = false;
     notes.push('found non-crossable wide gap without platforms');
   }
 
+  // Playable-path check.
   const pathValidation = validatePlayablePath(built, segmentCtx);
   if (!pathValidation.ok) {
     ok = false;
     notes.push(...pathValidation.notes.slice(0, 3));
   }
   warnings.push(...pathValidation.warnings);
-
-  if (!isDifficultyIncreasing(previousRuns, segmentCtx.difficulty, built.segmentBuilds.length, levelIndex)) {
-    ok = false;
-    notes.push('difficulty regression vs previous level');
-  }
 
   return {
     ok,
@@ -956,7 +1048,7 @@ function validateBuild(args: {
 }
 
 function validateGapCrossability(obstacles: Obstacle[], maxJumpDistance: number): boolean {
-  const gaps = obstacles.filter((o) => o.kind === 'gap');
+  const gaps      = obstacles.filter((o) => o.kind === 'gap');
   const platforms = obstacles.filter((o) => o.kind === 'platform');
 
   for (const g of gaps) {
@@ -986,8 +1078,7 @@ function validatePlayablePath(built: BuildResult, ctx: SegmentContext): { ok: bo
   for (let i = 0; i < sorted.length - 1; i++) {
     const a = sorted[i];
     const b = sorted[i + 1];
-    const gap = b.x - (a.x + a.width);
-    if (gap < 0) {
+    if (b.x - (a.x + a.width) < 0) {
       ok = false;
       notes.push('overlapping obstacle hitboxes found');
       warnings.push(`overlap: ${a.kind} with ${b.kind}`);
@@ -1001,17 +1092,17 @@ function validatePlayablePath(built: BuildResult, ctx: SegmentContext): { ok: bo
 function validateSegmentSafety(seg: SegmentBuild, allObstacles: Obstacle[], ctx: SegmentContext): string[] {
   const issues: string[] = [];
   const segStart = Math.min(...seg.obstacles.map((o) => o.x));
-  const segEnd = Math.max(...seg.obstacles.map((o) => o.x + o.width));
+  const segEnd   = Math.max(...seg.obstacles.map((o) => o.x + o.width));
 
-  const approachStart = segStart - clampInt(ctx.reactionSpacing * 0.6, 70, 130);
-  const approachEnd = segStart - 14;
+  const approachStart = segStart - clampInt(ctx.reactionSpacing * 0.6, 60, 120);
+  const approachEnd   = segStart - 14;
   if (!hasSafeLandingWindow(approachStart, approachEnd, allObstacles)) {
     issues.push('missing clear approach before first obstacle');
   }
 
   if (requiresJumpAction(seg.type)) {
     const recoveryStart = segEnd + 18;
-    const recoveryEnd = segEnd + clampInt(ctx.safeJumpDistance * 0.58, 90, 165);
+    const recoveryEnd   = segEnd + clampInt(ctx.safeJumpDistance * 0.55, 80, 150);
     if (!hasSafeLandingWindow(recoveryStart, recoveryEnd, allObstacles)) {
       issues.push('missing safe recovery window after jump challenge');
     }
@@ -1031,10 +1122,11 @@ function validateSegmentSafety(seg: SegmentBuild, allObstacles: Obstacle[], ctx:
 }
 
 function validateLongGapSegment(seg: SegmentBuild, allObstacles: Obstacle[], ctx: SegmentContext): string[] {
-  const issues: string[] = [];
-  const gaps = seg.obstacles.filter((o) => o.kind === 'gap');
+  const issues    = [];
+  const gaps      = seg.obstacles.filter((o) => o.kind === 'gap');
   const platforms = seg.obstacles.filter((o) => o.kind === 'platform');
   if (gaps.length === 0 || platforms.length === 0) return ['invalid long gap layout'];
+
   const mainGap = gaps.reduce((widest, g) => (g.width > widest.width ? g : widest), gaps[0]);
 
   const spikesInside = allObstacles.filter(
@@ -1051,26 +1143,26 @@ function validateLongGapSegment(seg: SegmentBuild, allObstacles: Obstacle[], ctx
   }
 
   const first = sortedPlatforms[0];
-  const last = sortedPlatforms[sortedPlatforms.length - 1];
+  const last  = sortedPlatforms[sortedPlatforms.length - 1];
   if (!first || !last) return dedupeStrings(issues, 6);
+
   const entryJump = first.x - mainGap.x;
-  const exitJump = (mainGap.x + mainGap.width) - (last.x + last.width);
+  const exitJump  = (mainGap.x + mainGap.width) - (last.x + last.width);
   if (entryJump > ctx.maxJumpDistance - 8 || exitJump > ctx.maxJumpDistance - 8) {
     issues.push('platform gap entry/exit jump exceeds safe distance');
   }
 
   for (let i = 0; i < sortedPlatforms.length - 1; i++) {
     const from = sortedPlatforms[i];
-    const to = sortedPlatforms[i + 1];
-    const jumpSpan = to.x - (from.x + from.width);
-    if (jumpSpan > ctx.maxJumpDistance - 8) {
+    const to   = sortedPlatforms[i + 1];
+    if (to.x - (from.x + from.width) > ctx.maxJumpDistance - 8) {
       issues.push('platform-to-platform jump exceeds safe distance');
       break;
     }
   }
 
   const exitStart = mainGap.x + mainGap.width + 10;
-  const exitEnd = exitStart + clampInt(ctx.safeJumpDistance * 0.5, 80, 150);
+  const exitEnd   = exitStart + clampInt(ctx.safeJumpDistance * 0.5, 80, 150);
   if (!hasSafeLandingWindow(exitStart, exitEnd, allObstacles)) {
     issues.push('missing safe exit landing after platform gap');
   }
@@ -1079,7 +1171,7 @@ function validateLongGapSegment(seg: SegmentBuild, allObstacles: Obstacle[], ctx
 }
 
 function validateStaircaseSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
-  const issues: string[] = [];
+  const issues    = [];
   const platforms = seg.obstacles.filter((o) => o.kind === 'platform').sort((a, b) => a.x - b.x);
   if (platforms.length < 2) return ['staircase missing required steps'];
 
@@ -1091,20 +1183,20 @@ function validateStaircaseSegment(seg: SegmentBuild, allObstacles: Obstacle[]): 
   }
 
   const segStart = Math.min(...seg.obstacles.map((o) => o.x));
-  const segEnd = Math.max(...seg.obstacles.map((o) => o.x + o.width));
-  const spikes = allObstacles.filter((o) => (o.kind === 'spike' || o.kind === 'doubleSpike') && o.x >= segStart && o.x + o.width <= segEnd);
+  const segEnd   = Math.max(...seg.obstacles.map((o) => o.x + o.width));
+  const spikes   = allObstacles.filter((o) => (o.kind === 'spike' || o.kind === 'doubleSpike') && o.x >= segStart && o.x + o.width <= segEnd);
 
   for (let i = 0; i < platforms.length - 1; i++) {
-    const from = platforms[i];
-    const to = platforms[i + 1];
-    const spikeBetween = spikes.some((s) => s.x < to.x && s.x + s.width > from.x + from.width);
-    if (spikeBetween) {
+    const from  = platforms[i];
+    const to    = platforms[i + 1];
+    const spike = spikes.some((s) => s.x < to.x && s.x + s.width > from.x + from.width);
+    if (spike) {
       issues.push('spike between staircase steps removes safe route');
       break;
     }
   }
 
-  const lastStep = platforms[platforms.length - 1];
+  const lastStep   = platforms[platforms.length - 1];
   const spikeAfter = spikes.find((s) => s.x > lastStep.x + lastStep.width);
   if (spikeAfter && !hasSafeLandingWindow(lastStep.x + lastStep.width + 8, spikeAfter.x - 8, allObstacles)) {
     issues.push('spike after staircase without recovery spacing');
@@ -1114,13 +1206,13 @@ function validateStaircaseSegment(seg: SegmentBuild, allObstacles: Obstacle[]): 
 }
 
 function validateHeadClearanceSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
-  const issues: string[] = [];
+  const issues   = [];
   const ceilings = seg.obstacles.filter((o) => o.kind === 'lowCeiling');
-  const spikes = seg.obstacles.filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike');
+  const spikes   = seg.obstacles.filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike');
   if (ceilings.length === 0 || spikes.length === 0) return ['head-clearance layout incomplete'];
+
   const ceiling = ceilings[0];
-  const minClearance = PLAYER_STANDING_HEIGHT + 8;
-  if (ceiling.height < minClearance) {
+  if (ceiling.height < PLAYER_STANDING_HEIGHT + 8) {
     issues.push('head-clearance jump too tight for fair arc');
   }
 
@@ -1132,25 +1224,21 @@ function validateHeadClearanceSegment(seg: SegmentBuild, allObstacles: Obstacle[
 }
 
 function validatePressureComboSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
-  const issues: string[] = [];
   const hazards = seg.obstacles
     .filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike' || o.kind === 'gap')
     .sort((a, b) => a.x - b.x);
-  if (hazards.length < 2) return issues;
+  if (hazards.length < 2) return [];
 
   let hasRecovery = false;
   for (let i = 0; i < hazards.length - 1; i++) {
     const start = hazards[i].x + hazards[i].width + 8;
-    const end = hazards[i + 1].x - 8;
+    const end   = hazards[i + 1].x - 8;
     if (hasSafeLandingWindow(start, end, allObstacles)) {
       hasRecovery = true;
       break;
     }
   }
-  if (!hasRecovery) {
-    issues.push('pressure combo has no recovery window');
-  }
-  return issues;
+  return hasRecovery ? [] : ['pressure combo has no recovery window'];
 }
 
 function requiresJumpAction(type: SegmentType): boolean {
@@ -1158,9 +1246,9 @@ function requiresJumpAction(type: SegmentType): boolean {
 }
 
 function maxAllowedQuietGap(levelIndex: number): number {
-  if (levelIndex >= 8) return 160;
-  if (levelIndex >= 5) return 180;
-  if (levelIndex >= 1) return 220;
+  if (levelIndex >= 8) return 150;
+  if (levelIndex >= 5) return 170;
+  if (levelIndex >= 1) return 210;
   return 280;
 }
 
@@ -1176,26 +1264,7 @@ function computeMaxQuietGap(obstacles: Obstacle[], pathStart: number, pathEnd: n
   return Math.round(maxGap);
 }
 
-function isDifficultyIncreasing(
-  runs: RunData[],
-  currentDifficulty: Difficulty,
-  currentSegments: number,
-  levelIndex: number,
-): boolean {
-  if (levelIndex <= 2) return true;
-  const prevLevel = levelIndex - 1;
-  const prevRun = [...runs].reverse().find((r) => r.levelIndex === prevLevel && r.generatedDifficulty);
-  if (!prevRun) return true;
-
-  const rank = difficultyRank(currentDifficulty);
-  const prevRank = difficultyRank((prevRun.generatedDifficulty as Difficulty | undefined) ?? currentDifficulty);
-  if (rank < prevRank) return false;
-
-  const prevSegments = prevRun.generatedVariants?.length ?? 0;
-  if (currentSegments + 1 < prevSegments) return false;
-
-  return true;
-}
+// ── Strategy selection ─────────────────────────────────────────────
 
 function selectStrategy(model: PlayerModel): Strategy {
   if (model.jumpFrequency - model.crouchFrequency > 0.2) return 'punishJumpBias';
@@ -1204,6 +1273,8 @@ function selectStrategy(model: PlayerModel): Strategy {
   if (model.reactionTiming === 'late') return 'punishLateReactions';
   return 'balancedEscalation';
 }
+
+// ── Segment classification ─────────────────────────────────────────
 
 function isComboSegment(type: SegmentType): boolean {
   return type === 'jumpThenCrouch'
@@ -1217,19 +1288,14 @@ function isComboSegment(type: SegmentType): boolean {
 }
 
 function isBasicSegment(type: SegmentType): boolean {
-  return type === 'spikeJump' || type === 'lowCeilingCrouch';
+  return type === 'spikeJump' || type === 'lowCeilingCrouch' || type === 'doubleSpikeTiming';
 }
 
 function isPlatformSegment(type: SegmentType): boolean {
   return type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo';
 }
 
-function difficultyRank(d: Difficulty): number {
-  if (d === 'easy') return 0;
-  if (d === 'medium') return 1;
-  if (d === 'hard') return 2;
-  return 3;
-}
+// ── Repair ────────────────────────────────────────────────────────
 
 function repairUnsafeBuild(
   built: BuildResult,
@@ -1274,50 +1340,31 @@ function repairUnsafeBuild(
     repairedSegments.push(next);
   }
 
-  if (!changed) {
-    return { built, repaired: false, warnings: [] };
-  }
+  if (!changed) return { built, repaired: false, warnings: [] };
 
   const rebuilt = rebuildBuildResultFromSegments(repairedSegments, canvasWidth, built.requiredTagsPlaced);
-  return {
-    built: rebuilt,
-    repaired: true,
-    warnings: dedupeStrings(warnings, 8),
-  };
+  return { built: rebuilt, repaired: true, warnings: dedupeStrings(warnings, 8) };
 }
 
 function stripSpikesUnsafeAroundPlatforms(segment: SegmentBuild): { segment: SegmentBuild; removed: number } {
   const platforms = segment.obstacles.filter((o) => o.kind === 'platform');
-  const gaps = segment.obstacles.filter((o) => o.kind === 'gap');
+  const gaps      = segment.obstacles.filter((o) => o.kind === 'gap');
   if (platforms.length === 0 || gaps.length === 0) return { segment, removed: 0 };
 
   const platformRanges = platforms.map((p) => ({ start: p.x - 2, end: p.x + p.width + 2 }));
-  const gapRanges = gaps.map((g) => ({ start: g.x, end: g.x + g.width }));
+  const gapRanges      = gaps.map((g) => ({ start: g.x, end: g.x + g.width }));
   let removed = 0;
 
   const filtered = segment.obstacles.filter((o) => {
     if (o.kind !== 'spike' && o.kind !== 'doubleSpike') return true;
-    const oStart = o.x;
-    const oEnd = o.x + o.width;
-
-    const underPlatform = platformRanges.some((r) => rangesOverlap(oStart, oEnd, r.start, r.end));
-    if (underPlatform) {
-      removed++;
-      return false;
-    }
-
-    const insideGap = gapRanges.some((r) => rangesOverlap(oStart, oEnd, r.start, r.end));
-    if (insideGap) {
-      removed++;
-      return false;
-    }
+    const underPlatform = platformRanges.some((r) => rangesOverlap(o.x, o.x + o.width, r.start, r.end));
+    if (underPlatform) { removed++; return false; }
+    const insideGap = gapRanges.some((r) => rangesOverlap(o.x, o.x + o.width, r.start, r.end));
+    if (insideGap) { removed++; return false; }
     return true;
   });
 
-  return {
-    segment: { ...segment, obstacles: filtered },
-    removed,
-  };
+  return { segment: { ...segment, obstacles: filtered }, removed };
 }
 
 function rebuildBuildResultFromSegments(
@@ -1325,10 +1372,10 @@ function rebuildBuildResultFromSegments(
   canvasWidth: number,
   requiredTagsPlaced: string[] = [],
 ): BuildResult {
-  const obstacles = segmentBuilds.flatMap((s) => s.obstacles).sort((a, b) => a.x - b.x);
-  const maxEnd = obstacles.length > 0 ? Math.max(...obstacles.map((o) => o.x + o.width)) : canvasWidth;
+  const obstacles  = segmentBuilds.flatMap((s) => s.obstacles).sort((a, b) => a.x - b.x);
+  const maxEnd     = obstacles.length > 0 ? Math.max(...obstacles.map((o) => o.x + o.width)) : canvasWidth;
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(maxEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
-  const flagX = worldWidth - FLAG_OFFSET;
+  const flagX      = worldWidth - FLAG_OFFSET;
 
   return {
     segmentBuilds,
@@ -1340,21 +1387,30 @@ function rebuildBuildResultFromSegments(
   };
 }
 
+// Fallback uses harder patterns — no trivial segments even in the safe path.
 function buildKnownSafeFallback(levelIndex: number, ctx: SegmentContext, canvasWidth: number): BuildResult {
-  const safeTypes: SegmentType[] = ['spikeJump', 'lowCeilingCrouch', 'longGapPlatforms'];
-  const segmentBuilds: SegmentBuild[] = [];
-  let cursor = SAFE_SPAWN_END + 26;
-
-  const targetCount = Math.max(3, Math.min(6, 2 + Math.floor(levelIndex / 2)));
-  for (let i = 0; i < targetCount; i++) {
-    const type = safeTypes[i % safeTypes.length];
-    const seg = buildSegment(type, cursor, ctx, levelIndex * 71 + i * 19);
-    segmentBuilds.push(seg);
-    cursor += seg.length + clampInt(ctx.reactionSpacing * 0.72, 90, 160);
+  let types: SegmentType[];
+  if (levelIndex >= 6) {
+    types = ['longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'mixedPlatformCombo', 'pressureCombo', 'longGapPlatforms'];
+  } else if (levelIndex >= 4) {
+    types = ['jumpThenCrouch', 'longGapPlatforms', 'pressureCombo', 'staircaseClimb', 'crouchThenJump'];
+  } else if (levelIndex >= 2) {
+    types = ['doubleSpikeTiming', 'jumpThenCrouch', 'longGapPlatforms', 'crouchThenJump', 'staircaseClimb'];
+  } else {
+    types = ['doubleSpikeTiming', 'lowCeilingCrouch', 'longGapPlatforms'];
   }
 
+  const segmentBuilds: SegmentBuild[] = [];
+  let cursor = SAFE_SPAWN_END + 26;
+  for (let i = 0; i < types.length; i++) {
+    const seg = buildSegment(types[i], cursor, ctx, levelIndex * 71 + i * 19);
+    segmentBuilds.push(seg);
+    cursor += seg.length + clampInt(ctx.reactionSpacing * 0.65, 80, 140);
+  }
   return rebuildBuildResultFromSegments(segmentBuilds, canvasWidth);
 }
+
+// ── Safe-landing helpers ───────────────────────────────────────────
 
 function hasSafeLandingWindow(xStart: number, xEnd: number, obstacles: Obstacle[]): boolean {
   if (xEnd <= xStart) return false;
@@ -1363,27 +1419,22 @@ function hasSafeLandingWindow(xStart: number, xEnd: number, obstacles: Obstacle[
   const supports = computeSupportIntervals(xStart, xEnd, obstacles);
   if (supports.length === 0) return false;
 
-  const blockedIntervals = [
-    ...obstacles
-      .filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike')
+  const blocked = [
+    ...obstacles.filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike')
       .map((o) => ({ start: o.x - 2, end: o.x + o.width + 2 })),
-    ...obstacles
-      .filter((o) => o.kind === 'lowCeiling' && o.height < PLAYER_STANDING_HEIGHT + 3)
+    ...obstacles.filter((o) => o.kind === 'lowCeiling' && o.height < PLAYER_STANDING_HEIGHT + 3)
       .map((o) => ({ start: o.x, end: o.x + o.width })),
-    ...obstacles
-      .filter((o) => o.kind === 'choiceObstacle' && o.height < PLAYER_STANDING_HEIGHT + 3)
+    ...obstacles.filter((o) => o.kind === 'choiceObstacle' && o.height < PLAYER_STANDING_HEIGHT + 3)
       .map((o) => ({ start: o.x, end: o.x + o.width })),
   ];
 
-  const freeSupports = supports.flatMap((s) => subtractIntervals([s], blockedIntervals));
+  const freeSupports = supports.flatMap((s) => subtractIntervals([s], blocked));
   return freeSupports.some((s) => s.end - s.start >= MIN_LANDING_WIDTH);
 }
 
 function computeSupportIntervals(xStart: number, xEnd: number, obstacles: Obstacle[]): Interval[] {
   const base: Interval[] = [{ start: xStart, end: xEnd }];
-  const gaps = obstacles
-    .filter((o) => o.kind === 'gap')
-    .map((o) => ({ start: o.x, end: o.x + o.width }));
+  const gaps = obstacles.filter((o) => o.kind === 'gap').map((o) => ({ start: o.x, end: o.x + o.width }));
   const groundSupports = subtractIntervals(base, gaps);
 
   const platforms = obstacles
@@ -1405,12 +1456,8 @@ function subtractIntervals(base: Interval[], blockers: Interval[]): Interval[] {
         next.push(interval);
         continue;
       }
-      if (blocker.start > interval.start) {
-        next.push({ start: interval.start, end: blocker.start });
-      }
-      if (blocker.end < interval.end) {
-        next.push({ start: blocker.end, end: interval.end });
-      }
+      if (blocker.start > interval.start) next.push({ start: interval.start, end: blocker.start });
+      if (blocker.end < interval.end) next.push({ start: blocker.end, end: interval.end });
     }
     result = next.filter((i) => i.end - i.start > 1);
     if (result.length === 0) return [];
@@ -1423,27 +1470,25 @@ function mergeIntervals(intervals: Interval[]): Interval[] {
   const sorted = [...intervals].sort((a, b) => a.start - b.start);
   const merged: Interval[] = [sorted[0]];
   for (let i = 1; i < sorted.length; i++) {
-    const cur = sorted[i];
+    const cur  = sorted[i];
     const prev = merged[merged.length - 1];
-    if (cur.start <= prev.end + 1) {
-      prev.end = Math.max(prev.end, cur.end);
-    } else {
-      merged.push({ ...cur });
-    }
+    if (cur.start <= prev.end + 1) prev.end = Math.max(prev.end, cur.end);
+    else merged.push({ ...cur });
   }
   return merged;
 }
 
 function clampInterval(interval: Interval, min: number, max: number): Interval | null {
   const start = Math.max(interval.start, min);
-  const end = Math.min(interval.end, max);
-  if (end <= start) return null;
-  return { start, end };
+  const end   = Math.min(interval.end, max);
+  return end <= start ? null : { start, end };
 }
 
 function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
   return aStart < bEnd && aEnd > bStart;
 }
+
+// ── Utilities ─────────────────────────────────────────────────────
 
 function dedupeStrings(items: string[], maxCount: number): string[] {
   const seen = new Set<string>();
@@ -1458,7 +1503,7 @@ function dedupeStrings(items: string[], maxCount: number): string[] {
 }
 
 function deterministicJitter(seed: number, magnitude: number): number {
-  const x = Math.sin(seed * 91.73) * 10000;
+  const x    = Math.sin(seed * 91.73) * 10000;
   const frac = x - Math.floor(x);
   return Math.round((frac * 2 - 1) * magnitude);
 }

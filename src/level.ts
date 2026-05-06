@@ -24,6 +24,9 @@ export interface AdaptiveDebugInfo {
   maxJumpDistance: number;
   validationStatus: 'valid' | 'repaired' | 'fallback';
   validationWarnings: string[];
+  totalDifficultyScore: number;
+  requiredDifficultyScore: number;
+  segmentScores: number[];
 }
 
 export interface LevelData {

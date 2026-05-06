@@ -61,6 +61,8 @@ export class DebugPanel {
       </div>
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>
+        <div class="dbg-row"><span>Diff score</span><span>${dbg ? `${dbg.totalDifficultyScore}/${dbg.requiredDifficultyScore}` : '—'}</span></div>
+        <div class="dbg-row"><span>Seg scores</span><span>${dbg?.segmentScores.join(' ') || '—'}</span></div>
         <div class="dbg-row"><span>Difficulty</span><span>${dbg?.difficulty ?? '—'}</span></div>
         <div class="dbg-row"><span>Safe jump</span><span>${dbg?.safeJumpDistance ?? '—'}px</span></div>
         <div class="dbg-row"><span>Max jump</span><span>${dbg?.maxJumpDistance ?? '—'}px</span></div>
@@ -71,18 +73,13 @@ export class DebugPanel {
         <div class="dbg-row"><span>Placed required</span><span>${dbg?.placedRequiredPatterns.join(', ') || '—'}</span></div>
         <div class="dbg-row"><span>Unique patterns</span><span>${dbg?.uniquePatternTypes ?? '—'}</span></div>
         <div class="dbg-row"><span>Combo count</span><span>${dbg?.comboCount ?? '—'}</span></div>
-        <div class="dbg-row"><span>Advanced count</span><span>${dbg?.advancedCount ?? '—'}</span></div>
         <div class="dbg-row"><span>Platform</span><span>${dbg?.platformUsed ? 'yes' : 'no'}</span></div>
-        <div class="dbg-row"><span>Difficulty trend</span><span>${dbg?.difficultyIncreasing ? 'increasing' : 'flat'}</span></div>
         <div class="dbg-row"><span>Validation</span><span>${dbg?.validationStatus ?? '—'}</span></div>
         <div class="dbg-row"><span>Warnings</span><span>${dbg?.validationWarnings.join(' | ') || 'none'}</span></div>
-        <div class="dbg-row"><span>Attempted</span><span>${dbg?.attempted ?? '—'}</span></div>
         <div class="dbg-row"><span>Placed</span><span>${dbg?.patterns.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Obstacles</span><span>${dbg?.obstacleCount ?? '—'}</span></div>
         <div class="dbg-row"><span>Patterns</span><span>${dbg?.patterns.join(', ') || '—'}</span></div>
         <div class="dbg-row"><span>Variants</span><span>${dbg?.variants.join(', ') || '—'}</span></div>
-        <div class="dbg-row"><span>Anti-repeat</span><span>${dbg?.antiRepeat.join(' | ') || 'none'}</span></div>
-        <div class="dbg-row"><span>Dropped</span><span>${dbg?.dropped.join(', ') || 'none'}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">AI BRAIN</div>
