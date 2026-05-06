@@ -719,7 +719,7 @@ export class Game {
   }
 
   private draw() {
-    this.renderer.drawBackground();
+    this.renderer.drawBackground(this.cameraX);
     const obstaclePulse = this.level.index > 0
       ? Math.max(0, 1 - this.levelAgeSec / LEVEL_HIGHLIGHT_SECS)
       : 0;
