@@ -1,6 +1,6 @@
 import { Player } from './player';
 import { LevelData, getGroundSegments } from './level';
-import { Obstacle } from './types';
+import { Obstacle, TrapState } from './types';
 
 const TILE = 16;
 
@@ -34,6 +34,18 @@ const PIXEL_FONT       = "'Press Start 2P', monospace";
 
 function px(v: number): number {
   return Math.round(v);
+}
+
+function obsX(obs: Obstacle): number {
+  return obs.currentX ?? obs.x;
+}
+
+function obsW(obs: Obstacle): number {
+  return obs.currentWidth ?? obs.width;
+}
+
+function obsH(obs: Obstacle): number {
+  return obs.currentHeight ?? obs.height;
 }
 
 export class Renderer {
@@ -200,10 +212,14 @@ export class Renderer {
       else if (obs.kind === 'lowCeiling')     this.drawLowCeiling(obs, groundY, cameraX);
       else if (obs.kind === 'choiceObstacle') this.drawChoiceObstacle(obs, groundY, cameraX);
       else if (obs.kind === 'platform')       this.drawPlatform(obs, groundY, cameraX);
+      else if (obs.kind === 'gap' && obs.trapHost && obs.trapType === 'shiftingGap') {
+        this.drawShiftingGapMarker(obs, groundY, cameraX);
+      }
       // gaps = empty ground — no draw needed
 
       // Task 5: Draw trap host indicator
       if (obs.trapHost) {
+        this.drawTrapMutationOverlay(obs, groundY, cameraX);
         this.drawTrapHostIndicator(obs, groundY, cameraX, obs.trapState);
       }
     }
@@ -212,22 +228,24 @@ export class Renderer {
   private drawObstaclePulse(obs: Obstacle, groundY: number, cameraX: number, pulse: number) {
     const { ctx } = this;
     const alpha = Math.min(0.42, pulse * 0.42);
-    const sx = px(obs.x - cameraX);
+    const sx = px(obsX(obs) - cameraX);
+    const w = obsW(obs);
+    const h = obsH(obs);
 
     ctx.save();
     ctx.strokeStyle = `rgba(255,225,120,${alpha})`;
     ctx.lineWidth = 2;
     ctx.setLineDash([4, 4]);
     if (obs.kind === 'spike' || obs.kind === 'doubleSpike') {
-      ctx.strokeRect(sx - 6, groundY - obs.height - 6, obs.width + 12, obs.height + 12);
+      ctx.strokeRect(sx - 6, groundY - h - 6, w + 12, h + 12);
     } else if (obs.kind === 'lowCeiling') {
-      ctx.strokeRect(sx - 6, groundY - obs.height - CEIL_THICKNESS - 6, obs.width + 12, CEIL_THICKNESS + 12);
+      ctx.strokeRect(sx - 6, groundY - h - CEIL_THICKNESS - 6, w + 12, CEIL_THICKNESS + 12);
     } else if (obs.kind === 'choiceObstacle') {
-      ctx.strokeRect(sx - 6, groundY - obs.height - CHOICE_THICKNESS - 6, obs.width + 12, CHOICE_THICKNESS + 12);
+      ctx.strokeRect(sx - 6, groundY - h - CHOICE_THICKNESS - 6, w + 12, CHOICE_THICKNESS + 12);
     } else if (obs.kind === 'platform') {
-      ctx.strokeRect(sx - 5, groundY - obs.height - 5, obs.width + 10, TILE + 10);
+      ctx.strokeRect(sx - 5, groundY - h - 5, w + 10, TILE + 10);
     } else {
-      ctx.strokeRect(sx - 5, groundY - 70, obs.width + 10, 78);
+      ctx.strokeRect(sx - 5, groundY - 70, w + 10, 78);
     }
     ctx.restore();
   }
@@ -235,12 +253,13 @@ export class Renderer {
   private drawAiPlacedLabel(obs: Obstacle, groundY: number, cameraX: number, pulse: number) {
     const { ctx } = this;
     if (pulse < 0.2) return;
-    const sx = px(obs.x - cameraX + obs.width / 2);
+    const sx = px(obsX(obs) - cameraX + obsW(obs) / 2);
+    const h = obsH(obs);
     let y: number;
-    if (obs.kind === 'spike' || obs.kind === 'doubleSpike')  y = groundY - obs.height - 26;
-    else if (obs.kind === 'lowCeiling')                       y = groundY - obs.height - 44;
-    else if (obs.kind === 'choiceObstacle')                   y = groundY - obs.height - 38;
-    else if (obs.kind === 'platform')                         y = groundY - obs.height - 30;
+    if (obs.kind === 'spike' || obs.kind === 'doubleSpike')  y = groundY - h - 26;
+    else if (obs.kind === 'lowCeiling')                       y = groundY - h - 44;
+    else if (obs.kind === 'choiceObstacle')                   y = groundY - h - 38;
+    else if (obs.kind === 'platform')                         y = groundY - h - 30;
     else                                                       y = groundY - 84;
 
     const alpha = Math.min(0.9, pulse);
@@ -256,15 +275,17 @@ export class Renderer {
 
   private drawSpike(obs: Obstacle, groundY: number, cameraX: number) {
     const { ctx } = this;
-    const sx  = px(obs.x - cameraX);
+    const sx  = px(obsX(obs) - cameraX);
+    const w = obsW(obs);
+    const h = obsH(obs);
     const baseY = px(groundY + 2);
-    const tipX  = px(obs.x - cameraX + obs.width / 2);
-    const tipY  = px(groundY - obs.height);
+    const tipX  = px(obsX(obs) - cameraX + w / 2);
+    const tipY  = px(groundY - h);
 
     ctx.fillStyle = P_SPIKE_DK;
     ctx.beginPath();
     ctx.moveTo(tipX + 3, tipY + 8);
-    ctx.lineTo(sx + obs.width, baseY);
+    ctx.lineTo(sx + w, baseY);
     ctx.lineTo(sx, baseY);
     ctx.closePath();
     ctx.fill();
@@ -272,7 +293,7 @@ export class Renderer {
     ctx.fillStyle = P_SPIKE;
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
-    ctx.lineTo(sx + obs.width - 3, baseY);
+    ctx.lineTo(sx + w - 3, baseY);
     ctx.lineTo(sx + 3, baseY);
     ctx.closePath();
     ctx.fill();
@@ -288,13 +309,15 @@ export class Renderer {
   }
 
   private drawDoubleSpike(obs: Obstacle, groundY: number, cameraX: number) {
-    const spikeW = (obs.width - DOUBLE_SPIKE_GAP) / 2;
+    const spikeW = (obsW(obs) - DOUBLE_SPIKE_GAP) / 2;
     const baseY  = px(groundY + 2);
+    const h = obsH(obs);
+    const x = obsX(obs);
 
     for (let i = 0; i < 2; i++) {
-      const left = px(obs.x - cameraX + i * (spikeW + DOUBLE_SPIKE_GAP));
+      const left = px(x - cameraX + i * (spikeW + DOUBLE_SPIKE_GAP));
       const tipX = px(left + spikeW / 2);
-      const tipY = px(groundY - obs.height);
+      const tipY = px(groundY - h);
 
       this.ctx.fillStyle = P_SPIKE_DK;
       this.ctx.beginPath();
@@ -324,46 +347,62 @@ export class Renderer {
 
   private drawPlatform(obs: Obstacle, groundY: number, cameraX: number) {
     const { ctx } = this;
-    const sx       = px(obs.x - cameraX);
-    const surfaceY = px(groundY - obs.height);
+    const h = obsH(obs);
+    if (h <= 0.5) return;
+    if (obs.trapType === 'collapsingPlatform' && obs.trapState === 'spent') return;
+    const sx       = px(obsX(obs) - cameraX);
+    const surfaceY = px(groundY - h);
+    const w = px(obsW(obs));
+    const shakeX = (obs.trapType === 'collapsingPlatform' && (obs.trapState === 'warning' || obs.trapState === 'triggered'))
+      ? Math.sin((obs.animationProgress ?? 0) * 24) * 2
+      : 0;
     const thick    = TILE; // 16px = 1 tile
 
     // Brick body (below grass strip)
-    this.drawBricks(sx, surfaceY + 4, px(obs.width), thick - 4, obs.x, cameraX, P_PLAT, P_PLAT_DK, 20, 10);
+    this.drawBricks(px(sx + shakeX), surfaceY + 4, w, thick - 4, obsX(obs), cameraX, P_PLAT, P_PLAT_DK, 20, 10);
 
     // Grass top
     ctx.fillStyle = P_GRASS;
-    ctx.fillRect(sx, surfaceY, px(obs.width), 4);
+    ctx.fillRect(px(sx + shakeX), surfaceY, w, 4);
     ctx.fillStyle = P_GRASS_LT;
-    ctx.fillRect(sx, surfaceY, px(obs.width), 2);
+    ctx.fillRect(px(sx + shakeX), surfaceY, w, 2);
 
     // Edge caps (left/right dark pixels)
     ctx.fillStyle = P_PLAT_DK;
-    ctx.fillRect(sx, surfaceY + 4, 2, thick - 4);
-    ctx.fillRect(sx + px(obs.width) - 2, surfaceY + 4, 2, thick - 4);
+    ctx.fillRect(px(sx + shakeX), surfaceY + 4, 2, thick - 4);
+    ctx.fillRect(px(sx + shakeX) + w - 2, surfaceY + 4, 2, thick - 4);
+
+    // Trap mutation: spikes can grow out of tile tops.
+    const spikeExt = obs.trapType === 'platformNeedle' ? (obs.currentSpikeExt ?? 0) : 0;
+    if (spikeExt > 1) {
+      this.drawJumpBlockerSpikes(sx + shakeX, surfaceY, w, obsX(obs), cameraX, spikeExt);
+    }
   }
 
   private drawLowCeiling(obs: Obstacle, groundY: number, cameraX: number) {
     const { ctx } = this;
-    const sx   = px(obs.x - cameraX);
-    const topY = px(groundY - obs.height - CEIL_THICKNESS);
+    const sx   = px(obsX(obs) - cameraX);
+    const h = obsH(obs);
+    const topY = px(groundY - h - CEIL_THICKNESS);
+    const w = px(obsW(obs));
 
     // Stone block pattern
-    this.drawBricks(sx, topY, px(obs.width), CEIL_THICKNESS, obs.x, cameraX, P_CEIL, P_CEIL_DK, 20, 13);
+    this.drawBricks(sx, topY, w, CEIL_THICKNESS, obsX(obs), cameraX, P_CEIL, P_CEIL_DK, 20, 13);
 
     // Underside highlight strip
     ctx.fillStyle = P_CEIL_LT;
-    ctx.fillRect(sx, topY + CEIL_THICKNESS - 3, px(obs.width), 3);
+    ctx.fillRect(sx, topY + CEIL_THICKNESS - 3, w, 3);
 
     // Danger spikes on top surface — signals "can't land/jump on this"
-    this.drawTopSpikes(sx, topY, px(obs.width), obs.x, cameraX);
+    this.drawTopSpikes(sx, topY, w, obsX(obs), cameraX);
   }
 
   private drawChoiceObstacle(obs: Obstacle, groundY: number, cameraX: number) {
     const { ctx } = this;
-    const sx   = px(obs.x - cameraX);
-    const topY = px(groundY - obs.height - CHOICE_THICKNESS);
-    const w    = px(obs.width);
+    const sx   = px(obsX(obs) - cameraX);
+    const h = obsH(obs);
+    const topY = px(groundY - h - CHOICE_THICKNESS);
+    const w    = px(obsW(obs));
 
     ctx.fillStyle = P_CHOICE_DK;
     ctx.fillRect(sx, topY, w, CHOICE_THICKNESS);
@@ -382,8 +421,61 @@ export class Renderer {
       dotX += 16;
     }
 
-    // Danger spikes on top surface — signals "can't land/jump on this"
-    this.drawTopSpikes(sx, topY, w, obs.x, cameraX);
+    const spikeExt = obs.trapType === 'adaptiveChoiceGateJump' ? (obs.currentSpikeExt ?? 0) : 0;
+    if (spikeExt > 1) {
+      // Tall upward spikes growing from bar top — visually blocks the jump lane.
+      this.drawJumpBlockerSpikes(sx, topY, w, obsX(obs), cameraX, spikeExt);
+    } else {
+      this.drawTopSpikes(sx, topY, w, obsX(obs), cameraX);
+    }
+  }
+
+  // Tall upward-pointing spikes from bar top; height = spikeH.
+  // Fewer, wider spikes so they look menacing and clearly fill the kill zone.
+  private drawJumpBlockerSpikes(sx: number, surfaceY: number, width: number, worldX: number, cameraX: number, spikeH: number) {
+    const { ctx } = this;
+    const spikeW = 14;
+    const pitch  = 20;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sx, surfaceY - spikeH - 2, width, spikeH + 2);
+    ctx.clip();
+
+    const n0 = Math.floor(worldX / pitch);
+    let wx = n0 * pitch;
+    while (wx < worldX + width + pitch) {
+      const left = px(wx - cameraX);
+      const tipX = px(wx - cameraX + spikeW / 2);
+      const tipY = surfaceY - spikeH;
+
+      ctx.fillStyle = P_SPIKE_DK;
+      ctx.beginPath();
+      ctx.moveTo(tipX + 3, tipY + 10);
+      ctx.lineTo(left + spikeW, surfaceY);
+      ctx.lineTo(left, surfaceY);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = P_SPIKE;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(left + spikeW - 2, surfaceY);
+      ctx.lineTo(left + 2, surfaceY);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255,150,150,0.45)';
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(tipX - 4, tipY + 18);
+      ctx.lineTo(left + 2, surfaceY);
+      ctx.closePath();
+      ctx.fill();
+
+      wx += pitch;
+    }
+    ctx.restore();
   }
 
   // Upward-pointing pixel spikes on the top surface of a ceiling obstacle.
@@ -717,32 +809,65 @@ export class Renderer {
     ctx.restore();
   }
 
-  // Task 5: Draw trap host indicator based on trap state
+  private drawTrapMutationOverlay(obs: Obstacle, groundY: number, cameraX: number) {
+    if (obs.trapState !== 'warning' && obs.trapState !== 'triggered') return;
+    const { ctx } = this;
+    const progress = obs.animationProgress ?? 0;
+    const pulse = 0.45 + Math.sin(progress * 18) * 0.2;
+    const sx = px(obsX(obs) - cameraX);
+    const w = obsW(obs);
+    const h = obsH(obs);
+
+    let y = groundY - h;
+    let boxH = h;
+    if (obs.kind === 'lowCeiling') {
+      y = groundY - h - CEIL_THICKNESS;
+      boxH = CEIL_THICKNESS;
+    } else if (obs.kind === 'choiceObstacle') {
+      y = groundY - h - CHOICE_THICKNESS;
+      boxH = CHOICE_THICKNESS;
+    } else if (obs.kind === 'platform') {
+      y = groundY - h - TILE;
+      boxH = TILE;
+    } else if (obs.kind === 'gap') {
+      y = groundY - 22;
+      boxH = 16;
+    }
+
+    ctx.save();
+    ctx.fillStyle = obs.trapState === 'warning'
+      ? `rgba(255, 210, 60, ${pulse * 0.2})`
+      : `rgba(255, 80, 40, ${pulse * 0.22})`;
+    ctx.fillRect(sx - 2, y - 2, w + 4, boxH + 4);
+    ctx.restore();
+  }
+
   private drawTrapHostIndicator(
     obs: Obstacle,
     groundY: number,
     cameraX: number,
-    trapState?: 'idle' | 'armed' | 'triggered' | 'spent',
+    trapState?: TrapState,
   ) {
     const { ctx } = this;
-    const sx = px(obs.x - cameraX);
+    const sx = px(obsX(obs) - cameraX);
+    const w = obsW(obs);
+    const hValue = obsH(obs);
 
     // Calculate bounds based on obstacle type
     let y: number;
     let h: number;
-    let w = obs.width;
 
     if (obs.kind === 'spike' || obs.kind === 'doubleSpike') {
-      y = groundY - obs.height;
-      h = obs.height;
+      y = groundY - hValue;
+      h = hValue;
     } else if (obs.kind === 'lowCeiling') {
-      y = groundY - obs.height - CEIL_THICKNESS;
+      y = groundY - hValue - CEIL_THICKNESS;
       h = CEIL_THICKNESS;
     } else if (obs.kind === 'choiceObstacle') {
-      y = groundY - obs.height - CHOICE_THICKNESS;
+      y = groundY - hValue - CHOICE_THICKNESS;
       h = CHOICE_THICKNESS;
     } else if (obs.kind === 'platform') {
-      y = groundY - obs.height - TILE;
+      y = groundY - hValue - TILE;
       h = TILE;
     } else {
       y = groundY - 70;
@@ -751,19 +876,45 @@ export class Renderer {
 
     ctx.save();
 
+    // Do not show "AI changed" visuals while idle.
+    if (trapState === 'idle' || trapState === undefined) {
+      ctx.restore();
+      return;
+    }
+
+    // Pop-up spike: draw special ground glow when armed/warning (spike height is still 0).
+    if (obs.trapType === 'popUpSpike' && (trapState === 'armed' || trapState === 'warning')) {
+      const progress = obs.animationProgress ?? 0;
+      const pulse = 0.5 + Math.sin(progress * 22) * 0.3;
+      const intensity = trapState === 'warning' ? 0.7 : 0.4;
+      ctx.fillStyle = `rgba(255, 40, 40, ${pulse * intensity})`;
+      ctx.fillRect(sx - 6, groundY - 8, w + 12, 10);
+      // Crack lines on ground
+      ctx.strokeStyle = `rgba(255, 160, 40, ${pulse * intensity})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(sx + px(w / 2), groundY - 8);
+      ctx.lineTo(sx + px(w / 2) - 6, groundY);
+      ctx.moveTo(sx + px(w / 2), groundY - 8);
+      ctx.lineTo(sx + px(w / 2) + 6, groundY);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
     switch (trapState) {
-      case 'idle':
-        // Faint red dashed border - subtle telegraph
-        ctx.strokeStyle = 'rgba(255, 80, 80, 0.3)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.strokeRect(sx - 2, y - 2, w + 4, h + 4);
-        break;
       case 'armed':
         // Bright red border, fast pulse
         ctx.strokeStyle = 'rgba(255, 40, 40, 0.8)';
         ctx.lineWidth = 2;
-        ctx.setLineDash([]);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeRect(sx - 3, y - 3, w + 6, h + 6);
+        break;
+      case 'warning':
+        ctx.strokeStyle = 'rgba(255, 205, 70, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 3]);
         ctx.strokeRect(sx - 3, y - 3, w + 6, h + 6);
         break;
       case 'triggered':
@@ -777,10 +928,9 @@ export class Renderer {
         // Don't draw - platform is gone
         break;
       default:
-        // Default idle state
-        ctx.strokeStyle = 'rgba(255, 80, 80, 0.3)';
+        ctx.strokeStyle = 'rgba(255, 205, 70, 0.7)';
         ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
+        ctx.setLineDash([3, 3]);
         ctx.strokeRect(sx - 2, y - 2, w + 4, h + 4);
     }
 
@@ -788,14 +938,14 @@ export class Renderer {
     if (
       obs.kind === 'platform' &&
       obs.trapType === 'collapsingPlatform' &&
-      (trapState === 'armed' || trapState === 'triggered')
+      (trapState === 'warning' || trapState === 'triggered')
     ) {
-      ctx.strokeStyle = trapState === 'armed' ? 'rgba(100, 50, 50, 0.6)' : 'rgba(150, 80, 50, 0.8)';
+      ctx.strokeStyle = trapState === 'warning' ? 'rgba(100, 50, 50, 0.6)' : 'rgba(150, 80, 50, 0.8)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
       // Draw zigzag crack across platform top
-      const surfaceY = px(groundY - obs.height);
+      const surfaceY = px(groundY - hValue);
       const crackSteps = 4;
       const stepW = w / crackSteps;
       ctx.moveTo(sx, surfaceY + 4);
@@ -807,6 +957,25 @@ export class Renderer {
       ctx.stroke();
     }
 
+    ctx.restore();
+  }
+
+  private drawShiftingGapMarker(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const x = px(obsX(obs) - cameraX);
+    const w = px(obsW(obs));
+    const pulse = 0.35 + Math.sin((obs.animationProgress ?? 0) * 18) * 0.2;
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 188, 70, ${pulse})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, groundY - 8);
+    ctx.lineTo(x, groundY + 10);
+    ctx.moveTo(x + w, groundY - 8);
+    ctx.lineTo(x + w, groundY + 10);
+    ctx.stroke();
+    ctx.setLineDash([]);
     ctx.restore();
   }
 }

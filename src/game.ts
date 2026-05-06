@@ -18,13 +18,15 @@ import {
   maybeFetchStrategyBrief,
   summarizeRecentRuns,
 } from './aiStrategist';
-import { updateCollapsingPlatform, isPlayerOnPlatform } from './aiTrapDirector';
+import { updateRealtimeTraps, resetTrapHosts, RealtimeTrapDebug } from './aiTrapDirector';
+import { calculateKnowledge } from './aiKnowledge';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
 const SAMPLE_INTERVAL = 0.2;    // seconds between position samples
 const LEVEL_HIGHLIGHT_SECS = 2.4;
 const AI_MESSAGE_SECS = 2.6;
+const TRAP_MESSAGE_COOLDOWN_SECS = 1.2;
 const START_COUNTDOWN_SECS = 3.0;
 const PREVIEW_PATTERN_START = 340;
 const PREVIEW_PATTERN_SPAN = 1200;
@@ -61,6 +63,7 @@ export class Game {
   private controlBar!: HTMLDivElement;
   private pauseButton!: HTMLButtonElement;
   private exitButton!: HTMLButtonElement;
+  private lastTrapMessageAt = Number.NEGATIVE_INFINITY;
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
@@ -69,6 +72,17 @@ export class Game {
   private canCutCurrentJump = false;
   // Choice obstacle tracking: which choice obs we've already recorded a decision for
   private observedChoices = new Set<string>();
+  private choicePassState = new Map<string, { airborne: boolean; crouching: boolean }>();
+  private trapRuntimeDebug: RealtimeTrapDebug = {
+    phase: 'observe',
+    activeTrap: 'none',
+    trapState: 'none',
+    predictedAction: 'unknown',
+    predictedLandingX: undefined as number | undefined,
+    trapReason: 'none',
+    confidence: 0,
+    lastMutation: 'none',
+  };
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -120,6 +134,8 @@ export class Game {
   private restartLevel() {
     this.attempts++;
     this.level.groundY = this.canvas.height - 80;
+    // Reset trap host states so they can re-arm on the new run.
+    resetTrapHosts(this.level.obstacles);
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
@@ -162,6 +178,19 @@ export class Game {
     this.deathTimer = 0;
     this.canCutCurrentJump = false;
     this.observedChoices.clear();
+    this.choicePassState.clear();
+    this.lastTrapMessageAt = Number.NEGATIVE_INFINITY;
+    this.trapRuntimeDebug = {
+      phase: 'observe',
+      activeTrap: 'none',
+      trapState: 'none',
+      predictedAction: 'unknown',
+      predictedLandingX: undefined,
+      trapReason: 'none',
+      confidence: 0,
+      lastMutation: 'none',
+    };
+    this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
   }
 
   private spawnPlayer() {
@@ -367,8 +396,10 @@ export class Game {
     const playerLeft = player.pos.x + SUPPORT_EDGE_INSET;
     const playerRight = player.pos.x + player.width - SUPPORT_EDGE_INSET;
     const playerBottom = player.pos.y + player.height;
+    const prevTop = player.pos.y;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
     player.update(dt, effectiveFloor ?? this.level.groundY, effectiveFloor !== null);
+    this.resolveSolidPlatformHeadCollision(prevTop);
 
     const targetX = player.pos.x - this.canvas.width * 0.32;
     this.cameraX = Math.max(0, Math.min(targetX, this.level.worldWidth - this.canvas.width));
@@ -380,7 +411,7 @@ export class Game {
       this.previewLastJumpObstacleX = Number.NEGATIVE_INFINITY;
     }
 
-    if (this.hitSpike() || this.hitChoiceObstacle() || this.hitLowCeiling() || player.pos.y > this.level.groundY + 80) {
+    if (this.hitSpike() || this.hitPlatformNeedle() || this.hitChoiceObstacle() || this.hitLowCeiling() || player.pos.y > this.level.groundY + 80) {
       this.spawnPreviewPlayer();
       this.cameraX = 0;
     }
@@ -488,8 +519,10 @@ export class Game {
     const playerLeft = player.pos.x + SUPPORT_EDGE_INSET;
     const playerRight = player.pos.x + player.width - SUPPORT_EDGE_INSET;
     const playerBottom = player.pos.y + player.height;
+    const prevTop = player.pos.y;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
     player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null);
+    this.resolveSolidPlatformHeadCollision(prevTop);
 
     // --- Ground state transitions ---
     if (wasOnGround && !player.onGround) {
@@ -501,49 +534,47 @@ export class Game {
       const airTimeMs = performance.now() - this.airStartMs;
       tracker.recordLanding(player.pos.x, player.pos.y, airTimeMs);
       this.airStartMs = null;
-
-      // Task 5: Check for collapsing platform landing
-      for (const obs of level.obstacles) {
-        if (
-          obs.kind === 'platform' &&
-          obs.trapType === 'collapsingPlatform' &&
-          obs.trapState === 'idle'
-        ) {
-          const playerOnIt = isPlayerOnPlatform(
-            obs,
-            player.pos.x,
-            player.pos.y,
-            player.width,
-            player.height,
-            level.groundY,
-          );
-          if (playerOnIt) {
-            obs.trapState = 'armed';
-            obs.trapTimer = 0;
-          }
-        }
-      }
     }
     if (player.onGround || player.vel.y >= 0) {
       this.canCutCurrentJump = false;
     }
 
-    // Task 5: Update collapsing platform state machines
-    for (const obs of level.obstacles) {
-      if (obs.kind === 'platform' && obs.trapType === 'collapsingPlatform') {
-        const playerOnIt =
-          obs.trapState === 'idle'
-            ? isPlayerOnPlatform(
-                obs,
-                player.pos.x,
-                player.pos.y,
-                player.width,
-                player.height,
-                level.groundY,
-              )
-            : false;
-        updateCollapsingPlatform(obs, dt, playerOnIt);
-      }
+    const runsWithCurrent = this.collectRunsWithCurrent();
+    const knowledge = calculateKnowledge(runsWithCurrent, this.playerModel);
+    const runtimeTrap = updateRealtimeTraps({
+      obstacles: level.obstacles,
+      player: {
+        x: player.pos.x,
+        y: player.pos.y,
+        width: player.width,
+        height: player.height,
+        velX: player.vel.x,
+        velY: player.vel.y,
+        onGround: player.onGround,
+        isCrouching: player.isCrouching,
+      },
+      playerModel: this.playerModel,
+      knowledge,
+      recentRuns: runsWithCurrent,
+      levelIndex: this.levelIndex,
+      groundY: level.groundY,
+      dt,
+    });
+    const persistedLastMutation =
+      runtimeTrap.debug.lastMutation !== 'none'
+        ? runtimeTrap.debug.lastMutation
+        : this.trapRuntimeDebug.lastMutation;
+    this.trapRuntimeDebug = {
+      ...runtimeTrap.debug,
+      lastMutation: persistedLastMutation,
+    };
+    this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
+    if (
+      runtimeTrap.mutations.length > 0 &&
+      this.levelAgeSec - this.lastTrapMessageAt >= TRAP_MESSAGE_COOLDOWN_SECS
+    ) {
+      this.lastTrapMessageAt = this.levelAgeSec;
+      this.showAIMessage(runtimeTrap.mutations[0].message);
     }
 
     // Persist for next frame — must happen after physics, before early returns
@@ -552,36 +583,47 @@ export class Game {
     // --- Choice obstacle decision tracking ---
     for (const obs of level.obstacles) {
       if (obs.kind !== 'choiceObstacle') continue;
-      const obsId = `choice_${obs.x}_${obs.width}`;
+      const obsX = obs.currentX ?? obs.x;
+      const obsWidth = obs.currentWidth ?? obs.width;
+      const obsHeight = obs.currentHeight ?? obs.height;
+      const obsId = obs.trapGroupId ?? `choice_${Math.round(obsX)}_${Math.round(obsWidth)}`;
       if (this.observedChoices.has(obsId)) continue;
 
       const playerFront = player.pos.x + player.width;
       const playerTop = player.pos.y;
       const playerBottom = playerTop + player.height;
-      const barBottom = level.groundY - obs.height;
+      const barBottom = level.groundY - obsHeight;
       const barTop = barBottom - CHOICE_BAR_THICKNESS;
 
       // Check if player is currently within the choice obstacle zone
-      const inZone = playerFront > obs.x && player.pos.x < obs.x + obs.width;
-      const hasPassed = player.pos.x > obs.x + obs.width;
+      const inZone = playerFront > obsX && player.pos.x < obsX + obsWidth;
+      const hasPassed = player.pos.x > obsX + obsWidth;
 
-      if (!inZone && !hasPassed) continue;
+      if (inZone) {
+        const state = this.choicePassState.get(obsId) ?? { airborne: false, crouching: false };
+        if (!player.onGround || playerBottom < barTop) {
+          state.airborne = true;
+        }
+        if (player.isCrouching && playerTop >= barBottom - 1) {
+          state.crouching = true;
+        }
+        this.choicePassState.set(obsId, state);
+      }
 
-      // Determine the decision
+      if (!hasPassed) continue;
+
+      const state = this.choicePassState.get(obsId) ?? { airborne: false, crouching: false };
       let decision: 'jump' | 'crouch' | null = null;
-
-      if (player.isCrouching && playerTop > barBottom) {
-        // Player is crouching and below the bar
-        decision = 'crouch';
-      } else if (playerBottom < barTop) {
-        // Player is above the bar (jumped)
+      if (state.airborne && !state.crouching) {
         decision = 'jump';
-      } else if (hasPassed) {
-        // Player passed the zone but didn't clearly jump or crouch
-        // Infer from recent actions
-        const recentActions = tracker.getCurrentRun()?.actions.slice(-3) ?? [];
-        const hadJump = recentActions.some((a) => a.action === 'jump' && a.x >= obs.x - 60 && a.x <= obs.x + obs.width);
-        const hadCrouch = recentActions.some((a) => a.action === 'crouchStart' && a.x >= obs.x - 60 && a.x <= obs.x + obs.width);
+      } else if (state.crouching && !state.airborne) {
+        decision = 'crouch';
+      } else if (state.airborne && state.crouching) {
+        decision = playerBottom < barTop ? 'jump' : 'crouch';
+      } else {
+        const recentActions = tracker.getCurrentRun()?.actions.slice(-4) ?? [];
+        const hadJump = recentActions.some((a) => a.action === 'jump' && a.x >= obsX - 70 && a.x <= obsX + obsWidth + 16);
+        const hadCrouch = recentActions.some((a) => a.action === 'crouchStart' && a.x >= obsX - 70 && a.x <= obsX + obsWidth + 16);
         if (hadJump && !hadCrouch) decision = 'jump';
         else if (hadCrouch && !hadJump) decision = 'crouch';
       }
@@ -589,18 +631,21 @@ export class Game {
       if (decision) {
         const event: ChoiceDecisionEvent = {
           obstacleId: obsId,
+          obstacleType: obs.trapType ?? 'adaptiveChoiceGate',
           obstacleKind: obs.kind,
-          x: obs.x,
+          x: obsX,
           chosenAction: decision,
+          levelIndex: this.levelIndex,
           timeMs: this.levelAgeSec * 1000,
           success: true,
         };
         tracker.recordChoiceDecision(event);
         this.observedChoices.add(obsId);
-      } else if (hasPassed) {
+      } else {
         // Player passed without a clear decision (might have been hit)
         this.observedChoices.add(obsId);
       }
+      this.choicePassState.delete(obsId);
     }
 
     // --- Position samples at fixed interval (not every frame) ---
@@ -619,7 +664,7 @@ export class Game {
       this.triggerDeath('gap', player.pos.x);
       return;
     }
-    if (this.hitSpike()) {
+    if (this.hitSpike() || this.hitPlatformNeedle()) {
       this.triggerDeath('spike', player.pos.x);
       return;
     }
@@ -655,20 +700,22 @@ export class Game {
     const platforms = this.level.obstacles.filter(
       (o) =>
         o.kind === 'platform' &&
-        o.trapState !== 'spent' &&
-        o.trapState !== 'triggered',
+        !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent'),
     );
     const overlapsX = (obs: Obstacle): boolean =>
-      playerRight > obs.x && playerLeft < obs.x + obs.width;
+      playerRight > (obs.currentX ?? obs.x) &&
+      playerLeft < (obs.currentX ?? obs.x) + (obs.currentWidth ?? obs.width);
 
-    const fullyInsideGap = gaps.some(
-      (g) => playerLeft >= g.x && playerRight <= g.x + g.width,
-    );
+    const fullyInsideGap = gaps.some((g) => {
+      const gx = g.currentX ?? g.x;
+      const gw = g.currentWidth ?? g.width;
+      return playerLeft >= gx && playerRight <= gx + gw;
+    });
     let floor: number | null = fullyInsideGap ? null : this.level.groundY;
 
     for (const p of platforms) {
       if (!overlapsX(p)) continue;
-      const platformTop = this.level.groundY - p.height;
+      const platformTop = this.level.groundY - (p.currentHeight ?? p.height);
       const canStandOnPlatform =
         verticalVelocity >= 0 && playerBottom <= platformTop + PLATFORM_SNAP_TOLERANCE;
       if (!canStandOnPlatform) continue;
@@ -688,26 +735,66 @@ export class Game {
     return this.level.obstacles
       .filter(o => o.kind === 'spike' || o.kind === 'doubleSpike')
       .some(s => {
-        const spikeHitTop = this.level.groundY - s.height + 12;
-        return px + inset < s.x + s.width - inset && pr - inset > s.x + inset && pb > spikeHitTop;
+        const sx = s.currentX ?? s.x;
+        const sw = s.currentWidth ?? s.width;
+        const sh = s.currentHeight ?? s.height;
+        const spikeHitTop = this.level.groundY - sh + 12;
+        return px + inset < sx + sw - inset && pr - inset > sx + inset && pb > spikeHitTop;
       });
   }
 
   private hitChoiceObstacle(): boolean {
-    if (this.player.isCrouching) return false;
+    const px = this.player.pos.x;
+    const pr = px + this.player.width;
+    const playerTop = this.player.pos.y;
+    const playerBottom = playerTop + this.player.height;
+    const isCrouching = this.player.isCrouching;
 
+    return this.level.obstacles
+      .filter(o => o.kind === 'choiceObstacle')
+      .some(c => {
+        const cx = c.currentX ?? c.x;
+        const cw = c.currentWidth ?? c.width;
+        const ch = c.currentHeight ?? c.height;
+        const barBottom = this.level.groundY - ch;
+
+        // Jump counter: spike extension grows upward from barTop.
+        const spikeExt = (c.trapType === 'adaptiveChoiceGateJump')
+          ? (c.currentSpikeExt ?? 0)
+          : 0;
+        const barTop = barBottom - CHOICE_BAR_THICKNESS - spikeExt;
+
+        const xOverlap = pr > cx && px < cx + cw;
+
+        // Crouch counter (bar drops to floor): crouching players are NOT safe — must jump.
+        const crouchCounterTriggered =
+          c.trapType === 'adaptiveChoiceGateCrouch' &&
+          (c.trapState === 'triggered' || c.trapState === 'spent') &&
+          ch <= 6;
+        if (isCrouching && !crouchCounterTriggered) return false;
+
+        const yOverlap = playerBottom > barTop && playerTop < barBottom;
+        return xOverlap && yOverlap;
+      });
+  }
+
+  private hitPlatformNeedle(): boolean {
     const px = this.player.pos.x;
     const pr = px + this.player.width;
     const playerTop = this.player.pos.y;
     const playerBottom = playerTop + this.player.height;
 
     return this.level.obstacles
-      .filter(o => o.kind === 'choiceObstacle')
-      .some(c => {
-        const barBottom = this.level.groundY - c.height;
-        const barTop = barBottom - CHOICE_BAR_THICKNESS;
-        const xOverlap = pr > c.x && px < c.x + c.width;
-        const yOverlap = playerBottom > barTop && playerTop < barBottom;
+      .filter((o) => o.kind === 'platform' && o.trapType === 'platformNeedle')
+      .some((p) => {
+        const ext = p.currentSpikeExt ?? 0;
+        if (ext <= 1) return false;
+        const ox = p.currentX ?? p.x;
+        const ow = p.currentWidth ?? p.width;
+        const platformTop = this.level.groundY - (p.currentHeight ?? p.height);
+        const spikeTop = platformTop - ext;
+        const xOverlap = pr - 4 > ox + 2 && px + 4 < ox + ow - 2;
+        const yOverlap = playerBottom > spikeTop && playerTop < platformTop;
         return xOverlap && yOverlap;
       });
   }
@@ -724,13 +811,45 @@ export class Game {
     const playerBottom = playerTop + this.player.height;
 
     return ceilings.some((c) => {
-      const slabTop = this.level.groundY - c.height - LOW_CEILING_THICKNESS;
-      const slabBottom = this.level.groundY - c.height;
+      const cx = c.currentX ?? c.x;
+      const cw = c.currentWidth ?? c.width;
+      const ch = c.currentHeight ?? c.height;
+      const slabTop = this.level.groundY - ch - LOW_CEILING_THICKNESS;
+      const slabBottom = this.level.groundY - ch;
 
-      const xOverlap = pr > c.x && px < c.x + c.width;
+      const xOverlap = pr > cx && px < cx + cw;
       const yOverlap = playerBottom > slabTop && playerTop < slabBottom;
       return xOverlap && yOverlap;
     });
+  }
+
+  private resolveSolidPlatformHeadCollision(prevTop: number) {
+    if (this.player.vel.y >= 0) return;
+
+    const curTop = this.player.pos.y;
+    const playerLeft = this.player.pos.x + SUPPORT_EDGE_INSET;
+    const playerRight = this.player.pos.x + this.player.width - SUPPORT_EDGE_INSET;
+
+    for (const o of this.level.obstacles) {
+      if (o.kind !== 'platform' || !o.solid) continue;
+      if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+
+      const ox = o.currentX ?? o.x;
+      const ow = o.currentWidth ?? o.width;
+      const oh = o.currentHeight ?? o.height;
+      const platformTop = this.level.groundY - oh;
+      const platformBottom = platformTop + 16;
+
+      const xOverlap = playerRight > ox && playerLeft < ox + ow;
+      if (!xOverlap) continue;
+
+      const crossedUnderside = prevTop >= platformBottom && curTop < platformBottom;
+      if (!crossedUnderside) continue;
+
+      this.player.pos.y = platformBottom;
+      this.player.vel.y = 0;
+      break;
+    }
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
@@ -819,6 +938,12 @@ export class Game {
       latestDeath,
       latestLandingZones,
     };
+  }
+
+  private collectRunsWithCurrent() {
+    const allRuns = this.tracker.getAllRuns();
+    const currentRun = this.tracker.getCurrentRun();
+    return currentRun ? [...allRuns, currentRun] : allRuns;
   }
 
   private showAIMessage(text: string) {
