@@ -201,6 +201,11 @@ export class Renderer {
       else if (obs.kind === 'choiceObstacle') this.drawChoiceObstacle(obs, groundY, cameraX);
       else if (obs.kind === 'platform')       this.drawPlatform(obs, groundY, cameraX);
       // gaps = empty ground — no draw needed
+
+      // Task 5: Draw trap host indicator
+      if (obs.trapHost) {
+        this.drawTrapHostIndicator(obs, groundY, cameraX, obs.trapState);
+      }
     }
   }
 
@@ -708,6 +713,99 @@ export class Renderer {
     ctx.font = `bold ${Math.min(12, px(canvas.width / 28))}px monospace`;
     ctx.fillStyle = '#fff';
     ctx.fillText(message, px(canvas.width / 2), y + 37);
+
+    ctx.restore();
+  }
+
+  // Task 5: Draw trap host indicator based on trap state
+  private drawTrapHostIndicator(
+    obs: Obstacle,
+    groundY: number,
+    cameraX: number,
+    trapState?: 'idle' | 'armed' | 'triggered' | 'spent',
+  ) {
+    const { ctx } = this;
+    const sx = px(obs.x - cameraX);
+
+    // Calculate bounds based on obstacle type
+    let y: number;
+    let h: number;
+    let w = obs.width;
+
+    if (obs.kind === 'spike' || obs.kind === 'doubleSpike') {
+      y = groundY - obs.height;
+      h = obs.height;
+    } else if (obs.kind === 'lowCeiling') {
+      y = groundY - obs.height - CEIL_THICKNESS;
+      h = CEIL_THICKNESS;
+    } else if (obs.kind === 'choiceObstacle') {
+      y = groundY - obs.height - CHOICE_THICKNESS;
+      h = CHOICE_THICKNESS;
+    } else if (obs.kind === 'platform') {
+      y = groundY - obs.height - TILE;
+      h = TILE;
+    } else {
+      y = groundY - 70;
+      h = 70;
+    }
+
+    ctx.save();
+
+    switch (trapState) {
+      case 'idle':
+        // Faint red dashed border - subtle telegraph
+        ctx.strokeStyle = 'rgba(255, 80, 80, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(sx - 2, y - 2, w + 4, h + 4);
+        break;
+      case 'armed':
+        // Bright red border, fast pulse
+        ctx.strokeStyle = 'rgba(255, 40, 40, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.strokeRect(sx - 3, y - 3, w + 6, h + 6);
+        break;
+      case 'triggered':
+        // Orange flash
+        ctx.strokeStyle = 'rgba(255, 140, 0, 0.9)';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([]);
+        ctx.strokeRect(sx - 4, y - 4, w + 8, h + 8);
+        break;
+      case 'spent':
+        // Don't draw - platform is gone
+        break;
+      default:
+        // Default idle state
+        ctx.strokeStyle = 'rgba(255, 80, 80, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(sx - 2, y - 2, w + 4, h + 4);
+    }
+
+    // For collapsing platforms in armed/triggered state, draw crack lines
+    if (
+      obs.kind === 'platform' &&
+      obs.trapType === 'collapsingPlatform' &&
+      (trapState === 'armed' || trapState === 'triggered')
+    ) {
+      ctx.strokeStyle = trapState === 'armed' ? 'rgba(100, 50, 50, 0.6)' : 'rgba(150, 80, 50, 0.8)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      // Draw zigzag crack across platform top
+      const surfaceY = px(groundY - obs.height);
+      const crackSteps = 4;
+      const stepW = w / crackSteps;
+      ctx.moveTo(sx, surfaceY + 4);
+      for (let i = 1; i <= crackSteps; i++) {
+        const cx = sx + stepW * i;
+        const cy = surfaceY + 4 + (i % 2 === 0 ? 3 : -2);
+        ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+    }
 
     ctx.restore();
   }
