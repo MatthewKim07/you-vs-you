@@ -48,6 +48,12 @@ function obsH(obs: Obstacle): number {
   return obs.currentHeight ?? obs.height;
 }
 
+function routeAccentColor(obs: Obstacle): string | null {
+  if (obs.routeLayer === 'mid') return 'rgba(80,220,255,0.22)';
+  if (obs.routeLayer === 'upper') return 'rgba(255,210,90,0.20)';
+  return null;
+}
+
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
 
@@ -372,6 +378,12 @@ export class Renderer {
     ctx.fillRect(px(sx + shakeX), surfaceY + 4, 2, thick - 4);
     ctx.fillRect(px(sx + shakeX) + w - 2, surfaceY + 4, 2, thick - 4);
 
+    const routeAccent = routeAccentColor(obs);
+    if (routeAccent) {
+      ctx.fillStyle = routeAccent;
+      ctx.fillRect(px(sx + shakeX), surfaceY + 1, w, 4);
+    }
+
     // Trap mutation: spikes can grow out of tile tops.
     const spikeExt = obs.trapType === 'platformNeedle' ? (obs.currentSpikeExt ?? 0) : 0;
     if (spikeExt > 1) {
@@ -412,6 +424,11 @@ export class Renderer {
     // Top highlight
     ctx.fillStyle = 'rgba(255,255,255,0.28)';
     ctx.fillRect(sx + 2, topY + 2, w - 4, 3);
+    const routeAccent = routeAccentColor(obs);
+    if (routeAccent) {
+      ctx.fillStyle = routeAccent;
+      ctx.fillRect(sx + 1, topY + CHOICE_THICKNESS - 3, w - 2, 2);
+    }
 
     // Pixel gem dots
     ctx.fillStyle = 'rgba(255,255,255,0.6)';

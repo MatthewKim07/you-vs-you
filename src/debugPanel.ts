@@ -7,11 +7,13 @@ interface RealtimeTrapDebugView {
   phase: string;
   activeTrap: string;
   trapState: string;
+  activeRoute: string;
   predictedAction: string;
   predictedLandingX?: number;
   trapReason: string;
   confidence: number;
   lastMutation: string;
+  mutationCountsByRoute: { lower: number; mid: number; upper: number };
 }
 
 // HTML overlay — hidden by default, toggled via "AI Data" button.
@@ -27,11 +29,13 @@ export class DebugPanel {
     phase: 'observe',
     activeTrap: 'none',
     trapState: 'none',
+    activeRoute: 'none',
     predictedAction: 'unknown',
     predictedLandingX: undefined,
     trapReason: 'none',
     confidence: 0,
     lastMutation: 'none',
+    mutationCountsByRoute: { lower: 0, mid: 0, upper: 0 },
   };
   private playerModel: PlayerModel = {
     prefersJump: true,
@@ -47,6 +51,10 @@ export class DebugPanel {
     preferredChoiceAction: 'unknown',
     choiceConsistency: 'unknown',
     perObstacleChoiceStats: {},
+    preferredRoute: 'mixed',
+    routeConfidence: 0,
+    routeRiskStyle: 'opportunist',
+    routeUsage: { lower: 0, mid: 0, upper: 0 },
   };
 
   constructor(private tracker: RunTracker) {
@@ -94,11 +102,13 @@ export class DebugPanel {
         <div class="dbg-row"><span>AI Phase</span><span>${formatStyle(rt.phase)}</span></div>
         <div class="dbg-row"><span>Active Trap</span><span>${rt.activeTrap}</span></div>
         <div class="dbg-row"><span>Trap State</span><span>${rt.trapState}</span></div>
+        <div class="dbg-row"><span>Active Route</span><span>${rt.activeRoute}</span></div>
         <div class="dbg-row"><span>Predicted Action</span><span>${formatStyle(rt.predictedAction)}</span></div>
         <div class="dbg-row"><span>Predicted Landing X</span><span>${rt.predictedLandingX !== undefined ? `${Math.round(rt.predictedLandingX)}px` : '—'}</span></div>
         <div class="dbg-row"><span>Trap Reason</span><span>${rt.trapReason || '—'}</span></div>
         <div class="dbg-row"><span>Confidence</span><span>${(rt.confidence * 100).toFixed(0)}%</span></div>
         <div class="dbg-row"><span>Last Mutation</span><span>${rt.lastMutation || '—'}</span></div>
+        <div class="dbg-row"><span>Route mutations</span><span>L:${rt.mutationCountsByRoute.lower} M:${rt.mutationCountsByRoute.mid} U:${rt.mutationCountsByRoute.upper}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">THIS RUN</div>
@@ -107,6 +117,8 @@ export class DebugPanel {
         <div class="dbg-row"><span>Landings</span><span>${run?.landings.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Samples</span><span>${run?.samples.length ?? '—'}</span></div>
         <div class="dbg-row"><span>Choice decisions</span><span>${currentRun?.choiceDecisions.length ?? '—'}</span></div>
+        <div class="dbg-row"><span>Route choices</span><span>${currentRun?.routeChoices.length ?? '—'}</span></div>
+        <div class="dbg-row"><span>Route usage run</span><span>L:${currentRun?.routeUsageCounts.lower ?? 0} M:${currentRun?.routeUsageCounts.mid ?? 0} U:${currentRun?.routeUsageCounts.upper ?? 0}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">MODEL</div>
@@ -121,6 +133,10 @@ export class DebugPanel {
         <div class="dbg-row"><span>Choice confidence</span><span>${(model.choiceConfidence * 100).toFixed(0)}%</span></div>
         <div class="dbg-row"><span>Preferred choice</span><span>${formatStyle(model.preferredChoiceAction)}</span></div>
         <div class="dbg-row"><span>Choice consistency</span><span>${formatStyle(model.choiceConsistency)}</span></div>
+        <div class="dbg-row"><span>Preferred route</span><span>${formatStyle(model.preferredRoute)}</span></div>
+        <div class="dbg-row"><span>Route confidence</span><span>${(model.routeConfidence * 100).toFixed(0)}%</span></div>
+        <div class="dbg-row"><span>Route style</span><span>${formatStyle(model.routeRiskStyle)}</span></div>
+        <div class="dbg-row"><span>Route usage</span><span>L:${model.routeUsage.lower} M:${model.routeUsage.mid} U:${model.routeUsage.upper}</span></div>
       </div>
       <div class="dbg-section">
         <div class="dbg-title">CHOICE GATE LEARNING</div>
@@ -148,6 +164,11 @@ export class DebugPanel {
         <div class="dbg-row"><span>Combo count</span><span>${dbg?.comboCount ?? '—'}</span></div>
         <div class="dbg-row"><span>Platform</span><span>${dbg?.platformUsed ? 'yes' : 'no'}</span></div>
         <div class="dbg-row"><span>Validation</span><span>${dbg?.validationStatus ?? '—'}</span></div>
+        <div class="dbg-row"><span>Route graph</span><span>${dbg?.routeConnectivityStatus ?? '—'}</span></div>
+        <div class="dbg-row"><span>Routes used</span><span>${dbg?.routesUsed?.join(', ') || '—'}</span></div>
+        <div class="dbg-row"><span>Route switches</span><span>${dbg?.routeSwitchPoints ?? '—'}</span></div>
+        <div class="dbg-row"><span>Route target</span><span>${dbg?.routeTargeted ?? '—'}</span></div>
+        <div class="dbg-row"><span>Route usage lvl</span><span>${dbg?.routeUsage ? `L:${dbg.routeUsage.lower} M:${dbg.routeUsage.mid} U:${dbg.routeUsage.upper}` : '—'}</span></div>
         <div class="dbg-row"><span>Warnings</span><span>${dbg?.validationWarnings.join(' | ') || 'none'}</span></div>
         <div class="dbg-row"><span>Counters</span><span>${dbg?.counterTargets.join(', ') || 'none'}</span></div>
         <div class="dbg-row"><span>Adapt</span><span>${dbg?.adaptationReasons.slice(0, 2).join(' | ') || '—'}</span></div>

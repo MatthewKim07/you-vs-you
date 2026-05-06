@@ -137,6 +137,9 @@ function compactInput(input: StrategyBriefInput) {
       choiceConfidence: round2(input.playerModel.choiceConfidence),
       preferredChoiceAction: input.playerModel.preferredChoiceAction,
       choiceConsistency: input.playerModel.choiceConsistency,
+      preferredRoute: input.playerModel.preferredRoute,
+      routeConfidence: round2(input.playerModel.routeConfidence),
+      routeRiskStyle: input.playerModel.routeRiskStyle,
     },
     playerProfile: {
       totalRuns: input.playerProfile.totalRuns,
@@ -205,6 +208,9 @@ function buildPlayerRead(input: StrategyBriefInput): string {
   }
   if (model.consistency === 'predictable' && land !== undefined) {
     return `You keep repeating a lane near ${Math.round(land)}px.`;
+  }
+  if (model.preferredRoute !== 'mixed' && model.routeConfidence > 0.45) {
+    return `You keep choosing the ${model.preferredRoute} route. I am tracking that lane.`;
   }
   if (counters.includes('diesToGaps') || counters.includes('platformWeak')) {
     return 'Most of your deaths are gaps. You struggle with platform routes.';

@@ -36,17 +36,20 @@ export interface RealtimeTrapMutation {
   reason: string;
   message: string;
   predictedLandingX?: number;
+  routeLayer?: 'lower' | 'mid' | 'upper';
 }
 
 export interface RealtimeTrapDebug {
   phase: AIPhase;
   activeTrap: string;
   trapState: TrapState | 'none';
+  activeRoute: 'lower' | 'mid' | 'upper' | 'mixed' | 'none';
   predictedAction: 'jump' | 'crouch' | 'mixed' | 'unknown';
   predictedLandingX?: number;
   trapReason: string;
   confidence: number;
   lastMutation: string;
+  mutationCountsByRoute: { lower: number; mid: number; upper: number };
 }
 
 export interface RealtimeTrapOutput {
@@ -79,6 +82,7 @@ export function directTraps(
   let predictedLandingX: number | undefined;
   let mutationFallbackUsed = false;
   let mutationTargetObstacleId: string | undefined;
+  const preferredRoute = model.preferredRoute === 'mixed' ? undefined : model.preferredRoute;
 
   const mutatedObstacles = obstacles.map((o) => initializeRuntimeFields({ ...o }));
   const maxHosts = getMaxTrapHosts(phase);
@@ -103,7 +107,7 @@ export function directTraps(
       isTrapUnlocked('reactiveLowCeiling', knowledge) &&
       (model.prefersJump || model.preferredChoiceAction === 'jump')
     ) {
-      const applied = hostReactiveLowCeiling(mutatedObstacles, levelIndex);
+      const applied = hostReactiveLowCeiling(mutatedObstacles, levelIndex, preferredRoute);
       if (applied) {
         hostsApplied++;
         activeTraps.push('reactiveLowCeiling');
@@ -145,7 +149,7 @@ export function directTraps(
       hostsApplied < maxHosts &&
       isTrapUnlocked('shiftingGap', knowledge)
     ) {
-      const applied = hostShiftingGap(mutatedObstacles, levelIndex, model.reactionTiming);
+      const applied = hostShiftingGap(mutatedObstacles, levelIndex, model.reactionTiming, preferredRoute);
       if (applied) {
         hostsApplied++;
         activeTraps.push('shiftingGap');
@@ -173,7 +177,7 @@ export function directTraps(
       (phase === 'predict' || phase === 'dominate') &&
       isTrapUnlocked('collapsingPlatform', knowledge)
     ) {
-      const applied = hostCollapsingPlatform(mutatedObstacles);
+      const applied = hostCollapsingPlatform(mutatedObstacles, preferredRoute);
       if (applied) {
         hostsApplied++;
         activeTraps.push('collapsingPlatform');
@@ -189,7 +193,7 @@ export function directTraps(
       const targetCount = phase === 'test' ? 1 : phase === 'counter' ? 2 : phase === 'predict' ? 3 : 4;
       let planted = 0;
       while (hostsApplied < maxHosts && planted < targetCount) {
-        const applied = hostPopUpSpike(mutatedObstacles, levelIndex + planted);
+        const applied = hostPopUpSpike(mutatedObstacles, levelIndex + planted, preferredRoute);
         if (!applied) break;
         hostsApplied++;
         planted++;
@@ -208,7 +212,7 @@ export function directTraps(
       const targetCount = phase === 'dominate' ? 2 : 1;
       let armed = 0;
       while (hostsApplied < maxHosts && armed < targetCount) {
-        const applied = hostPlatformNeedle(mutatedObstacles);
+        const applied = hostPlatformNeedle(mutatedObstacles, preferredRoute);
         if (!applied) break;
         hostsApplied++;
         armed++;
@@ -216,6 +220,28 @@ export function directTraps(
       if (armed > 0) {
         activeTraps.push('platformNeedle');
         trapReasons.push(`Armed ${armed} platform tile spike trap(s)`);
+      }
+    }
+
+    if (
+      hostsApplied < maxHosts &&
+      (phase === 'counter' || phase === 'predict' || phase === 'dominate') &&
+      model.routeConfidence > 0.45
+    ) {
+      if (preferredRoute === 'upper' || preferredRoute === 'mid') {
+        const applied = hostPopUpSpike(mutatedObstacles, levelIndex + 23, 'lower');
+        if (applied) {
+          hostsApplied++;
+          activeTraps.push('routeReturnPunisher');
+          trapReasons.push(`Punished return lane: seeded lower-route pop-up spike (prefers ${preferredRoute})`);
+        }
+      } else if (preferredRoute === 'lower') {
+        const applied = hostPlatformNeedle(mutatedObstacles, 'upper');
+        if (applied) {
+          hostsApplied++;
+          activeTraps.push('routeReturnPunisher');
+          trapReasons.push('Punished return lane: armed upper-route platform needle (prefers lower)');
+        }
       }
     }
   }
@@ -250,8 +276,10 @@ export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutpu
   const mutations: RealtimeTrapMutation[] = [];
   let activeTrap = 'none';
   let activeState: TrapState | 'none' = 'none';
+  let activeRoute: 'lower' | 'mid' | 'upper' | 'mixed' | 'none' = 'none';
   let activeReason = 'none';
   let activeCount = 0;
+  const mutationCountsByRoute = { lower: 0, mid: 0, upper: 0 };
 
   for (const obs of ctx.obstacles) {
     initializeRuntimeFields(obs);
@@ -264,6 +292,7 @@ export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutpu
       if (activeTrap === 'none') {
         activeTrap = obs.trapType;
         activeState = state;
+        activeRoute = obs.routeLayer ?? 'none';
         activeReason = obs.trapReason ?? 'armed';
       }
     }
@@ -354,11 +383,14 @@ export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutpu
           reason: obs.trapReason ?? 'AI trap triggered',
           message,
           predictedLandingX,
+          routeLayer: obs.routeLayer,
         };
         mutations.push(mutation);
+        if (obs.routeLayer) mutationCountsByRoute[obs.routeLayer]++;
 
         activeTrap = obs.trapType;
         activeState = 'triggered';
+        activeRoute = obs.routeLayer ?? activeRoute;
         activeReason = mutation.reason;
       }
       continue;
@@ -382,17 +414,27 @@ export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutpu
       phase,
       activeTrap,
       trapState: activeState,
+      activeRoute,
       predictedAction,
       predictedLandingX,
       trapReason: activeReason,
       confidence: ctx.knowledge.overallConfidence,
       lastMutation: mutations[mutations.length - 1]?.message ?? 'none',
+      mutationCountsByRoute,
     },
   };
 }
 
-function hostReactiveLowCeiling(obstacles: Obstacle[], levelIndex: number): boolean {
-  const target = obstacles.find((o) => o.kind === 'lowCeiling' && !o.trapHost);
+function hostReactiveLowCeiling(
+  obstacles: Obstacle[],
+  levelIndex: number,
+  preferredRoute?: 'lower' | 'mid' | 'upper',
+): boolean {
+  const target = pickObstacleByRoute(
+    obstacles,
+    (o) => o.kind === 'lowCeiling' && !o.trapHost,
+    preferredRoute,
+  );
   if (!target) return false;
 
   initializeRuntimeFields(target);
@@ -498,8 +540,15 @@ function hostLandingPunisher(obstacles: Obstacle[], predictedLandingX: number): 
   return true;
 }
 
-function hostCollapsingPlatform(obstacles: Obstacle[]): boolean {
-  const target = obstacles.find((o) => o.kind === 'platform' && !o.trapHost);
+function hostCollapsingPlatform(
+  obstacles: Obstacle[],
+  preferredRoute?: 'lower' | 'mid' | 'upper',
+): boolean {
+  const target = pickObstacleByRoute(
+    obstacles,
+    (o) => o.kind === 'platform' && !o.trapHost,
+    preferredRoute,
+  );
   if (!target) return false;
 
   initializeRuntimeFields(target);
@@ -517,9 +566,14 @@ function hostShiftingGap(
   obstacles: Obstacle[],
   levelIndex: number,
   reactionTiming: PlayerModel['reactionTiming'],
+  preferredRoute?: 'lower' | 'mid' | 'upper',
 ): boolean {
   const maxJump = calculateMaxJumpDistance();
-  const target = obstacles.find((o) => o.kind === 'gap' && !o.trapHost && o.width < maxJump * 0.82);
+  const target = pickObstacleByRoute(
+    obstacles,
+    (o) => o.kind === 'gap' && !o.trapHost && o.width < maxJump * 0.82,
+    preferredRoute,
+  );
   if (!target) return false;
 
   initializeRuntimeFields(target);
@@ -724,7 +778,11 @@ function shouldArmTrap(
 
 // Pop-up spike: hidden at height=0, erupts from ground when player approaches.
 // Placed at build time so it's invisible until armed; gives ~0.2s warning via ground glow.
-function hostPopUpSpike(obstacles: Obstacle[], levelIndex: number): boolean {
+function hostPopUpSpike(
+  obstacles: Obstacle[],
+  levelIndex: number,
+  preferredRoute?: 'lower' | 'mid' | 'upper',
+): boolean {
   const clearRadius = 72;
   const minX = 420 + levelIndex * 24;
   const maxX = 1900 + levelIndex * 80;
@@ -742,7 +800,10 @@ function hostPopUpSpike(obstacles: Obstacle[], levelIndex: number): boolean {
   }
 
   if (candidates.length === 0) return false;
-  const idx = Math.abs(levelIndex * 7 + obstacles.length) % candidates.length;
+  let idx = Math.abs(levelIndex * 7 + obstacles.length) % candidates.length;
+  if (preferredRoute === 'lower') {
+    idx = Math.floor(candidates.length * 0.65) % candidates.length;
+  }
   const spikeX = candidates[idx];
   obstacles.push(initializeRuntimeFields({
     kind: 'spike',
@@ -763,7 +824,10 @@ function hostPopUpSpike(obstacles: Obstacle[], levelIndex: number): boolean {
 // Platform needle: a regular-looking tile that mutates by growing spikes upward.
 // Selection is conservative: only middle platforms inside multi-platform gaps are used,
 // which preserves at least one alternate route and keeps the section beatable.
-function hostPlatformNeedle(obstacles: Obstacle[]): boolean {
+function hostPlatformNeedle(
+  obstacles: Obstacle[],
+  preferredRoute?: 'lower' | 'mid' | 'upper',
+): boolean {
   const gaps = obstacles.filter((o) => o.kind === 'gap');
   const platforms = obstacles
     .filter((o) => o.kind === 'platform' && !o.trapHost && o.width >= 56)
@@ -790,7 +854,11 @@ function hostPlatformNeedle(obstacles: Obstacle[]): boolean {
   }
 
   if (candidates.length === 0) return false;
-  const target = candidates[Math.floor(candidates.length / 2)];
+  const filtered = preferredRoute
+    ? candidates.filter((c) => c.routeLayer === preferredRoute)
+    : candidates;
+  const pool = filtered.length > 0 ? filtered : candidates;
+  const target = pool[Math.floor(pool.length / 2)];
   initializeRuntimeFields(target);
   target.trapHost = true;
   target.trapType = 'platformNeedle';
@@ -1136,4 +1204,16 @@ function lerp(from: number, to: number, t: number): number {
 
 function rangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
   return a1 > b0 && a0 < b1;
+}
+
+function pickObstacleByRoute(
+  obstacles: Obstacle[],
+  predicate: (o: Obstacle) => boolean,
+  preferredRoute?: 'lower' | 'mid' | 'upper',
+): Obstacle | undefined {
+  if (preferredRoute) {
+    const routed = obstacles.find((o) => o.routeLayer === preferredRoute && predicate(o));
+    if (routed) return routed;
+  }
+  return obstacles.find(predicate);
 }

@@ -7,7 +7,7 @@ import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
 import { introMessage } from './aiGameMaster';
-import { PlayerModel, ChoiceDecisionEvent } from './telemetry';
+import { PlayerModel, ChoiceDecisionEvent, RouteId } from './telemetry';
 import { analyzePlayer } from './playerAnalyzer';
 import { JUMP_CUT_FACTOR } from './movementTuning';
 import {
@@ -33,8 +33,13 @@ const PREVIEW_PATTERN_SPAN = 1200;
 const PREVIEW_PATTERN_REPEAT_COUNT = 18;
 const LOW_CEILING_THICKNESS = 16; // keep in sync with renderer low-ceiling draw thickness
 const CHOICE_BAR_THICKNESS = 12;  // keep in sync with renderer choice-obstacle draw thickness
-const SUPPORT_EDGE_INSET = 2;     // use a tiny inset so visual edge contact still counts
+const CHOICE_TILE_WIDTH = 116;
+const CHOICE_TILE_HEIGHT = 34;
+const SUPPORT_EDGE_INSET = 0;     // use full body bounds so platform visuals match collision exactly
 const PLATFORM_SNAP_TOLERANCE = 10;
+const ROUTE_SWITCH_MIN_X_DELTA = 88;
+const ROUTE_LOWER_MAX_HEIGHT = 22;
+const ROUTE_MID_MAX_HEIGHT = 86;
 
 export class Game {
   private player!: Player;
@@ -77,12 +82,17 @@ export class Game {
     phase: 'observe',
     activeTrap: 'none',
     trapState: 'none',
+    activeRoute: 'none',
     predictedAction: 'unknown',
     predictedLandingX: undefined as number | undefined,
     trapReason: 'none',
     confidence: 0,
     lastMutation: 'none',
+    mutationCountsByRoute: { lower: 0, mid: 0, upper: 0 },
   };
+  private routeMutationTotals = { lower: 0, mid: 0, upper: 0 };
+  private currentRoute: RouteId = 'lower';
+  private lastRouteEventX = Number.NEGATIVE_INFINITY;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -105,6 +115,7 @@ export class Game {
     this.resizeCanvas();
     this.levelIndex = index;
     this.level = this.buildLevelForIndex(index);
+    this.normalizeChoiceObstacleDimensions(this.level.obstacles);
     this.level.groundY = this.canvas.height - 80;
     this.spawnPlayer();
     this.hasSpawnedPlayer = true;
@@ -184,12 +195,17 @@ export class Game {
       phase: 'observe',
       activeTrap: 'none',
       trapState: 'none',
+      activeRoute: 'none',
       predictedAction: 'unknown',
       predictedLandingX: undefined,
       trapReason: 'none',
       confidence: 0,
       lastMutation: 'none',
+      mutationCountsByRoute: { lower: 0, mid: 0, upper: 0 },
     };
+    this.routeMutationTotals = { lower: 0, mid: 0, upper: 0 };
+    this.currentRoute = this.detectRouteFromPlayer();
+    this.lastRouteEventX = Number.NEGATIVE_INFINITY;
     this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
   }
 
@@ -276,6 +292,7 @@ export class Game {
     this.levelIndex = 0;
     this.attempts = 1;
     this.level = this.buildMenuPreviewLevel();
+    this.normalizeChoiceObstacleDimensions(this.level.obstacles);
     this.level.groundY = this.canvas.height - 80;
     this.cameraX = 0;
     this.levelAgeSec = 0;
@@ -318,7 +335,7 @@ export class Game {
       { kind: 'spike', x: 140, width: 44, height: 52 },
       { kind: 'lowCeiling', x: 310, width: 170, height: 34 },
       { kind: 'doubleSpike', x: 620, width: 104, height: 52 },
-      { kind: 'choiceObstacle', x: 920, width: 100, height: 34 },
+      { kind: 'choiceObstacle', x: 920, width: CHOICE_TILE_WIDTH, height: CHOICE_TILE_HEIGHT },
     ];
 
     const obstacles: Obstacle[] = [];
@@ -343,6 +360,20 @@ export class Game {
       flagX: worldWidth - 240,
       obstacles,
     };
+  }
+
+  private normalizeChoiceObstacleDimensions(obstacles: Obstacle[]) {
+    for (const o of obstacles) {
+      if (o.kind !== 'choiceObstacle') continue;
+      o.width = CHOICE_TILE_WIDTH;
+      o.height = CHOICE_TILE_HEIGHT;
+      if (o.currentWidth !== undefined) o.currentWidth = CHOICE_TILE_WIDTH;
+      if (o.targetWidth !== undefined) o.targetWidth = CHOICE_TILE_WIDTH;
+      if (o.currentHeight !== undefined) o.currentHeight = CHOICE_TILE_HEIGHT;
+      if (o.targetHeight !== undefined) o.targetHeight = CHOICE_TILE_HEIGHT;
+      if (o.trapInitialWidth !== undefined) o.trapInitialWidth = CHOICE_TILE_WIDTH;
+      if (o.trapInitialHeight !== undefined) o.trapInitialHeight = CHOICE_TILE_HEIGHT;
+    }
   }
 
   private spawnPreviewPlayer() {
@@ -397,9 +428,14 @@ export class Game {
     const playerRight = player.pos.x + player.width - SUPPORT_EDGE_INSET;
     const playerBottom = player.pos.y + player.height;
     const prevTop = player.pos.y;
+    const prevBottom = playerBottom;
+    const prevLeft = playerLeft;
+    const prevRight = playerRight;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
     player.update(dt, effectiveFloor ?? this.level.groundY, effectiveFloor !== null);
+    this.resolvePlatformTopCollision(prevBottom);
     this.resolveSolidPlatformHeadCollision(prevTop);
+    this.resolvePlatformSideCollision(prevLeft, prevRight);
 
     const targetX = player.pos.x - this.canvas.width * 0.32;
     this.cameraX = Math.max(0, Math.min(targetX, this.level.worldWidth - this.canvas.width));
@@ -520,9 +556,14 @@ export class Game {
     const playerRight = player.pos.x + player.width - SUPPORT_EDGE_INSET;
     const playerBottom = player.pos.y + player.height;
     const prevTop = player.pos.y;
+    const prevBottom = playerBottom;
+    const prevLeft = playerLeft;
+    const prevRight = playerRight;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
     player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null);
+    this.resolvePlatformTopCollision(prevBottom);
     this.resolveSolidPlatformHeadCollision(prevTop);
+    this.resolvePlatformSideCollision(prevLeft, prevRight);
 
     // --- Ground state transitions ---
     if (wasOnGround && !player.onGround) {
@@ -564,9 +605,13 @@ export class Game {
       runtimeTrap.debug.lastMutation !== 'none'
         ? runtimeTrap.debug.lastMutation
         : this.trapRuntimeDebug.lastMutation;
+    this.routeMutationTotals.lower += runtimeTrap.debug.mutationCountsByRoute.lower;
+    this.routeMutationTotals.mid += runtimeTrap.debug.mutationCountsByRoute.mid;
+    this.routeMutationTotals.upper += runtimeTrap.debug.mutationCountsByRoute.upper;
     this.trapRuntimeDebug = {
       ...runtimeTrap.debug,
       lastMutation: persistedLastMutation,
+      mutationCountsByRoute: { ...this.routeMutationTotals },
     };
     this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
     if (
@@ -652,6 +697,7 @@ export class Game {
     this.sampleTimer += dt;
     if (this.sampleTimer >= SAMPLE_INTERVAL) {
       tracker.recordSample(player.pos.x, player.pos.y);
+      this.trackRouteBehavior();
       this.sampleTimer = 0;
     }
 
@@ -679,6 +725,13 @@ export class Game {
 
     // --- Win check ---
     if (player.pos.x + player.width >= level.flagX) {
+      this.tracker.recordRouteChoice({
+        routeId: this.detectRouteFromPlayer(),
+        x: player.pos.x,
+        levelIndex: this.levelIndex,
+        timeMs: this.levelAgeSec * 1000,
+        success: true,
+      });
       this.publishStrategyBrief('levelComplete');
       tracker.finishRun(true);
       this.refreshPlayerModel();
@@ -852,13 +905,109 @@ export class Game {
     }
   }
 
+  private resolvePlatformTopCollision(prevBottom: number) {
+    if (this.player.vel.y < 0) return;
+
+    const curBottom = this.player.pos.y + this.player.height;
+    const playerLeft = this.player.pos.x + SUPPORT_EDGE_INSET;
+    const playerRight = this.player.pos.x + this.player.width - SUPPORT_EDGE_INSET;
+
+    for (const o of this.level.obstacles) {
+      if (o.kind !== 'platform') continue;
+      if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+
+      const ox = o.currentX ?? o.x;
+      const ow = o.currentWidth ?? o.width;
+      const oh = o.currentHeight ?? o.height;
+      const platformTop = this.level.groundY - oh;
+
+      const xOverlap = playerRight > ox && playerLeft < ox + ow;
+      if (!xOverlap) continue;
+
+      const crossedTop =
+        prevBottom <= platformTop + PLATFORM_SNAP_TOLERANCE &&
+        curBottom >= platformTop;
+      if (!crossedTop) continue;
+
+      this.player.pos.y = platformTop - this.player.height;
+      this.player.vel.y = 0;
+      this.player.onGround = true;
+      break;
+    }
+  }
+
+  private resolvePlatformSideCollision(prevLeft: number, prevRight: number) {
+    const curLeft = this.player.pos.x + SUPPORT_EDGE_INSET;
+    const curRight = this.player.pos.x + this.player.width - SUPPORT_EDGE_INSET;
+    const playerTop = this.player.pos.y;
+    const playerBottom = playerTop + this.player.height;
+
+    for (const o of this.level.obstacles) {
+      if (o.kind !== 'platform') continue;
+      if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+
+      const ox = o.currentX ?? o.x;
+      const ow = o.currentWidth ?? o.width;
+      const oh = o.currentHeight ?? o.height;
+      const platformTop = this.level.groundY - oh;
+      const platformBottom = platformTop + 16;
+      const yOverlap = playerBottom > platformTop + 1 && playerTop < platformBottom - 1;
+      if (!yOverlap) continue;
+
+      const crossedLeftFace = prevRight <= ox && curRight > ox;
+      if (crossedLeftFace) {
+        this.player.pos.x = ox - this.player.width + SUPPORT_EDGE_INSET;
+        return;
+      }
+
+      const platformRight = ox + ow;
+      const crossedRightFace = prevLeft >= platformRight && curLeft < platformRight;
+      if (crossedRightFace) {
+        this.player.pos.x = platformRight - SUPPORT_EDGE_INSET;
+        return;
+      }
+    }
+  }
+
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
+    this.tracker.recordRouteChoice({
+      routeId: this.detectRouteFromPlayer(),
+      x: deathX,
+      levelIndex: this.levelIndex,
+      timeMs: this.levelAgeSec * 1000,
+      success: false,
+    });
     this.publishStrategyBrief('death', { reason, x: deathX });
     this.tracker.finishRun(false, reason, deathX);
     this.refreshPlayerModel();
     this.debugPanel.setPlayerModel(this.playerModel);
     this.state = 'dead';
     this.deathTimer = 0;
+  }
+
+  private detectRouteFromPlayer(): RouteId {
+    const playerBottom = this.player.pos.y + this.player.height;
+    const heightAboveGround = this.level.groundY - playerBottom;
+    if (heightAboveGround <= ROUTE_LOWER_MAX_HEIGHT) return 'lower';
+    if (heightAboveGround <= ROUTE_MID_MAX_HEIGHT) return 'mid';
+    return 'upper';
+  }
+
+  private trackRouteBehavior(): void {
+    const route = this.detectRouteFromPlayer();
+    this.tracker.recordRoutePresence(route);
+    if (route === this.currentRoute) return;
+    if (this.player.pos.x - this.lastRouteEventX < ROUTE_SWITCH_MIN_X_DELTA) return;
+
+    this.currentRoute = route;
+    this.lastRouteEventX = this.player.pos.x;
+    this.tracker.recordRouteChoice({
+      routeId: route,
+      x: this.player.pos.x,
+      levelIndex: this.levelIndex,
+      timeMs: this.levelAgeSec * 1000,
+      success: true,
+    });
   }
 
   private publishStrategyBrief(
