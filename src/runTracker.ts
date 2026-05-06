@@ -1,5 +1,5 @@
 import { Obstacle } from './types';
-import { RunData, PlayerProfile } from './telemetry';
+import { RunData, PlayerProfile, ChoiceDecisionEvent } from './telemetry';
 
 interface GenerationMeta {
   difficulty?: string;
@@ -36,6 +36,7 @@ export class RunTracker {
       landings: [],
       samples: [],
       actions: [],
+      choiceDecisions: [],
     };
   }
 
@@ -57,6 +58,11 @@ export class RunTracker {
   recordAction(action: 'jump' | 'crouchStart' | 'crouchEnd', x: number): void {
     if (!this.current) return;
     this.current.actions.push({ action, x, timeMs: this.elapsed() });
+  }
+
+  recordChoiceDecision(event: ChoiceDecisionEvent): void {
+    if (!this.current) return;
+    this.current.choiceDecisions.push(event);
   }
 
   finishRun(completed: boolean, deathReason?: 'spike' | 'gap', deathX?: number): void {

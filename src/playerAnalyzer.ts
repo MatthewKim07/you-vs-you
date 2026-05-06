@@ -19,6 +19,9 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
   const consistency = classifyConsistency(recentRuns);
   const riskProfile = classifyRiskProfile(recentRuns, reactionTiming);
 
+  // Choice preference analysis
+  const choiceStats = analyzeChoiceDecisions(recentRuns);
+
   return {
     prefersJump,
     prefersCrouch,
@@ -27,7 +30,55 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
     reactionTiming,
     consistency,
     riskProfile,
+    choiceJumpRate: choiceStats.jumpRate,
+    choiceCrouchRate: choiceStats.crouchRate,
+    preferredChoiceAction: choiceStats.preferred,
+    choiceConsistency: choiceStats.choiceConsistency,
   };
+}
+
+// Analyze choice obstacle decisions across recent runs
+function analyzeChoiceDecisions(runs: RunData[]): {
+  jumpRate: number;
+  crouchRate: number;
+  preferred: PlayerModel['preferredChoiceAction'];
+  choiceConsistency: PlayerModel['choiceConsistency'];
+} {
+  const allChoices = runs.flatMap((r) => r.choiceDecisions);
+  if (allChoices.length === 0) {
+    return { jumpRate: 0, crouchRate: 0, preferred: 'unknown', choiceConsistency: 'unknown' };
+  }
+
+  const jumpChoices = allChoices.filter((c) => c.chosenAction === 'jump').length;
+  const crouchChoices = allChoices.filter((c) => c.chosenAction === 'crouch').length;
+  const total = allChoices.length;
+
+  const jumpRate = total > 0 ? jumpChoices / total : 0;
+  const crouchRate = total > 0 ? crouchChoices / total : 0;
+
+  let preferred: PlayerModel['preferredChoiceAction'];
+  if (jumpRate > 0.65) preferred = 'jump';
+  else if (crouchRate > 0.65) preferred = 'crouch';
+  else preferred = 'mixed';
+
+  // Consistency across runs
+  let choiceConsistency: PlayerModel['choiceConsistency'] = 'unknown';
+  if (runs.length >= 2) {
+    const runRates = runs
+      .filter((r) => r.choiceDecisions.length > 0)
+      .map((r) => {
+        const j = r.choiceDecisions.filter((c) => c.chosenAction === 'jump').length;
+        return j / r.choiceDecisions.length;
+      });
+    if (runRates.length >= 2) {
+      const mean = runRates.reduce((a, b) => a + b, 0) / runRates.length;
+      const variance = runRates.reduce((sum, r) => sum + (r - mean) * (r - mean), 0) / runRates.length;
+      const stddev = Math.sqrt(variance);
+      choiceConsistency = stddev < 0.2 ? 'predictable' : 'mixed';
+    }
+  }
+
+  return { jumpRate, crouchRate, preferred, choiceConsistency };
 }
 
 function classifyReactionTiming(runs: RunData[]): PlayerModel['reactionTiming'] {

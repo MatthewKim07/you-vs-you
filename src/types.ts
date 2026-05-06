@@ -10,6 +10,12 @@ export interface Obstacle {
   x: number;       // world-space left edge
   width: number;
   height: number;  // spikes: spike height; gaps: ignored; lowCeiling: clearance from ground
+  // Trap system fields (optional)
+  trapHost?: boolean;
+  trapType?: string;
+  trapState?: 'idle' | 'armed' | 'triggered' | 'spent';
+  trapReason?: string;
+  trapTimer?: number;   // runtime mutable, seconds elapsed in current trapState
 }
 
 export type GameState = 'menu' | 'countdown' | 'paused' | 'playing' | 'dead' | 'levelComplete';

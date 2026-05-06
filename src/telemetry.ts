@@ -27,6 +27,16 @@ export interface ActionEvent {
   timeMs: number;
 }
 
+// Task: decision-based obstacle tracking
+export interface ChoiceDecisionEvent {
+  obstacleId: string;     // e.g. "choice_1"
+  obstacleKind: string;   // e.g. "choiceObstacle"
+  x: number;              // x-position of the obstacle
+  chosenAction: 'jump' | 'crouch';
+  timeMs: number;
+  success: boolean;       // did the player survive the choice?
+}
+
 export interface RunData {
   levelIndex: number;
   attemptNumber: number;
@@ -44,6 +54,7 @@ export interface RunData {
   landings: LandingEvent[];
   samples: PositionSample[];
   actions: ActionEvent[];
+  choiceDecisions: ChoiceDecisionEvent[]; // NEW
 }
 
 export interface PlayerModel {
@@ -54,6 +65,11 @@ export interface PlayerModel {
   reactionTiming: 'early' | 'balanced' | 'late';
   consistency: 'predictable' | 'mixed' | 'random';
   riskProfile: 'safe' | 'balanced' | 'aggressive';
+  // NEW: choice-specific learning
+  choiceJumpRate: number;
+  choiceCrouchRate: number;
+  preferredChoiceAction: 'jump' | 'crouch' | 'mixed' | 'unknown';
+  choiceConsistency: 'predictable' | 'mixed' | 'unknown';
 }
 
 // Derived summary across all stored runs.
