@@ -1,4 +1,4 @@
-import { ActionEvent, PlayerModel, RunData } from './telemetry';
+import { ActionEvent, ObstacleChoiceStats, PlayerModel, RunData } from './telemetry';
 
 const WINDOW_RUNS = 5;
 
@@ -32,21 +32,30 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
     riskProfile,
     choiceJumpRate: choiceStats.jumpRate,
     choiceCrouchRate: choiceStats.crouchRate,
+    choiceConfidence: choiceStats.confidence,
     preferredChoiceAction: choiceStats.preferred,
     choiceConsistency: choiceStats.choiceConsistency,
+    perObstacleChoiceStats: choiceStats.perObstacleStats,
   };
 }
 
-// Analyze choice obstacle decisions across recent runs
+// Analyze choice obstacle decisions across recent runs.
+// Only ChoiceDecisionEvents are used — global jump/crouch actions are excluded.
 function analyzeChoiceDecisions(runs: RunData[]): {
   jumpRate: number;
   crouchRate: number;
+  confidence: number;
   preferred: PlayerModel['preferredChoiceAction'];
   choiceConsistency: PlayerModel['choiceConsistency'];
+  perObstacleStats: Record<string, ObstacleChoiceStats>;
 } {
   const allChoices = runs.flatMap((r) => r.choiceDecisions);
+
+  // Build per-obstacle stats before global aggregation.
+  const perObstacleStats = buildPerObstacleStats(allChoices);
+
   if (allChoices.length === 0) {
-    return { jumpRate: 0, crouchRate: 0, preferred: 'unknown', choiceConsistency: 'unknown' };
+    return { jumpRate: 0, crouchRate: 0, confidence: 0, preferred: 'unknown', choiceConsistency: 'unknown', perObstacleStats };
   }
 
   const jumpChoices = allChoices.filter((c) => c.chosenAction === 'jump').length;
@@ -61,6 +70,11 @@ function analyzeChoiceDecisions(runs: RunData[]): {
   else if (crouchRate > 0.65) preferred = 'crouch';
   else preferred = 'mixed';
 
+  const dominance = Math.max(jumpRate, crouchRate);
+  const volumeConfidence = Math.min(1, total / 5);
+  const preferenceStrength = preferred === 'mixed' ? 0.28 : Math.max(0.75, dominance);
+  const confidence = Math.max(0, Math.min(1, volumeConfidence * preferenceStrength));
+
   // Consistency across runs
   let choiceConsistency: PlayerModel['choiceConsistency'] = 'unknown';
   if (runs.length >= 2) {
@@ -71,14 +85,43 @@ function analyzeChoiceDecisions(runs: RunData[]): {
         return j / r.choiceDecisions.length;
       });
     if (runRates.length >= 2) {
-      const mean = runRates.reduce((a, b) => a + b, 0) / runRates.length;
-      const variance = runRates.reduce((sum, r) => sum + (r - mean) * (r - mean), 0) / runRates.length;
+      const runMean = runRates.reduce((a, b) => a + b, 0) / runRates.length;
+      const variance = runRates.reduce((sum, r) => sum + (r - runMean) * (r - runMean), 0) / runRates.length;
       const stddev = Math.sqrt(variance);
       choiceConsistency = stddev < 0.2 ? 'predictable' : 'mixed';
     }
   }
 
-  return { jumpRate, crouchRate, preferred, choiceConsistency };
+  return { jumpRate, crouchRate, confidence, preferred, choiceConsistency, perObstacleStats };
+}
+
+// Compute per-obstacle stats from choice decisions only (gate-scoped, no global noise).
+function buildPerObstacleStats(
+  choices: import('./telemetry').ChoiceDecisionEvent[],
+): Record<string, ObstacleChoiceStats> {
+  const byId: Record<string, { j: number; c: number }> = {};
+  for (const ev of choices) {
+    if (!byId[ev.obstacleId]) byId[ev.obstacleId] = { j: 0, c: 0 };
+    if (ev.chosenAction === 'jump') byId[ev.obstacleId].j++;
+    else byId[ev.obstacleId].c++;
+  }
+
+  const result: Record<string, ObstacleChoiceStats> = {};
+  for (const [id, counts] of Object.entries(byId)) {
+    const total = counts.j + counts.c;
+    const jumpRate = total > 0 ? counts.j / total : 0;
+    const crouchRate = total > 0 ? counts.c / total : 0;
+    const dominance = Math.max(jumpRate, crouchRate);
+    const volumeConf = Math.min(1, total / 4);
+    let preferred: ObstacleChoiceStats['preferred'];
+    if (jumpRate > 0.65) preferred = 'jump';
+    else if (crouchRate > 0.65) preferred = 'crouch';
+    else preferred = 'mixed';
+    const preferenceStrength = preferred === 'mixed' ? 0.28 : Math.max(0.75, dominance);
+    const confidence = Math.max(0, Math.min(1, volumeConf * preferenceStrength));
+    result[id] = { obstacleId: id, jumpCount: counts.j, crouchCount: counts.c, total, jumpRate, crouchRate, confidence, preferred };
+  }
+  return result;
 }
 
 function classifyReactionTiming(runs: RunData[]): PlayerModel['reactionTiming'] {

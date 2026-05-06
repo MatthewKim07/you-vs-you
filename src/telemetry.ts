@@ -30,9 +30,11 @@ export interface ActionEvent {
 // Task: decision-based obstacle tracking
 export interface ChoiceDecisionEvent {
   obstacleId: string;     // e.g. "choice_1"
-  obstacleKind: string;   // e.g. "choiceObstacle"
+  obstacleType: string;   // e.g. "adaptiveChoiceGate"
+  obstacleKind?: string;  // backward-compatible alias
   x: number;              // x-position of the obstacle
   chosenAction: 'jump' | 'crouch';
+  levelIndex: number;
   timeMs: number;
   success: boolean;       // did the player survive the choice?
 }
@@ -57,6 +59,18 @@ export interface RunData {
   choiceDecisions: ChoiceDecisionEvent[]; // NEW
 }
 
+// Per-obstacle choice stats — sourced only from ChoiceDecisionEvents, not global actions.
+export interface ObstacleChoiceStats {
+  obstacleId: string;
+  jumpCount: number;
+  crouchCount: number;
+  total: number;
+  jumpRate: number;
+  crouchRate: number;
+  confidence: number;
+  preferred: 'jump' | 'crouch' | 'mixed';
+}
+
 export interface PlayerModel {
   prefersJump: boolean;
   prefersCrouch: boolean;
@@ -65,11 +79,14 @@ export interface PlayerModel {
   reactionTiming: 'early' | 'balanced' | 'late';
   consistency: 'predictable' | 'mixed' | 'random';
   riskProfile: 'safe' | 'balanced' | 'aggressive';
-  // NEW: choice-specific learning
+  // choice-specific learning (gate decisions only)
   choiceJumpRate: number;
   choiceCrouchRate: number;
+  choiceConfidence: number;
   preferredChoiceAction: 'jump' | 'crouch' | 'mixed' | 'unknown';
   choiceConsistency: 'predictable' | 'mixed' | 'unknown';
+  // per-obstacle breakdown (gate decisions scoped by obstacleId)
+  perObstacleChoiceStats: Record<string, ObstacleChoiceStats>;
 }
 
 // Derived summary across all stored runs.
