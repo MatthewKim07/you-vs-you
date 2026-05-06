@@ -1,33 +1,32 @@
 import { LevelData } from './level';
-import { Obstacle, ObstacleKind } from './types';
+import { Obstacle } from './types';
 import { PlayerModel, PlayerProfile, RunData } from './telemetry';
 import {
   Difficulty,
-  levelDifficulty,
   calculateReactionSpacing,
   calculateSafeJumpDistance,
   calculateMaxJumpDistance,
-  calculateStaircaseHeights,
-  calculateStepGapHeights,
 } from './movementTuning';
 
 const GROUND_TOP = 0;
 const SAFE_SPAWN_END = 320;
 const SAFE_FLAG_GAP = 240;
+const FLAG_OFFSET = 240;
+const PLAYER_WIDTH = 32;
+const PLAYER_STANDING_HEIGHT = 48;
+const MIN_LANDING_WIDTH = PLAYER_WIDTH + 10;
+const LANDING_BUFFER = 6;
+const MAX_GENERATION_ATTEMPTS = 4;
 
 const SPIKE_W = 44;
 const SPIKE_H = 52;
 const DOUBLE_SPIKE_W = 104;
 const DOUBLE_SPIKE_H = 52;
-const GAP_MIN_W = 108;
-const GAP_MAX_W = 150;
 const LOW_CEILING_MIN_W = 150;
 const LOW_CEILING_MAX_W = 230;
 const LOW_CEILING_CLEARANCE = 34;
 const CHOICE_OBS_W = 100;
 const CHOICE_OBS_H = 34;
-
-const MAX_NEW_PATTERNS = 10;
 
 type Strategy =
   | 'punishJumpBias'
@@ -38,73 +37,70 @@ type Strategy =
 
 type DensityLabel = 'low' | 'medium' | 'high' | 'extreme';
 
-type PatternKind =
-  | 'singleSpike'
-  | 'doubleSpike'
-  | 'lowCeiling'
-  | 'wideGap'
-  | 'stepGap'
-  | 'staircase'
-  | 'choiceObstacle'
-  | 'pressureSequence'
+type SegmentType =
+  | 'spikeJump'
+  | 'doubleSpikeTiming'
+  | 'lowCeilingCrouch'
   | 'jumpThenCrouch'
-  | 'crouchThenJump';
+  | 'crouchThenJump'
+  | 'longGapPlatforms'
+  | 'staircaseClimb'
+  | 'headClearanceJump'
+  | 'choiceThenPunish'
+  | 'pressureCombo'
+  | 'mixedPlatformCombo';
 
-interface GenerationContext {
-  pathStart: number;
-  pathEnd: number;
-  worldWidth: number;
-  flagX: number;
-  sourceRuns: RunData[];
-  latestRun?: RunData;
-  latestSuccess?: RunData;
-  latestDeath?: RunData;
+interface SegmentSpec {
+  type: SegmentType;
+  requiredTag?: string;
 }
 
-interface PerformanceTuning {
-  zoneDelta: number;
-  spacingAdjust: number;
-  advancedReduction: number;
-  note: string;
+interface SegmentBuild {
+  type: SegmentType;
+  variant: string;
+  obstacles: Obstacle[];
+  length: number;
+  combo: boolean;
+  advanced: boolean;
+  platform: boolean;
 }
 
-interface CompositionPlan {
-  zoneCount: number;
-  density: DensityLabel;
-  minAdvanced: number;
-  minCombo: number;
-}
-
-interface VariantContext {
+interface SegmentContext {
   levelIndex: number;
   difficulty: Difficulty;
   strategy: Strategy;
   playerModel: PlayerModel;
-  reactionSpacing: number;
   safeJumpDistance: number;
   maxJumpDistance: number;
+  reactionSpacing: number;
 }
 
-interface PatternVariant {
-  name: string;
-  kind: PatternKind;
-  difficulties: Difficulty[];
-  advanced: boolean;
-  combo: boolean;
-  firstKind: ObstacleKind;
-  build: (startX: number, ctx: VariantContext) => Obstacle[];
+interface RequiredRule {
+  tag: string;
+  types: SegmentType[];
+  minCount: number;
 }
 
-interface SelectedVariant {
-  kind: PatternKind;
-  variant: PatternVariant;
-}
-
-interface PlaceResult {
+interface BuildResult {
+  segmentBuilds: SegmentBuild[];
   obstacles: Obstacle[];
-  usedPatterns: string[];
-  usedVariants: string[];
-  droppedVariants: string[];
+  worldWidth: number;
+  flagX: number;
+  requiredTagsPlaced: string[];
+  maxQuietGap: number;
+}
+
+type ValidationStatus = 'valid' | 'repaired' | 'fallback';
+
+interface ValidationResult {
+  ok: boolean;
+  notes: string[];
+  warnings: string[];
+}
+
+interface Interval {
+  start: number;
+  end: number;
 }
 
 export function generateAdaptiveLevel(
@@ -114,78 +110,118 @@ export function generateAdaptiveLevel(
   levelIndex: number,
   canvasWidth: number,
 ): LevelData {
-  const difficulty = levelDifficulty(levelIndex);
+  const difficulty = tierForLevel(levelIndex);
   const strategy = selectStrategy(playerModel);
-  const worldWidth = worldWidthForLevel(levelIndex, canvasWidth);
-  const flagX = worldWidth - 280;
-  const pathStart = SAFE_SPAWN_END;
-  const pathEnd = flagX - SAFE_FLAG_GAP;
-
-  const sourceLevel = Math.max(0, levelIndex - 1);
-  const sourceRuns = previousRuns.filter((r) => r.levelIndex === sourceLevel);
+  const sourceRuns = previousRuns.filter((r) => r.levelIndex === Math.max(0, levelIndex - 1));
   const latestRun = sourceRuns[sourceRuns.length - 1];
   const latestSuccess = [...sourceRuns].reverse().find((r) => r.completed);
-  const latestDeath = [...sourceRuns].reverse().find((r) => !r.completed && r.deathX !== undefined);
 
-  const ctx: GenerationContext = {
-    pathStart,
-    pathEnd,
-    worldWidth,
-    flagX,
-    sourceRuns,
-    latestRun,
-    latestSuccess,
-    latestDeath,
-  };
-
-  const tuning = evaluatePerformance(sourceRuns);
-  const composition = compositionForLevel(levelIndex, difficulty, tuning.zoneDelta, tuning.advancedReduction);
-
-  const reactionSpacing = clampInt(calculateReactionSpacing(difficulty) + tuning.spacingAdjust, 120, 260);
-  const variantCtx: VariantContext = {
+  const segmentCtx: SegmentContext = {
     levelIndex,
     difficulty,
     strategy,
     playerModel,
-    reactionSpacing,
     safeJumpDistance: calculateSafeJumpDistance(difficulty),
     maxJumpDistance: calculateMaxJumpDistance(),
+    reactionSpacing: calculateReactionSpacing(difficulty),
   };
 
-  const planKinds = buildPatternPlan(strategy, composition.zoneCount, levelIndex, difficulty, composition.minAdvanced, composition.minCombo);
-  const recentVariantMemory = collectRecentVariantMemory(previousRuns, 3);
-  const antiRepeatNotes: string[] = [];
+  const requiredRules = requiredRulesForLevel(levelIndex);
+  let lastWarnings: string[] = [];
 
-  const selected = selectVariantsForPlan(planKinds, variantCtx, recentVariantMemory, antiRepeatNotes, levelIndex);
+  for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt++) {
+    const specs = designSegmentPlan(levelIndex, segmentCtx, requiredRules, previousRuns, attempt);
+    const built = buildSegments(specs, segmentCtx, canvasWidth, attempt);
+    const repaired = repairUnsafeBuild(built, segmentCtx, canvasWidth, attempt);
 
-  const carried = carryForwardObstacles(ctx, levelIndex, reactionSpacing);
-  const placed = placeSelectedVariants(selected, carried, variantCtx, levelIndex, ctx, reactionSpacing);
-  const obstacles = [...carried, ...placed.obstacles].sort((a, b) => a.x - b.x);
+    const valid = validateBuild({
+      levelIndex,
+      requiredRules,
+      specs,
+      built: repaired.built,
+      segmentCtx,
+      previousRuns,
+    });
 
+    lastWarnings = [...repaired.warnings, ...valid.warnings];
+    if (valid.ok) {
+      return finalizeLevel(
+        levelIndex,
+        segmentCtx,
+        strategy,
+        repaired.built,
+        specs,
+        requiredRules,
+        previousRuns,
+        latestRun,
+        latestSuccess,
+        valid.notes,
+        repaired.repaired ? 'repaired' : 'valid',
+        dedupeStrings([...repaired.warnings, ...valid.warnings], 8),
+      );
+    }
+  }
+
+  // Fallback if all attempts fail validation: force known-safe fallback.
+  const safeFallback = buildKnownSafeFallback(levelIndex, segmentCtx, canvasWidth);
+  const fallbackNotes = ['Validation fallback used after retries'];
+  const fallbackWarnings = dedupeStrings([...lastWarnings, 'Used known safe fallback level'], 8);
+  return finalizeLevel(
+    levelIndex,
+    segmentCtx,
+    strategy,
+    safeFallback,
+    safeFallback.segmentBuilds.map((s) => ({ type: s.type })),
+    requiredRules,
+    previousRuns,
+    latestRun,
+    latestSuccess,
+    fallbackNotes,
+    'fallback',
+    fallbackWarnings,
+  );
+}
+
+function finalizeLevel(
+  levelIndex: number,
+  segmentCtx: SegmentContext,
+  strategy: Strategy,
+  built: BuildResult,
+  specs: SegmentSpec[],
+  requiredRules: RequiredRule[],
+  previousRuns: RunData[],
+  latestRun: RunData | undefined,
+  latestSuccess: RunData | undefined,
+  validationNotes: string[],
+  validationStatus: ValidationStatus,
+  validationWarnings: string[],
+): LevelData {
+  const obstacles = [...built.obstacles].sort((a, b) => a.x - b.x);
   const notes: string[] = [];
   notes.push(`Strategy: ${strategy}`);
-  notes.push(`Difficulty: ${difficulty}`);
-  notes.push(`Smoothing: ${tuning.note}`);
-  if (latestDeath?.deathX !== undefined) {
-    notes.push(`near death x=${Math.round(latestDeath.deathX)}`);
-  }
-  const lastSuccessLanding = latestSuccess?.landings.slice(-1)[0];
-  if (lastSuccessLanding) {
-    notes.push(`near landing x=${Math.round(lastSuccessLanding.x)}`);
-  }
-  notes.push(`Generated ${obstacles.length} obstacle(s)`);
+  notes.push(`Difficulty: ${segmentCtx.difficulty}`);
+  notes.push(...validationNotes.slice(0, 4));
 
   const markerSource = latestSuccess ?? latestRun;
+  const pathStart = SAFE_SPAWN_END;
+  const pathEnd = built.flagX - SAFE_FLAG_GAP;
   const landingMarkers = (markerSource?.landings ?? [])
     .map((l) => clamp(Math.round(l.x), pathStart, pathEnd))
     .filter((x, i, arr) => arr.indexOf(x) === i)
     .slice(-8);
 
+  const comboCount = built.segmentBuilds.filter((s) => s.combo).length;
+  const advancedCount = built.segmentBuilds.filter((s) => s.advanced).length;
+  const platformUsed = built.segmentBuilds.some((s) => s.platform);
+  const uniquePatternTypes = new Set(built.segmentBuilds.map((s) => s.type)).size;
+  const requiredTags = requiredRules.flatMap((r) => Array.from({ length: r.minCount }, () => r.tag));
+  const difficultyIncreasing = isDifficultyIncreasing(previousRuns, segmentCtx.difficulty, built.segmentBuilds.length, levelIndex);
+
   return {
     index: levelIndex,
-    worldWidth,
+    worldWidth: built.worldWidth,
     groundY: GROUND_TOP,
-    flagX,
+    flagX: built.flagX,
     obstacles,
     aiLandingMarkersX: landingMarkers,
     aiDebug: {
@@ -193,17 +229,972 @@ export function generateAdaptiveLevel(
       placementXs: obstacles.map((o) => Math.round(o.x)),
       obstacleCount: obstacles.length,
       strategy,
-      patterns: placed.usedPatterns,
-      variants: placed.usedVariants,
-      antiRepeat: antiRepeatNotes,
-      density: composition.density,
-      attempted: selected.length,
-      dropped: placed.droppedVariants,
-      difficulty,
-      safeJumpDistance: variantCtx.safeJumpDistance,
-      maxJumpDistance: variantCtx.maxJumpDistance,
+      patterns: built.segmentBuilds.map((s) => s.type),
+      variants: built.segmentBuilds.map((s) => s.variant),
+      requiredPatterns: requiredTags,
+      placedRequiredPatterns: built.requiredTagsPlaced,
+      density: densityLabelForLevel(levelIndex),
+      antiRepeat: [],
+      attempted: specs.length,
+      dropped: [],
+      difficulty: segmentCtx.difficulty,
+      challengeZones: built.segmentBuilds.length,
+      uniquePatternTypes,
+      comboCount,
+      advancedCount,
+      platformUsed,
+      difficultyIncreasing,
+      safeJumpDistance: segmentCtx.safeJumpDistance,
+      maxJumpDistance: segmentCtx.maxJumpDistance,
+      validationStatus,
+      validationWarnings,
     },
   };
+}
+
+function tierForLevel(levelIndex: number): Difficulty {
+  if (levelIndex <= 1) return 'medium'; // Level 2
+  if (levelIndex <= 2) return 'hard';   // Level 3
+  if (levelIndex <= 4) return 'hard';   // Level 4-5
+  return 'expert';
+}
+
+function densityLabelForLevel(levelIndex: number): DensityLabel {
+  if (levelIndex <= 1) return 'medium';
+  if (levelIndex <= 3) return 'high';
+  return 'extreme';
+}
+
+function segmentCountForLevel(levelIndex: number, attempt: number): number {
+  let base = 4;
+  if (levelIndex === 2) base = 5;
+  else if (levelIndex <= 4) base = 6;
+  else if (levelIndex <= 7) base = 7;
+  else base = 8;
+
+  if (attempt >= 1) base += 1;
+  if (attempt >= 2) base += 1;
+  return base;
+}
+
+function requiredRulesForLevel(levelIndex: number): RequiredRule[] {
+  const rules: RequiredRule[] = [];
+
+  if (levelIndex === 1) {
+    rules.push({ tag: 'longGapPlatforms', types: ['longGapPlatforms'], minCount: 1 });
+  }
+  if (levelIndex === 2) {
+    rules.push({ tag: 'staircaseClimb', types: ['staircaseClimb'], minCount: 1 });
+  }
+
+  if (levelIndex >= 3 && levelIndex < 5) {
+    rules.push({ tag: 'platformChallenge', types: ['longGapPlatforms', 'staircaseClimb'], minCount: 1 });
+  }
+
+  if (levelIndex >= 5) {
+    rules.push({ tag: 'longGapPlatforms', types: ['longGapPlatforms'], minCount: 1 });
+    rules.push({ tag: 'staircaseClimb', types: ['staircaseClimb'], minCount: 1 });
+  }
+
+  return rules;
+}
+
+function designSegmentPlan(
+  levelIndex: number,
+  ctx: SegmentContext,
+  requiredRules: RequiredRule[],
+  previousRuns: RunData[],
+  attempt: number,
+): SegmentSpec[] {
+  const targetCount = segmentCountForLevel(levelIndex, attempt);
+
+  const requiredSpecs: SegmentSpec[] = [];
+  for (const rule of requiredRules) {
+    for (let i = 0; i < rule.minCount; i++) {
+      requiredSpecs.push({
+        type: chooseRequiredType(rule, i, levelIndex),
+        requiredTag: rule.tag,
+      });
+    }
+  }
+
+  const pool = strategyPool(ctx);
+  const specs: SegmentSpec[] = [...requiredSpecs];
+  let seed = levelIndex * 97 + previousRuns.length * 17 + attempt * 31;
+
+  while (specs.length < targetCount) {
+    const t = pool[Math.abs(seed++) % pool.length];
+    specs.push({ type: t });
+  }
+
+  enforceComboRatio(specs, levelIndex, ctx);
+  enforceBasicCap(specs, levelIndex);
+  enforceMinimumVariety(specs, levelIndex, pool);
+  enforcePlatformRules(specs, levelIndex);
+  applyPredictabilityBreak(specs, ctx.playerModel, levelIndex);
+
+  return specs.slice(0, targetCount + 1);
+}
+
+function chooseRequiredType(rule: RequiredRule, offset: number, levelIndex: number): SegmentType {
+  if (rule.types.length === 1) return rule.types[0];
+  return rule.types[(levelIndex + offset) % rule.types.length];
+}
+
+function strategyPool(ctx: SegmentContext): SegmentType[] {
+  const base: SegmentType[] = [
+    'spikeJump',
+    'doubleSpikeTiming',
+    'lowCeilingCrouch',
+    'jumpThenCrouch',
+    'crouchThenJump',
+    'headClearanceJump',
+    'choiceThenPunish',
+    'pressureCombo',
+    'mixedPlatformCombo',
+    'longGapPlatforms',
+    'staircaseClimb',
+  ];
+
+  if (ctx.playerModel.prefersJump) {
+    return [
+      'lowCeilingCrouch',
+      'headClearanceJump',
+      'jumpThenCrouch',
+      'choiceThenPunish',
+      'pressureCombo',
+      'longGapPlatforms',
+      'staircaseClimb',
+      ...base,
+    ];
+  }
+
+  if (ctx.playerModel.prefersCrouch) {
+    return [
+      'longGapPlatforms',
+      'doubleSpikeTiming',
+      'crouchThenJump',
+      'pressureCombo',
+      'mixedPlatformCombo',
+      'staircaseClimb',
+      ...base,
+    ];
+  }
+
+  if (ctx.playerModel.reactionTiming === 'late') {
+    return [
+      'pressureCombo',
+      'doubleSpikeTiming',
+      'headClearanceJump',
+      'jumpThenCrouch',
+      'choiceThenPunish',
+      ...base,
+    ];
+  }
+
+  return base;
+}
+
+function enforceComboRatio(specs: SegmentSpec[], levelIndex: number, ctx: SegmentContext) {
+  const minRatio = levelIndex >= 3 ? 0.6 : 0.4;
+  const minCombos = Math.ceil(specs.length * minRatio);
+  let comboCount = specs.filter((s) => isComboSegment(s.type)).length;
+
+  if (comboCount >= minCombos) return;
+
+  const comboFallback: SegmentType[] = [
+    'jumpThenCrouch',
+    'crouchThenJump',
+    'choiceThenPunish',
+    'pressureCombo',
+    'mixedPlatformCombo',
+    'headClearanceJump',
+  ];
+
+  let seed = levelIndex * 23;
+  for (let i = specs.length - 1; i >= 0 && comboCount < minCombos; i--) {
+    if (isComboSegment(specs[i].type)) continue;
+    if (specs[i].requiredTag) continue;
+    specs[i].type = comboFallback[Math.abs(seed++) % comboFallback.length];
+    comboCount++;
+  }
+
+  if (ctx.playerModel.consistency === 'predictable' && specs.length >= 4) {
+    specs[1].type = 'spikeJump';
+    specs[2].type = 'spikeJump';
+    specs[3].type = 'choiceThenPunish';
+  }
+}
+
+function enforceBasicCap(specs: SegmentSpec[], levelIndex: number) {
+  if (levelIndex <= 2) return;
+  const maxBasic = Math.max(1, Math.floor(specs.length * 0.3));
+  let basicCount = specs.filter((s) => isBasicSegment(s.type)).length;
+
+  if (basicCount <= maxBasic) return;
+
+  const replacement: SegmentType[] = ['jumpThenCrouch', 'pressureCombo', 'choiceThenPunish', 'mixedPlatformCombo'];
+  let seed = levelIndex * 41;
+
+  for (let i = specs.length - 1; i >= 0 && basicCount > maxBasic; i--) {
+    if (!isBasicSegment(specs[i].type)) continue;
+    if (specs[i].requiredTag) continue;
+    specs[i].type = replacement[Math.abs(seed++) % replacement.length];
+    basicCount--;
+  }
+}
+
+function enforceMinimumVariety(specs: SegmentSpec[], levelIndex: number, pool: SegmentType[]) {
+  let minUnique = 3;
+  if (levelIndex >= 3 && levelIndex <= 4) minUnique = 4;
+  else if (levelIndex >= 5) minUnique = 5;
+
+  const unique = new Set(specs.map((s) => s.type));
+  if (unique.size >= minUnique) return;
+
+  for (const candidate of pool) {
+    if (unique.has(candidate)) continue;
+    const idx = specs.findIndex((s) => !s.requiredTag && isBasicSegment(s.type));
+    if (idx >= 0) {
+      specs[idx].type = candidate;
+      unique.add(candidate);
+    } else {
+      specs.push({ type: candidate });
+      unique.add(candidate);
+    }
+    if (unique.size >= minUnique) break;
+  }
+}
+
+function enforcePlatformRules(specs: SegmentSpec[], levelIndex: number) {
+  const platformCount = specs.filter((s) => isPlatformSegment(s.type)).length;
+
+  if (levelIndex === 1 && !specs.some((s) => s.type === 'longGapPlatforms')) {
+    replaceFirstNonRequired(specs, 'longGapPlatforms');
+  }
+  if (levelIndex === 2 && !specs.some((s) => s.type === 'staircaseClimb')) {
+    replaceFirstNonRequired(specs, 'staircaseClimb');
+  }
+
+  if (levelIndex >= 3 && platformCount < 1) {
+    replaceFirstNonRequired(specs, levelIndex % 2 === 0 ? 'staircaseClimb' : 'longGapPlatforms');
+  }
+  if (levelIndex >= 5 && platformCount < 2) {
+    specs.push({ type: 'longGapPlatforms' });
+    specs.push({ type: 'staircaseClimb' });
+  }
+}
+
+function applyPredictabilityBreak(specs: SegmentSpec[], model: PlayerModel, levelIndex: number) {
+  if (model.consistency !== 'predictable' || specs.length < 5 || levelIndex < 3) return;
+  specs[1].type = 'spikeJump';
+  specs[2].type = 'spikeJump';
+  specs[3].type = 'choiceThenPunish';
+}
+
+function replaceFirstNonRequired(specs: SegmentSpec[], type: SegmentType) {
+  const idx = specs.findIndex((s) => !s.requiredTag);
+  if (idx >= 0) specs[idx].type = type;
+  else specs.push({ type });
+}
+
+function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: number, attempt: number): BuildResult {
+  const builds: SegmentBuild[] = [];
+  const obstacles: Obstacle[] = [];
+  const requiredTagsPlaced: string[] = [];
+
+  let cursor = SAFE_SPAWN_END + 20;
+  const connectorBase = connectorDistanceForLevel(ctx.levelIndex, attempt);
+
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i];
+    if (!spec) continue;
+    if (i > 0) {
+      const connector = connectorBase + deterministicJitter(ctx.levelIndex * 37 + i * 13 + attempt * 19, 10);
+      cursor += Math.max(50, connector);
+    }
+
+    const built = buildSegment(spec.type, cursor, ctx, ctx.levelIndex * 97 + i * 17 + attempt * 11);
+    if (built.obstacles.length === 0) continue;
+
+    builds.push(built);
+    obstacles.push(...built.obstacles);
+    cursor += built.length;
+
+    if (spec.requiredTag) {
+      requiredTagsPlaced.push(spec.requiredTag);
+    }
+  }
+
+  obstacles.sort((a, b) => a.x - b.x);
+
+  const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
+  const flagX = worldWidth - FLAG_OFFSET;
+
+  const maxQuietGap = computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP);
+
+  return {
+    segmentBuilds: builds,
+    obstacles,
+    worldWidth,
+    flagX,
+    requiredTagsPlaced,
+    maxQuietGap,
+  };
+}
+
+function connectorDistanceForLevel(levelIndex: number, attempt: number): number {
+  let base = 120;
+  if (levelIndex >= 3) base = 95;
+  if (levelIndex >= 5) base = 80;
+  if (levelIndex >= 8) base = 65;
+  if (attempt > 0) base -= 10;
+  if (attempt > 1) base -= 8;
+  return Math.max(45, base);
+}
+
+function buildSegment(type: SegmentType, startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
+  switch (type) {
+    case 'spikeJump': {
+      return {
+        type,
+        variant: 'spikeJump_basic',
+        obstacles: [{ kind: 'spike', x: startX + 26, width: SPIKE_W, height: SPIKE_H }],
+        length: 150,
+        combo: false,
+        advanced: false,
+        platform: false,
+      };
+    }
+
+    case 'doubleSpikeTiming': {
+      const useAfterGap = ctx.levelIndex >= 4;
+      if (useAfterGap) {
+        const gapW = clampInt(ctx.safeJumpDistance * 0.65, 110, 150);
+        const seq = [
+          { kind: 'gap', x: startX + 24, width: gapW, height: 0 } as Obstacle,
+          { kind: 'doubleSpike', x: startX + 24 + gapW + Math.round(ctx.reactionSpacing * 0.72), width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H } as Obstacle,
+        ];
+        const end = seq[1].x + seq[1].width;
+        return {
+          type,
+          variant: 'doubleSpike_afterGap',
+          obstacles: seq,
+          length: end - startX + 24,
+          combo: true,
+          advanced: true,
+          platform: false,
+        };
+      }
+      return {
+        type,
+        variant: 'doubleSpike_standard',
+        obstacles: [{ kind: 'doubleSpike', x: startX + 20, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H }],
+        length: 180,
+        combo: false,
+        advanced: false,
+        platform: false,
+      };
+    }
+
+    case 'lowCeilingCrouch': {
+      const width = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 10, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+      return {
+        type,
+        variant: width > 190 ? 'lowCeiling_long' : 'lowCeiling_short',
+        obstacles: [{ kind: 'lowCeiling', x: startX + 12, width, height: LOW_CEILING_CLEARANCE }],
+        length: width + 44,
+        combo: false,
+        advanced: ctx.levelIndex >= 3,
+        platform: false,
+      };
+    }
+
+    case 'jumpThenCrouch': {
+      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+      const jumpGap = clampInt(ctx.reactionSpacing, 140, 250);
+      const obstaclesSeg = [
+        { kind: 'spike', x: startX + 20, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+        { kind: 'lowCeiling', x: startX + 20 + SPIKE_W + jumpGap, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle,
+      ];
+      return {
+        type,
+        variant: 'jumpThenCrouch',
+        obstacles: obstaclesSeg,
+        length: SPIKE_W + jumpGap + ceilW + 48,
+        combo: true,
+        advanced: true,
+        platform: false,
+      };
+    }
+
+    case 'crouchThenJump': {
+      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
+      const jumpGap = clampInt(ctx.reactionSpacing, 140, 250);
+      const obstaclesSeg = [
+        { kind: 'lowCeiling', x: startX + 14, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle,
+        { kind: 'spike', x: startX + 14 + ceilW + jumpGap, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+      ];
+      return {
+        type,
+        variant: 'crouchThenJump',
+        obstacles: obstaclesSeg,
+        length: ceilW + jumpGap + SPIKE_W + 44,
+        combo: true,
+        advanced: true,
+        platform: false,
+      };
+    }
+
+    case 'longGapPlatforms':
+      return buildLongGapPlatforms(startX, ctx, seed);
+
+    case 'staircaseClimb':
+      return buildStaircaseClimb(startX, ctx, seed);
+
+    case 'headClearanceJump': {
+      const shortGap = clampInt(ctx.reactionSpacing * 0.62, 120, 200);
+      const ceilW = clampInt(LOW_CEILING_MIN_W + 24, 160, 220);
+      const ceilingClearance = clampInt(64 + (ctx.levelIndex >= 5 ? -4 : 0), 58, 70);
+      const obstaclesSeg = [
+        { kind: 'spike', x: startX + 24, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+        { kind: 'lowCeiling', x: startX + 14, width: ceilW, height: ceilingClearance } as Obstacle,
+        { kind: 'spike', x: startX + 24 + SPIKE_W + shortGap, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+      ];
+      return {
+        type,
+        variant: 'headClearanceJump',
+        obstacles: obstaclesSeg,
+        length: ceilW + shortGap + SPIKE_W + 58,
+        combo: true,
+        advanced: true,
+        platform: false,
+      };
+    }
+
+    case 'choiceThenPunish': {
+      const gap = clampInt(ctx.reactionSpacing, 140, 240);
+      const mode = seed % 3;
+      const first = { kind: 'choiceObstacle', x: startX + 20, width: CHOICE_OBS_W, height: CHOICE_OBS_H } as Obstacle;
+      if (mode === 0) {
+        const second = { kind: 'spike', x: first.x + CHOICE_OBS_W + gap, width: SPIKE_W, height: SPIKE_H } as Obstacle;
+        return {
+          type,
+          variant: 'choice_then_spike',
+          obstacles: [first, second],
+          length: second.x + second.width - startX + 30,
+          combo: true,
+          advanced: true,
+          platform: false,
+        };
+      }
+      if (mode === 1) {
+        const w = clampInt(ctx.safeJumpDistance * 0.62, 110, 150);
+        const second = { kind: 'gap', x: first.x + CHOICE_OBS_W + gap, width: w, height: 0 } as Obstacle;
+        return {
+          type,
+          variant: 'choice_then_gap',
+          obstacles: [first, second],
+          length: second.x + second.width - startX + 32,
+          combo: true,
+          advanced: true,
+          platform: false,
+        };
+      }
+      const ceilW = clampInt(LOW_CEILING_MIN_W + 28, 160, 220);
+      const second = { kind: 'lowCeiling', x: first.x + CHOICE_OBS_W + gap, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle;
+      return {
+        type,
+        variant: 'choice_then_lowCeiling',
+        obstacles: [first, second],
+        length: second.x + second.width - startX + 30,
+        combo: true,
+        advanced: true,
+        platform: false,
+      };
+    }
+
+    case 'pressureCombo': {
+      const step = clampInt(ctx.reactionSpacing * (ctx.playerModel.reactionTiming === 'late' ? 0.62 : 0.72), 120, 210);
+      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 6, 155, 220);
+      const obstaclesSeg = [
+        { kind: 'spike', x: startX + 18, width: SPIKE_W, height: SPIKE_H } as Obstacle,
+        { kind: 'lowCeiling', x: startX + 18 + SPIKE_W + step, width: ceilW, height: LOW_CEILING_CLEARANCE } as Obstacle,
+        { kind: 'doubleSpike', x: startX + 18 + SPIKE_W + step + ceilW + step, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H } as Obstacle,
+      ];
+      const end = obstaclesSeg[2].x + obstaclesSeg[2].width;
+      return {
+        type,
+        variant: 'pressureCombo',
+        obstacles: obstaclesSeg,
+        length: end - startX + 28,
+        combo: true,
+        advanced: true,
+        platform: false,
+      };
+    }
+
+    case 'mixedPlatformCombo': {
+      const platform = buildLongGapPlatforms(startX, ctx, seed + 7);
+      const endX = Math.max(...platform.obstacles.map((o) => o.x + o.width));
+      const follow = {
+        kind: ctx.playerModel.prefersJump ? 'lowCeiling' : 'spike',
+        x: endX + clampInt(ctx.reactionSpacing * 0.55, 90, 150),
+        width: ctx.playerModel.prefersJump ? 170 : SPIKE_W,
+        height: ctx.playerModel.prefersJump ? LOW_CEILING_CLEARANCE : SPIKE_H,
+      } as Obstacle;
+      return {
+        type,
+        variant: 'mixedPlatformCombo',
+        obstacles: [...platform.obstacles, follow],
+        length: follow.x + follow.width - startX + 22,
+        combo: true,
+        advanced: true,
+        platform: true,
+      };
+    }
+  }
+}
+
+function buildLongGapPlatforms(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
+  const tierCount = ctx.levelIndex <= 1 ? 2 : ctx.levelIndex <= 3 ? 3 : 4;
+  const requestedPlatformCount = clampInt(tierCount + (seed % 2 === 0 ? 0 : 1), 2, 4);
+
+  const allWidths = Array.from({ length: requestedPlatformCount }, (_, i) => {
+    const base = ctx.levelIndex >= 5 ? 66 : ctx.levelIndex >= 3 ? 74 : 86;
+    return clampInt(base - i * 2, 62, 94);
+  });
+
+  const allHeights = Array.from({ length: requestedPlatformCount }, (_, i) => {
+    const base = 18 + i * 8;
+    const jitter = ((seed + i * 11) % 3) * 6;
+    return clampInt(base + jitter, 16, 72);
+  });
+
+  const jumpSpanBase = clampInt(ctx.maxJumpDistance * (ctx.levelIndex >= 5 ? 0.72 : 0.64), 120, 170);
+  const leftEdge = clampInt(jumpSpanBase * 0.7, 72, 128);
+  const rightEdge = clampInt(jumpSpanBase * 0.7, 72, 128);
+  const allInBetween = Array.from({ length: requestedPlatformCount - 1 }, (_, i) => {
+    const adj = ((seed + i * 7) % 3 - 1) * 10;
+    return clampInt(jumpSpanBase + adj, 112, 182);
+  });
+
+  let platformCount = requestedPlatformCount;
+  while (platformCount > 2) {
+    const widths = allWidths.slice(0, platformCount);
+    const inBetween = allInBetween.slice(0, Math.max(0, platformCount - 1));
+    const requiredWidth = leftEdge + rightEdge + widths.reduce((a, b) => a + b, 0) + inBetween.reduce((a, b) => a + b, 0);
+    if (requiredWidth <= 700) break;
+    platformCount--;
+  }
+
+  const platformWidths = allWidths.slice(0, platformCount);
+  const heights = allHeights.slice(0, platformCount);
+  const inBetween = allInBetween.slice(0, Math.max(0, platformCount - 1));
+
+  let gapWidth = leftEdge + rightEdge + platformWidths.reduce((a, b) => a + b, 0);
+  gapWidth += inBetween.reduce((a, b) => a + b, 0);
+  gapWidth = clampInt(gapWidth, 420, 700);
+
+  const gap: Obstacle = { kind: 'gap', x: startX + 18, width: gapWidth, height: 0 };
+  const obstacles: Obstacle[] = [gap];
+  const usableEnd = gap.x + gap.width - rightEdge;
+
+  let px = gap.x + leftEdge;
+  for (let i = 0; i < platformCount; i++) {
+    const width = platformWidths[i];
+    if (px + width > usableEnd) break;
+    obstacles.push({ kind: 'platform', x: px, width, height: heights[i] });
+    const jump = inBetween[i] ?? rightEdge;
+    px += width + jump;
+  }
+  const placedPlatforms = obstacles.filter((o) => o.kind === 'platform').length;
+
+  return {
+    type: 'longGapPlatforms',
+    variant: `longGapPlatforms_${placedPlatforms}p`,
+    obstacles,
+    length: gapWidth + 44,
+    combo: true,
+    advanced: ctx.levelIndex >= 3,
+    platform: true,
+  };
+}
+
+function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number): SegmentBuild {
+  const variantMode = seed % 3; // ascending / ascending-drop / split
+  const steps = clampInt(ctx.levelIndex >= 5 ? 5 : ctx.levelIndex >= 3 ? 4 : 3, 3, 5);
+  const widths = Array.from({ length: steps }, (_, i) => clampInt(78 - i * 2, 64, 84));
+  const baseJump = clampInt(ctx.maxJumpDistance * 0.52, 92, 160);
+
+  const heights: number[] = [];
+  for (let i = 0; i < steps; i++) {
+    if (variantMode === 0) {
+      heights.push(clampInt(20 + i * 11, 18, 76));
+    } else if (variantMode === 1) {
+      const h = i < steps - 1 ? 20 + i * 12 : 24 + Math.max(0, steps - 3) * 6;
+      heights.push(clampInt(h, 18, 78));
+    } else {
+      const h = i === Math.floor(steps / 2) ? 26 : 18 + i * 10;
+      heights.push(clampInt(h + ((seed + i) % 2) * 4, 18, 80));
+    }
+  }
+
+  const gaps = Array.from({ length: steps + 1 }, (_, i) => {
+    let g = clampInt(baseJump * 0.72, 78, 152);
+    if (variantMode === 2 && i === Math.floor((steps + 1) / 2)) g = clampInt(g + 28, 100, 172);
+    if (variantMode === 1 && i === steps - 1) g = clampInt(g + 18, 92, 168);
+    return g;
+  });
+
+  const gapWidth = widths.reduce((a, b) => a + b, 0) + gaps.reduce((a, b) => a + b, 0);
+  const gap: Obstacle = { kind: 'gap', x: startX + 20, width: gapWidth, height: 0 };
+  const obstacles: Obstacle[] = [gap];
+
+  let px = gap.x + gaps[0];
+  for (let i = 0; i < steps; i++) {
+    obstacles.push({ kind: 'platform', x: px, width: widths[i], height: heights[i] });
+    px += widths[i] + gaps[i + 1];
+  }
+
+  if (ctx.levelIndex >= 3) {
+    const endX = gap.x + gap.width;
+    const followX = endX + clampInt(ctx.reactionSpacing * 0.5, 80, 140);
+    obstacles.push({ kind: 'spike', x: followX, width: SPIKE_W, height: SPIKE_H });
+  }
+
+  const variant = variantMode === 0
+    ? 'staircase_ascending'
+    : variantMode === 1
+      ? 'staircase_ascendingDrop'
+      : 'staircase_split';
+
+  return {
+    type: 'staircaseClimb',
+    variant,
+    obstacles,
+    length: (gap.x + gap.width - startX) + 120,
+    combo: true,
+    advanced: true,
+    platform: true,
+  };
+}
+
+function validateBuild(args: {
+  levelIndex: number;
+  requiredRules: RequiredRule[];
+  specs: SegmentSpec[];
+  built: BuildResult;
+  segmentCtx: SegmentContext;
+  previousRuns: RunData[];
+}): ValidationResult {
+  const { levelIndex, requiredRules, built, segmentCtx, previousRuns } = args;
+  const notes: string[] = [];
+  const warnings: string[] = [];
+
+  let ok = true;
+
+  for (const rule of requiredRules) {
+    const count = built.segmentBuilds.filter((s) => rule.types.includes(s.type)).length;
+    if (count < rule.minCount) {
+      ok = false;
+      notes.push(`missing required ${rule.tag}`);
+    }
+  }
+
+  const comboRatio = built.segmentBuilds.length === 0
+    ? 0
+    : built.segmentBuilds.filter((s) => s.combo).length / built.segmentBuilds.length;
+  if (levelIndex >= 3 && comboRatio < 0.6) {
+    ok = false;
+    notes.push('combo ratio below 60%');
+  }
+
+  if (levelIndex >= 5) {
+    const platformKinds = built.segmentBuilds.filter((s) => s.platform).map((s) => s.type);
+    if (!platformKinds.includes('longGapPlatforms') || !platformKinds.includes('staircaseClimb')) {
+      ok = false;
+      notes.push('missing both platform core segments');
+    }
+  }
+
+  const minUnique = levelIndex >= 5 ? 5 : levelIndex >= 3 ? 4 : 3;
+  const uniqueCount = new Set(built.segmentBuilds.map((s) => s.type)).size;
+  if (uniqueCount < minUnique) {
+    ok = false;
+    notes.push(`unique segments < ${minUnique}`);
+  }
+
+  const maxAllowedGap = maxAllowedQuietGap(levelIndex);
+  if (built.maxQuietGap > maxAllowedGap) {
+    ok = false;
+    notes.push(`quiet gap ${built.maxQuietGap}px > ${maxAllowedGap}px`);
+  }
+
+  if (!validateGapCrossability(built.obstacles, segmentCtx.maxJumpDistance)) {
+    ok = false;
+    notes.push('found non-crossable wide gap without platforms');
+  }
+
+  const pathValidation = validatePlayablePath(built, segmentCtx);
+  if (!pathValidation.ok) {
+    ok = false;
+    notes.push(...pathValidation.notes.slice(0, 3));
+  }
+  warnings.push(...pathValidation.warnings);
+
+  if (!isDifficultyIncreasing(previousRuns, segmentCtx.difficulty, built.segmentBuilds.length, levelIndex)) {
+    ok = false;
+    notes.push('difficulty regression vs previous level');
+  }
+
+  return {
+    ok,
+    notes: dedupeStrings(notes, 8),
+    warnings: dedupeStrings(warnings, 8),
+  };
+}
+
+function validateGapCrossability(obstacles: Obstacle[], maxJumpDistance: number): boolean {
+  const gaps = obstacles.filter((o) => o.kind === 'gap');
+  const platforms = obstacles.filter((o) => o.kind === 'platform');
+
+  for (const g of gaps) {
+    if (g.width <= maxJumpDistance) continue;
+    const internal = platforms.filter((p) => p.x >= g.x && p.x + p.width <= g.x + g.width);
+    if (internal.length === 0) return false;
+  }
+
+  return true;
+}
+
+function validatePlayablePath(built: BuildResult, ctx: SegmentContext): { ok: boolean; notes: string[]; warnings: string[] } {
+  const notes: string[] = [];
+  const warnings: string[] = [];
+  let ok = true;
+
+  for (const seg of built.segmentBuilds) {
+    const segmentNotes = validateSegmentSafety(seg, built.obstacles, ctx);
+    if (segmentNotes.length > 0) {
+      ok = false;
+      notes.push(...segmentNotes.slice(0, 2));
+      warnings.push(...segmentNotes.map((n) => `${seg.type}: ${n}`));
+    }
+  }
+
+  const sorted = [...built.obstacles].sort((a, b) => a.x - b.x);
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    const gap = b.x - (a.x + a.width);
+    if (gap < 0) {
+      ok = false;
+      notes.push('overlapping obstacle hitboxes found');
+      warnings.push(`overlap: ${a.kind} with ${b.kind}`);
+      break;
+    }
+  }
+
+  return { ok, notes: dedupeStrings(notes, 8), warnings: dedupeStrings(warnings, 8) };
+}
+
+function validateSegmentSafety(seg: SegmentBuild, allObstacles: Obstacle[], ctx: SegmentContext): string[] {
+  const issues: string[] = [];
+  const segStart = Math.min(...seg.obstacles.map((o) => o.x));
+  const segEnd = Math.max(...seg.obstacles.map((o) => o.x + o.width));
+
+  const approachStart = segStart - clampInt(ctx.reactionSpacing * 0.6, 70, 130);
+  const approachEnd = segStart - 14;
+  if (!hasSafeLandingWindow(approachStart, approachEnd, allObstacles)) {
+    issues.push('missing clear approach before first obstacle');
+  }
+
+  if (requiresJumpAction(seg.type)) {
+    const recoveryStart = segEnd + 18;
+    const recoveryEnd = segEnd + clampInt(ctx.safeJumpDistance * 0.58, 90, 165);
+    if (!hasSafeLandingWindow(recoveryStart, recoveryEnd, allObstacles)) {
+      issues.push('missing safe recovery window after jump challenge');
+    }
+  }
+
+  if (seg.type === 'longGapPlatforms') {
+    issues.push(...validateLongGapSegment(seg, allObstacles, ctx));
+  } else if (seg.type === 'staircaseClimb') {
+    issues.push(...validateStaircaseSegment(seg, allObstacles));
+  } else if (seg.type === 'headClearanceJump') {
+    issues.push(...validateHeadClearanceSegment(seg, allObstacles));
+  } else if (seg.type === 'pressureCombo') {
+    issues.push(...validatePressureComboSegment(seg, allObstacles));
+  }
+
+  return dedupeStrings(issues, 6);
+}
+
+function validateLongGapSegment(seg: SegmentBuild, allObstacles: Obstacle[], ctx: SegmentContext): string[] {
+  const issues: string[] = [];
+  const gaps = seg.obstacles.filter((o) => o.kind === 'gap');
+  const platforms = seg.obstacles.filter((o) => o.kind === 'platform');
+  if (gaps.length === 0 || platforms.length === 0) return ['invalid long gap layout'];
+  const mainGap = gaps.reduce((widest, g) => (g.width > widest.width ? g : widest), gaps[0]);
+
+  const spikesInside = allObstacles.filter(
+    (o) => (o.kind === 'spike' || o.kind === 'doubleSpike') && rangesOverlap(o.x, o.x + o.width, mainGap.x, mainGap.x + mainGap.width),
+  );
+  if (spikesInside.length > 0) issues.push('spikes inside platform gap');
+
+  const sortedPlatforms = [...platforms].sort((a, b) => a.x - b.x);
+  for (const p of sortedPlatforms) {
+    if (!hasSafeLandingWindow(p.x + LANDING_BUFFER, p.x + p.width - LANDING_BUFFER, allObstacles)) {
+      issues.push('platform top is not a safe landing zone');
+      break;
+    }
+  }
+
+  const first = sortedPlatforms[0];
+  const last = sortedPlatforms[sortedPlatforms.length - 1];
+  if (!first || !last) return dedupeStrings(issues, 6);
+  const entryJump = first.x - mainGap.x;
+  const exitJump = (mainGap.x + mainGap.width) - (last.x + last.width);
+  if (entryJump > ctx.maxJumpDistance - 8 || exitJump > ctx.maxJumpDistance - 8) {
+    issues.push('platform gap entry/exit jump exceeds safe distance');
+  }
+
+  for (let i = 0; i < sortedPlatforms.length - 1; i++) {
+    const from = sortedPlatforms[i];
+    const to = sortedPlatforms[i + 1];
+    const jumpSpan = to.x - (from.x + from.width);
+    if (jumpSpan > ctx.maxJumpDistance - 8) {
+      issues.push('platform-to-platform jump exceeds safe distance');
+      break;
+    }
+  }
+
+  const exitStart = mainGap.x + mainGap.width + 10;
+  const exitEnd = exitStart + clampInt(ctx.safeJumpDistance * 0.5, 80, 150);
+  if (!hasSafeLandingWindow(exitStart, exitEnd, allObstacles)) {
+    issues.push('missing safe exit landing after platform gap');
+  }
+
+  return dedupeStrings(issues, 6);
+}
+
+function validateStaircaseSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
+  const issues: string[] = [];
+  const platforms = seg.obstacles.filter((o) => o.kind === 'platform').sort((a, b) => a.x - b.x);
+  if (platforms.length < 2) return ['staircase missing required steps'];
+
+  for (const step of platforms) {
+    if (!hasSafeLandingWindow(step.x + LANDING_BUFFER, step.x + step.width - LANDING_BUFFER, allObstacles)) {
+      issues.push('stair step is not a safe landing zone');
+      break;
+    }
+  }
+
+  const segStart = Math.min(...seg.obstacles.map((o) => o.x));
+  const segEnd = Math.max(...seg.obstacles.map((o) => o.x + o.width));
+  const spikes = allObstacles.filter((o) => (o.kind === 'spike' || o.kind === 'doubleSpike') && o.x >= segStart && o.x + o.width <= segEnd);
+
+  for (let i = 0; i < platforms.length - 1; i++) {
+    const from = platforms[i];
+    const to = platforms[i + 1];
+    const spikeBetween = spikes.some((s) => s.x < to.x && s.x + s.width > from.x + from.width);
+    if (spikeBetween) {
+      issues.push('spike between staircase steps removes safe route');
+      break;
+    }
+  }
+
+  const lastStep = platforms[platforms.length - 1];
+  const spikeAfter = spikes.find((s) => s.x > lastStep.x + lastStep.width);
+  if (spikeAfter && !hasSafeLandingWindow(lastStep.x + lastStep.width + 8, spikeAfter.x - 8, allObstacles)) {
+    issues.push('spike after staircase without recovery spacing');
+  }
+
+  return dedupeStrings(issues, 6);
+}
+
+function validateHeadClearanceSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
+  const issues: string[] = [];
+  const ceilings = seg.obstacles.filter((o) => o.kind === 'lowCeiling');
+  const spikes = seg.obstacles.filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike');
+  if (ceilings.length === 0 || spikes.length === 0) return ['head-clearance layout incomplete'];
+  const ceiling = ceilings[0];
+  const minClearance = PLAYER_STANDING_HEIGHT + 8;
+  if (ceiling.height < minClearance) {
+    issues.push('head-clearance jump too tight for fair arc');
+  }
+
+  const recoveryStart = Math.max(...spikes.map((s) => s.x + s.width)) + 12;
+  if (!hasSafeLandingWindow(recoveryStart, recoveryStart + 120, allObstacles)) {
+    issues.push('head-clearance jump lacks safe post-landing');
+  }
+  return dedupeStrings(issues, 4);
+}
+
+function validatePressureComboSegment(seg: SegmentBuild, allObstacles: Obstacle[]): string[] {
+  const issues: string[] = [];
+  const hazards = seg.obstacles
+    .filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike' || o.kind === 'gap')
+    .sort((a, b) => a.x - b.x);
+  if (hazards.length < 2) return issues;
+
+  let hasRecovery = false;
+  for (let i = 0; i < hazards.length - 1; i++) {
+    const start = hazards[i].x + hazards[i].width + 8;
+    const end = hazards[i + 1].x - 8;
+    if (hasSafeLandingWindow(start, end, allObstacles)) {
+      hasRecovery = true;
+      break;
+    }
+  }
+  if (!hasRecovery) {
+    issues.push('pressure combo has no recovery window');
+  }
+  return issues;
+}
+
+function requiresJumpAction(type: SegmentType): boolean {
+  return type !== 'lowCeilingCrouch';
+}
+
+function maxAllowedQuietGap(levelIndex: number): number {
+  if (levelIndex >= 8) return 160;
+  if (levelIndex >= 5) return 180;
+  if (levelIndex >= 1) return 220;
+  return 280;
+}
+
+function computeMaxQuietGap(obstacles: Obstacle[], pathStart: number, pathEnd: number): number {
+  const starts = obstacles.map((o) => o.x).sort((a, b) => a - b);
+  if (starts.length === 0) return pathEnd - pathStart;
+
+  let maxGap = starts[0] - pathStart;
+  for (let i = 1; i < starts.length; i++) {
+    maxGap = Math.max(maxGap, starts[i] - starts[i - 1]);
+  }
+  maxGap = Math.max(maxGap, pathEnd - starts[starts.length - 1]);
+  return Math.round(maxGap);
+}
+
+function isDifficultyIncreasing(
+  runs: RunData[],
+  currentDifficulty: Difficulty,
+  currentSegments: number,
+  levelIndex: number,
+): boolean {
+  if (levelIndex <= 2) return true;
+  const prevLevel = levelIndex - 1;
+  const prevRun = [...runs].reverse().find((r) => r.levelIndex === prevLevel && r.generatedDifficulty);
+  if (!prevRun) return true;
+
+  const rank = difficultyRank(currentDifficulty);
+  const prevRank = difficultyRank((prevRun.generatedDifficulty as Difficulty | undefined) ?? currentDifficulty);
+  if (rank < prevRank) return false;
+
+  const prevSegments = prevRun.generatedVariants?.length ?? 0;
+  if (currentSegments + 1 < prevSegments) return false;
+
+  return true;
 }
 
 function selectStrategy(model: PlayerModel): Strategy {
@@ -214,891 +1205,262 @@ function selectStrategy(model: PlayerModel): Strategy {
   return 'balancedEscalation';
 }
 
-function worldWidthForLevel(levelIndex: number, canvasWidth: number): number {
-  const raw = Math.round(canvasWidth * 2.7);
-  if (levelIndex >= 8) return clamp(raw + 900, 4200, 6000);
-  if (levelIndex >= 5) return clamp(raw + 500, 3400, 5200);
-  if (levelIndex >= 3) return clamp(raw + 250, 2800, 4200);
-  return clamp(raw, 2200, 3200);
+function isComboSegment(type: SegmentType): boolean {
+  return type === 'jumpThenCrouch'
+    || type === 'crouchThenJump'
+    || type === 'choiceThenPunish'
+    || type === 'pressureCombo'
+    || type === 'mixedPlatformCombo'
+    || type === 'headClearanceJump'
+    || type === 'longGapPlatforms'
+    || type === 'staircaseClimb';
 }
 
-function evaluatePerformance(sourceRuns: RunData[]): PerformanceTuning {
-  if (sourceRuns.length === 0) {
-    return {
-      zoneDelta: 0,
-      spacingAdjust: 0,
-      advancedReduction: 0,
-      note: 'baseline',
-    };
+function isBasicSegment(type: SegmentType): boolean {
+  return type === 'spikeJump' || type === 'lowCeilingCrouch';
+}
+
+function isPlatformSegment(type: SegmentType): boolean {
+  return type === 'longGapPlatforms' || type === 'staircaseClimb' || type === 'mixedPlatformCombo';
+}
+
+function difficultyRank(d: Difficulty): number {
+  if (d === 'easy') return 0;
+  if (d === 'medium') return 1;
+  if (d === 'hard') return 2;
+  return 3;
+}
+
+function repairUnsafeBuild(
+  built: BuildResult,
+  ctx: SegmentContext,
+  canvasWidth: number,
+  attempt: number,
+): { built: BuildResult; repaired: boolean; warnings: string[] } {
+  const repairedSegments: SegmentBuild[] = [];
+  const warnings: string[] = [];
+  let changed = false;
+
+  for (let i = 0; i < built.segmentBuilds.length; i++) {
+    const seg = built.segmentBuilds[i];
+    const segmentStart = Math.min(...seg.obstacles.map((o) => o.x));
+    let next = seg;
+
+    if (seg.type === 'headClearanceJump') {
+      const issues = validateHeadClearanceSegment(seg, built.obstacles);
+      if (issues.length > 0) {
+        next = buildSegment('jumpThenCrouch', segmentStart, ctx, attempt * 29 + i * 11 + 7);
+        warnings.push('Replaced unsafe headClearanceJump with jumpThenCrouch');
+        changed = true;
+      }
+    } else if (seg.type === 'pressureCombo') {
+      const issues = validatePressureComboSegment(seg, built.obstacles);
+      if (issues.length > 0) {
+        next = buildSegment('crouchThenJump', segmentStart, ctx, attempt * 31 + i * 13 + 9);
+        warnings.push('Replaced unsafe pressureCombo with crouchThenJump');
+        changed = true;
+      }
+    }
+
+    if (next.type === 'longGapPlatforms' || next.type === 'staircaseClimb' || next.type === 'mixedPlatformCombo') {
+      const cleaned = stripSpikesUnsafeAroundPlatforms(next);
+      if (cleaned.removed > 0) {
+        next = cleaned.segment;
+        warnings.push(`Removed ${cleaned.removed} unsafe spikes near platform route`);
+        changed = true;
+      }
+    }
+
+    repairedSegments.push(next);
   }
 
-  const recent = sourceRuns.slice(-5);
-  const deaths = recent.filter((r) => !r.completed).length;
-  const deathRate = deaths / recent.length;
-  const latestSuccess = [...recent].reverse().find((r) => r.completed);
-  const clearedQuickly = !!latestSuccess && latestSuccess.attemptNumber <= 2 && deathRate <= 0.25;
-
-  if (deathRate >= 0.65) {
-    return {
-      zoneDelta: -1,
-      spacingAdjust: 24,
-      advancedReduction: 1,
-      note: 'struggle-high (density down, spacing up)',
-    };
-  }
-  if (deathRate >= 0.45) {
-    return {
-      zoneDelta: -1,
-      spacingAdjust: 14,
-      advancedReduction: 1,
-      note: 'struggle-medium (slightly forgiving)',
-    };
-  }
-  if (clearedQuickly) {
-    return {
-      zoneDelta: 1,
-      spacingAdjust: -10,
-      advancedReduction: 0,
-      note: 'clear-fast (density up)',
-    };
+  if (!changed) {
+    return { built, repaired: false, warnings: [] };
   }
 
+  const rebuilt = rebuildBuildResultFromSegments(repairedSegments, canvasWidth, built.requiredTagsPlaced);
   return {
-    zoneDelta: 0,
-    spacingAdjust: 0,
-    advancedReduction: 0,
-    note: 'balanced',
+    built: rebuilt,
+    repaired: true,
+    warnings: dedupeStrings(warnings, 8),
   };
 }
 
-function compositionForLevel(
-  levelIndex: number,
-  difficulty: Difficulty,
-  zoneDelta: number,
-  advancedReduction: number,
-): CompositionPlan {
-  let minZones = 3;
-  let maxZones = 3;
-  let density: DensityLabel = 'low';
-  let minAdvanced = 0;
-  let minCombo = 0;
+function stripSpikesUnsafeAroundPlatforms(segment: SegmentBuild): { segment: SegmentBuild; removed: number } {
+  const platforms = segment.obstacles.filter((o) => o.kind === 'platform');
+  const gaps = segment.obstacles.filter((o) => o.kind === 'gap');
+  if (platforms.length === 0 || gaps.length === 0) return { segment, removed: 0 };
 
-  if (difficulty === 'medium') {
-    minZones = 3;
-    maxZones = 4;
-    density = 'medium';
-    minAdvanced = 1;
-    minCombo = 1;
-  } else if (difficulty === 'hard') {
-    minZones = 4;
-    maxZones = 5;
-    density = 'high';
-    minAdvanced = 2;
-    minCombo = 2;
-  } else if (difficulty === 'expert') {
-    minZones = 5;
-    maxZones = 7;
-    density = 'extreme';
-    minAdvanced = 3;
-    minCombo = 3;
-  }
+  const platformRanges = platforms.map((p) => ({ start: p.x - 2, end: p.x + p.width + 2 }));
+  const gapRanges = gaps.map((g) => ({ start: g.x, end: g.x + g.width }));
+  let removed = 0;
 
-  const spread = maxZones - minZones;
-  const deterministicOffset = spread > 0 ? ((levelIndex + 1) % (spread + 1)) : 0;
-  const baseZones = minZones + deterministicOffset;
-  const zoneCount = clampInt(baseZones + zoneDelta, minZones, maxZones);
+  const filtered = segment.obstacles.filter((o) => {
+    if (o.kind !== 'spike' && o.kind !== 'doubleSpike') return true;
+    const oStart = o.x;
+    const oEnd = o.x + o.width;
+
+    const underPlatform = platformRanges.some((r) => rangesOverlap(oStart, oEnd, r.start, r.end));
+    if (underPlatform) {
+      removed++;
+      return false;
+    }
+
+    const insideGap = gapRanges.some((r) => rangesOverlap(oStart, oEnd, r.start, r.end));
+    if (insideGap) {
+      removed++;
+      return false;
+    }
+    return true;
+  });
 
   return {
-    zoneCount,
-    density,
-    minAdvanced: Math.max(0, minAdvanced - advancedReduction),
-    minCombo: Math.max(0, minCombo - advancedReduction),
+    segment: { ...segment, obstacles: filtered },
+    removed,
   };
 }
 
-function buildPatternPlan(
-  strategy: Strategy,
-  zoneCount: number,
-  levelIndex: number,
-  difficulty: Difficulty,
-  minAdvanced: number,
-  minCombo: number,
-): PatternKind[] {
-  const plan: PatternKind[] = [...requiredKindsForProgression(levelIndex)];
-  const pool = strategyPool(strategy, difficulty);
-
-  let i = 0;
-  while (plan.length < zoneCount) {
-    plan.push(pool[i % pool.length]);
-    i++;
-  }
-
-  enforceCount(plan, isAdvancedPattern, minAdvanced, ['stepGap', 'staircase', 'pressureSequence', 'choiceObstacle']);
-  enforceCount(plan, isComboPattern, minCombo, ['pressureSequence', 'jumpThenCrouch', 'crouchThenJump', 'stepGap', 'choiceObstacle']);
-
-  return plan.slice(0, zoneCount);
-}
-
-function requiredKindsForProgression(levelIndex: number): PatternKind[] {
-  const out: PatternKind[] = [];
-  if (levelIndex >= 1) out.push('lowCeiling');
-  if (levelIndex >= 2) out.push('doubleSpike');
-  if (levelIndex >= 3) out.push('choiceObstacle');
-  if (levelIndex >= 4) out.push('stepGap');
-  if (levelIndex >= 5) out.push('staircase');
-  return out;
-}
-
-function strategyPool(strategy: Strategy, difficulty: Difficulty): PatternKind[] {
-  switch (strategy) {
-    case 'punishJumpBias':
-      return difficulty === 'easy'
-        ? ['lowCeiling', 'choiceObstacle', 'doubleSpike', 'jumpThenCrouch']
-        : ['lowCeiling', 'choiceObstacle', 'crouchThenJump', 'pressureSequence', 'staircase'];
-    case 'punishCrouchBias':
-      return difficulty === 'easy'
-        ? ['wideGap', 'doubleSpike', 'jumpThenCrouch', 'stepGap']
-        : ['wideGap', 'stepGap', 'pressureSequence', 'doubleSpike', 'staircase'];
-    case 'punishPredictability':
-      return ['choiceObstacle', 'pressureSequence', 'stepGap', 'staircase', 'jumpThenCrouch', 'crouchThenJump'];
-    case 'punishLateReactions':
-      return ['doubleSpike', 'pressureSequence', 'jumpThenCrouch', 'lowCeiling', 'choiceObstacle'];
-    case 'balancedEscalation':
-      return ['doubleSpike', 'lowCeiling', 'stepGap', 'choiceObstacle', 'pressureSequence', 'staircase', 'wideGap'];
-  }
-}
-
-function enforceCount(
-  plan: PatternKind[],
-  predicate: (kind: PatternKind) => boolean,
-  minCount: number,
-  replacementPool: PatternKind[],
-) {
-  let count = plan.filter(predicate).length;
-  let cursor = 0;
-  for (let i = plan.length - 1; i >= 0 && count < minCount; i--) {
-    if (predicate(plan[i])) continue;
-    plan[i] = replacementPool[cursor % replacementPool.length];
-    cursor++;
-    count++;
-  }
-}
-
-function isAdvancedPattern(kind: PatternKind): boolean {
-  return kind === 'stepGap' || kind === 'staircase' || kind === 'pressureSequence' || kind === 'choiceObstacle';
-}
-
-function isComboPattern(kind: PatternKind): boolean {
-  return kind === 'pressureSequence' || kind === 'jumpThenCrouch' || kind === 'crouchThenJump' || kind === 'choiceObstacle' || kind === 'stepGap';
-}
-
-function collectRecentVariantMemory(runs: RunData[], levelWindow: number): string[] {
-  const out: string[] = [];
-  const seenLevels = new Set<number>();
-
-  for (let i = runs.length - 1; i >= 0 && seenLevels.size < levelWindow; i--) {
-    const run = runs[i];
-    if (!run.generatedVariants || run.generatedVariants.length === 0) continue;
-    if (seenLevels.has(run.levelIndex)) continue;
-    seenLevels.add(run.levelIndex);
-    out.push(...run.generatedVariants);
-  }
-
-  return out;
-}
-
-function selectVariantsForPlan(
-  kinds: PatternKind[],
-  ctx: VariantContext,
-  recentMemory: string[],
-  antiRepeatNotes: string[],
-  levelIndex: number,
-): SelectedVariant[] {
-  const selected: SelectedVariant[] = [];
-  const usedThisLevel = new Set<string>();
-
-  for (let i = 0; i < kinds.length; i++) {
-    const kind = kinds[i];
-    const chosen = chooseVariant(kind, ctx, recentMemory, usedThisLevel, levelIndex + i, antiRepeatNotes);
-    selected.push({ kind, variant: chosen });
-    usedThisLevel.add(chosen.name);
-  }
-
-  return selected;
-}
-
-function chooseVariant(
-  kind: PatternKind,
-  ctx: VariantContext,
-  recentMemory: string[],
-  usedThisLevel: Set<string>,
-  seed: number,
-  antiRepeatNotes: string[],
-): PatternVariant {
-  const candidates = variantsForKind(kind, ctx).filter((v) => v.difficulties.includes(ctx.difficulty));
-
-  const available = candidates.filter((v) => !usedThisLevel.has(v.name));
-  const nonRepeat = available.filter((v) => !recentMemory.includes(v.name));
-
-  if (nonRepeat.length > 0) {
-    const blocked = available.filter((v) => recentMemory.includes(v.name)).map((v) => v.name);
-    if (blocked.length > 0) {
-      antiRepeatNotes.push(`avoided ${blocked[0]}`);
-    }
-    return deterministicPick(nonRepeat, seed);
-  }
-
-  if (available.length > 0) {
-    const forced = deterministicPick(available, seed);
-    antiRepeatNotes.push(`forced repeat ${forced.name}`);
-    return forced;
-  }
-
-  return deterministicPick(candidates, seed);
-}
-
-function variantsForKind(kind: PatternKind, ctx: VariantContext): PatternVariant[] {
-  switch (kind) {
-    case 'singleSpike':
-      return [
-        {
-          name: 'singleSpike_standard',
-          kind,
-          difficulties: ['easy', 'medium', 'hard', 'expert'],
-          advanced: false,
-          combo: false,
-          firstKind: 'spike',
-          build: (x) => [{ kind: 'spike', x, width: SPIKE_W, height: SPIKE_H }],
-        },
-      ];
-
-    case 'doubleSpike': {
-      const shortGap = clampInt(ctx.reactionSpacing - 30, 130, 230);
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      const afterGapW = clampInt(ctx.safeJumpDistance * 0.68, GAP_MIN_W, GAP_MAX_W);
-      return [
-        {
-          name: 'doubleSpike_standard',
-          kind,
-          difficulties: ['easy', 'medium', 'hard', 'expert'],
-          advanced: false,
-          combo: false,
-          firstKind: 'doubleSpike',
-          build: (x) => [{ kind: 'doubleSpike', x, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H }],
-        },
-        {
-          name: 'doubleSpike_wide',
-          kind,
-          difficulties: ['medium', 'hard', 'expert'],
-          advanced: true,
-          combo: false,
-          firstKind: 'doubleSpike',
-          build: (x) => [{ kind: 'doubleSpike', x, width: 126, height: DOUBLE_SPIKE_H }],
-        },
-        {
-          name: 'doubleSpike_afterGap',
-          kind,
-          difficulties: ['hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'gap',
-          build: (x) => [
-            { kind: 'gap', x, width: afterGapW, height: 0 },
-            { kind: 'doubleSpike', x: x + afterGapW + shortGap, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H },
-          ],
-        },
-        {
-          name: 'doubleSpike_beforeLowCeiling',
-          kind,
-          difficulties: ['medium', 'hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'doubleSpike',
-          build: (x) => [
-            { kind: 'doubleSpike', x, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H },
-            { kind: 'lowCeiling', x: x + DOUBLE_SPIKE_W + shortGap, width: ceilW, height: LOW_CEILING_CLEARANCE },
-          ],
-        },
-      ];
-    }
-
-    case 'choiceObstacle': {
-      const comboGap = clampInt(ctx.reactionSpacing, 140, 250);
-      const gapW = clampInt(ctx.safeJumpDistance * 0.62, GAP_MIN_W, GAP_MAX_W);
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 9, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      return [
-        {
-          name: 'choice_single',
-          kind,
-          difficulties: ['easy', 'medium', 'hard', 'expert'],
-          advanced: false,
-          combo: false,
-          firstKind: 'choiceObstacle',
-          build: (x) => [{ kind: 'choiceObstacle', x, width: CHOICE_OBS_W, height: CHOICE_OBS_H }],
-        },
-        {
-          name: 'choice_then_spike',
-          kind,
-          difficulties: ['medium', 'hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'choiceObstacle',
-          build: (x) => [
-            { kind: 'choiceObstacle', x, width: CHOICE_OBS_W, height: CHOICE_OBS_H },
-            { kind: 'spike', x: x + CHOICE_OBS_W + comboGap, width: SPIKE_W, height: SPIKE_H },
-          ],
-        },
-        {
-          name: 'choice_then_gap',
-          kind,
-          difficulties: ['hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'choiceObstacle',
-          build: (x) => [
-            { kind: 'choiceObstacle', x, width: CHOICE_OBS_W, height: CHOICE_OBS_H },
-            { kind: 'gap', x: x + CHOICE_OBS_W + comboGap, width: gapW, height: 0 },
-          ],
-        },
-        {
-          name: 'choice_then_lowCeiling',
-          kind,
-          difficulties: ['hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'choiceObstacle',
-          build: (x) => [
-            { kind: 'choiceObstacle', x, width: CHOICE_OBS_W, height: CHOICE_OBS_H },
-            { kind: 'lowCeiling', x: x + CHOICE_OBS_W + comboGap, width: ceilW, height: LOW_CEILING_CLEARANCE },
-          ],
-        },
-      ];
-    }
-
-    case 'pressureSequence': {
-      const short = clampInt(ctx.reactionSpacing - 28, 125, 220);
-      const mid = clampInt(ctx.reactionSpacing, 140, 250);
-      const gapW = clampInt(ctx.safeJumpDistance * 0.58, GAP_MIN_W, GAP_MAX_W);
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 7, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      return [
-        {
-          name: 'pressure_spike_spike',
-          kind,
-          difficulties: ['medium', 'hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'spike',
-          build: (x) => [
-            { kind: 'spike', x, width: SPIKE_W, height: SPIKE_H },
-            { kind: 'spike', x: x + SPIKE_W + short, width: SPIKE_W, height: SPIKE_H },
-          ],
-        },
-        {
-          name: 'pressure_spike_lowCeiling',
-          kind,
-          difficulties: ['hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'spike',
-          build: (x) => [
-            { kind: 'spike', x, width: SPIKE_W, height: SPIKE_H },
-            { kind: 'lowCeiling', x: x + SPIKE_W + mid, width: ceilW, height: LOW_CEILING_CLEARANCE },
-          ],
-        },
-        {
-          name: 'pressure_lowCeiling_spike',
-          kind,
-          difficulties: ['hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'lowCeiling',
-          build: (x) => [
-            { kind: 'lowCeiling', x, width: ceilW, height: LOW_CEILING_CLEARANCE },
-            { kind: 'spike', x: x + ceilW + short, width: SPIKE_W, height: SPIKE_H },
-          ],
-        },
-        {
-          name: 'pressure_gap_lowCeiling_spike',
-          kind,
-          difficulties: ['expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'gap',
-          build: (x) => [
-            { kind: 'gap', x, width: gapW, height: 0 },
-            { kind: 'lowCeiling', x: x + gapW + short, width: ceilW, height: LOW_CEILING_CLEARANCE },
-            { kind: 'spike', x: x + gapW + short + ceilW + short, width: SPIKE_W, height: SPIKE_H },
-          ],
-        },
-      ];
-    }
-
-    case 'stepGap':
-      return stepGapVariants(ctx);
-
-    case 'staircase':
-      return staircaseVariants(ctx);
-
-    case 'lowCeiling': {
-      const wShort = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 6, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      const wLong = clampInt(wShort + 42, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      return [
-        {
-          name: 'lowCeiling_short',
-          kind,
-          difficulties: ['easy', 'medium', 'hard', 'expert'],
-          advanced: false,
-          combo: false,
-          firstKind: 'lowCeiling',
-          build: (x) => [{ kind: 'lowCeiling', x, width: wShort, height: LOW_CEILING_CLEARANCE }],
-        },
-        {
-          name: 'lowCeiling_long',
-          kind,
-          difficulties: ['medium', 'hard', 'expert'],
-          advanced: true,
-          combo: false,
-          firstKind: 'lowCeiling',
-          build: (x) => [{ kind: 'lowCeiling', x, width: wLong, height: LOW_CEILING_CLEARANCE }],
-        },
-      ];
-    }
-
-    case 'wideGap': {
-      const easyGap = clampInt(ctx.safeJumpDistance * 0.55, GAP_MIN_W, GAP_MAX_W);
-      const longGap = clampInt(ctx.safeJumpDistance * 0.78, GAP_MIN_W, GAP_MAX_W);
-      return [
-        {
-          name: 'wideGap_safe',
-          kind,
-          difficulties: ['easy', 'medium', 'hard', 'expert'],
-          advanced: false,
-          combo: false,
-          firstKind: 'gap',
-          build: (x) => [{ kind: 'gap', x, width: easyGap, height: 0 }],
-        },
-        {
-          name: 'wideGap_long',
-          kind,
-          difficulties: ['hard', 'expert'],
-          advanced: true,
-          combo: false,
-          firstKind: 'gap',
-          build: (x) => [{ kind: 'gap', x, width: longGap, height: 0 }],
-        },
-      ];
-    }
-
-    case 'jumpThenCrouch': {
-      const gap = clampInt(ctx.reactionSpacing, 140, 250);
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      return [
-        {
-          name: 'jumpThenCrouch_standard',
-          kind,
-          difficulties: ['easy', 'medium', 'hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'spike',
-          build: (x) => [
-            { kind: 'spike', x, width: SPIKE_W, height: SPIKE_H },
-            { kind: 'lowCeiling', x: x + SPIKE_W + gap, width: ceilW, height: LOW_CEILING_CLEARANCE },
-          ],
-        },
-      ];
-    }
-
-    case 'crouchThenJump': {
-      const gap = clampInt(ctx.reactionSpacing, 140, 250);
-      const ceilW = clampInt(LOW_CEILING_MIN_W + ctx.levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W);
-      return [
-        {
-          name: 'crouchThenJump_standard',
-          kind,
-          difficulties: ['medium', 'hard', 'expert'],
-          advanced: true,
-          combo: true,
-          firstKind: 'lowCeiling',
-          build: (x) => [
-            { kind: 'lowCeiling', x, width: ceilW, height: LOW_CEILING_CLEARANCE },
-            { kind: 'spike', x: x + ceilW + gap, width: SPIKE_W, height: SPIKE_H },
-          ],
-        },
-      ];
-    }
-  }
-}
-
-function stepGapVariants(ctx: VariantContext): PatternVariant[] {
-  const baseStep = clampInt(ctx.maxJumpDistance * 0.52, 86, ctx.maxJumpDistance - 28);
-  const [h1, h2, h3] = calculateStepGapHeights();
-
-  return [
-    {
-      name: 'stepGap_easy_2platforms',
-      kind: 'stepGap',
-      difficulties: ['easy'],
-      advanced: false,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => buildGapWithPlatforms(
-        x,
-        [92, 92],
-        [Math.max(10, h1 - 6), Math.max(14, h2 - 10)],
-        [Math.round(baseStep * 0.72), Math.round(baseStep * 0.88), Math.round(baseStep * 0.70)],
-      ),
-    },
-    {
-      name: 'stepGap_medium_3platforms',
-      kind: 'stepGap',
-      difficulties: ['medium'],
-      advanced: true,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => buildGapWithPlatforms(
-        x,
-        [84, 82, 84],
-        [h1, h2, h1],
-        [Math.round(baseStep * 0.78), Math.round(baseStep * 0.92), Math.round(baseStep * 0.92), Math.round(baseStep * 0.76)],
-      ),
-    },
-    {
-      name: 'stepGap_hard_3platforms_raised',
-      kind: 'stepGap',
-      difficulties: ['hard'],
-      advanced: true,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => {
-        const longStep = clampInt(baseStep + 16, 96, ctx.maxJumpDistance - 18);
-        return buildGapWithPlatforms(
-          x,
-          [76, 72, 76],
-          [Math.max(h1 + 6, 22), Math.max(h3 + 2, 40), Math.max(h2, 30)],
-          [Math.round(baseStep * 0.84), baseStep, longStep, Math.round(baseStep * 0.82)],
-        );
-      },
-    },
-    {
-      name: 'stepGap_expert_4platforms_mixedHeights',
-      kind: 'stepGap',
-      difficulties: ['expert'],
-      advanced: true,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => {
-        const longStep = clampInt(baseStep + 24, 104, ctx.maxJumpDistance - 12);
-        return buildGapWithPlatforms(
-          x,
-          [68, 64, 68, 74],
-          [Math.max(h1, 20), Math.max(h3 + 8, 48), Math.max(h2 - 2, 24), Math.max(h3 + 12, 56)],
-          [Math.round(baseStep * 0.82), baseStep, longStep, Math.round(baseStep * 0.9), Math.round(baseStep * 0.76)],
-        );
-      },
-    },
-  ];
-}
-
-function staircaseVariants(ctx: VariantContext): PatternVariant[] {
-  const [s1, s2, s3, s4] = calculateStaircaseHeights();
-  const baseStep = clampInt(ctx.maxJumpDistance * 0.46, 76, ctx.maxJumpDistance - 34);
-
-  return [
-    {
-      name: 'staircase_easy_3steps',
-      kind: 'staircase',
-      difficulties: ['easy'],
-      advanced: false,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => buildGapWithPlatforms(
-        x,
-        [86, 84, 82],
-        [Math.max(s1 - 8, 18), Math.max(s2 - 8, 28), Math.max(s3 - 8, 40)],
-        [Math.round(baseStep * 0.70), baseStep, baseStep, Math.round(baseStep * 0.72)],
-      ),
-    },
-    {
-      name: 'staircase_medium_4steps',
-      kind: 'staircase',
-      difficulties: ['medium'],
-      advanced: true,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => buildGapWithPlatforms(
-        x,
-        [80, 78, 76, 74],
-        [Math.max(s1 - 4, 22), Math.max(s2 - 4, 32), Math.max(s3 - 4, 44), Math.max(s4 - 4, 56)],
-        [Math.round(baseStep * 0.72), baseStep, baseStep, baseStep, Math.round(baseStep * 0.68)],
-      ),
-    },
-    {
-      name: 'staircase_hard_ascendingThenDrop',
-      kind: 'staircase',
-      difficulties: ['hard'],
-      advanced: true,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => buildGapWithPlatforms(
-        x,
-        [76, 74, 74, 78],
-        [Math.max(s1, 24), Math.max(s3 - 2, 46), Math.max(s4 + 2, 60), Math.max(s2 - 2, 32)],
-        [Math.round(baseStep * 0.78), baseStep, Math.round(baseStep * 1.05), baseStep, Math.round(baseStep * 0.74)],
-      ),
-    },
-    {
-      name: 'staircase_expert_splitSteps',
-      kind: 'staircase',
-      difficulties: ['expert'],
-      advanced: true,
-      combo: true,
-      firstKind: 'gap',
-      build: (x) => {
-        const split = clampInt(baseStep + 26, 104, ctx.maxJumpDistance - 10);
-        const seq = buildGapWithPlatforms(
-          x,
-          [72, 70, 66, 70, 74],
-          [Math.max(s1 - 2, 24), Math.max(s2 + 2, 38), Math.max(s1, 28), Math.max(s3 + 6, 56), Math.max(s2 + 8, 44)],
-          [Math.round(baseStep * 0.74), baseStep, split, baseStep, Math.round(baseStep * 0.96), Math.round(baseStep * 0.7)],
-        );
-        const end = Math.max(...seq.map((o) => o.x + o.width));
-        seq.push({ kind: 'spike', x: end + clampInt(ctx.reactionSpacing - 34, 120, 200), width: SPIKE_W, height: SPIKE_H });
-        return seq;
-      },
-    },
-  ];
-}
-
-function buildGapWithPlatforms(
-  startX: number,
-  platformWidths: number[],
-  platformHeights: number[],
-  edgeGaps: number[],
-): Obstacle[] {
-  const safeWidths = platformWidths.map((w) => clampInt(w, 56, 110));
-  const safeHeights = platformHeights.map((h) => clampInt(h, 8, 92));
-  const safeEdges = edgeGaps.map((g) => clampInt(g, 54, 190));
-
-  const gapWidth = safeWidths.reduce((a, b) => a + b, 0) + safeEdges.reduce((a, b) => a + b, 0);
-  const out: Obstacle[] = [{ kind: 'gap', x: startX, width: gapWidth, height: 0 }];
-
-  let cursor = startX + safeEdges[0];
-  for (let i = 0; i < safeWidths.length; i++) {
-    out.push({ kind: 'platform', x: cursor, width: safeWidths[i], height: safeHeights[i] });
-    cursor += safeWidths[i] + safeEdges[i + 1];
-  }
-
-  return out;
-}
-
-function placeSelectedVariants(
-  selected: SelectedVariant[],
-  carried: Obstacle[],
-  variantCtx: VariantContext,
-  levelIndex: number,
-  ctx: GenerationContext,
-  baseSpacing: number,
-): PlaceResult {
-  const placedExternal: Obstacle[] = [...carried].sort((a, b) => a.x - b.x);
-  const obstacles: Obstacle[] = [];
-  const usedPatterns: string[] = [];
-  const usedVariants: string[] = [];
-  const droppedVariants: string[] = [];
-
-  const n = Math.min(selected.length, MAX_NEW_PATTERNS);
-  const challengeSpace = ctx.pathEnd - ctx.pathStart;
-
-  for (let i = 0; i < n; i++) {
-    const sel = selected[i];
-    const variant = sel.variant;
-    const preview = variant.build(0, variantCtx);
-    const width = measureObstacleWidth(preview, 0);
-
-    const center = ctx.pathStart + Math.round((challengeSpace * (i + 1)) / (n + 1));
-    const jitter = deterministicJitter(levelIndex * 97 + i * 41, 28);
-    const idealStart = clamp(center - Math.floor(width / 2) + jitter, ctx.pathStart, ctx.pathEnd - width);
-
-    const last = placedExternal[placedExternal.length - 1];
-    const lastEnd = last ? last.x + last.width : ctx.pathStart;
-    const minLeadGap = last ? requiredSpacing(last.kind, variant.firstKind, baseSpacing, levelIndex) : 0;
-    const baseStart = Math.max(idealStart, lastEnd + minLeadGap);
-
-    const tries = [baseStart, baseStart + 50, baseStart - 50, baseStart + 110, baseStart - 110, ctx.pathEnd - width - 20];
-
-    let placed: Obstacle[] | null = null;
-    for (const startX of tries) {
-      if (startX < ctx.pathStart || startX + width > ctx.pathEnd) continue;
-      const built = variant.build(Math.round(startX), variantCtx);
-      if (!isPlacementSafe(built, placedExternal, baseSpacing, levelIndex, ctx.pathStart, ctx.pathEnd)) continue;
-      placed = built;
-      break;
-    }
-
-    if (!placed) {
-      droppedVariants.push(variant.name);
-      continue;
-    }
-
-    placedExternal.push(...placed);
-    placedExternal.sort((a, b) => a.x - b.x);
-
-    obstacles.push(...placed);
-    usedPatterns.push(sel.kind);
-    usedVariants.push(variant.name);
-  }
+function rebuildBuildResultFromSegments(
+  segmentBuilds: SegmentBuild[],
+  canvasWidth: number,
+  requiredTagsPlaced: string[] = [],
+): BuildResult {
+  const obstacles = segmentBuilds.flatMap((s) => s.obstacles).sort((a, b) => a.x - b.x);
+  const maxEnd = obstacles.length > 0 ? Math.max(...obstacles.map((o) => o.x + o.width)) : canvasWidth;
+  const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(maxEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
+  const flagX = worldWidth - FLAG_OFFSET;
 
   return {
+    segmentBuilds,
     obstacles,
-    usedPatterns,
-    usedVariants,
-    droppedVariants,
+    worldWidth,
+    flagX,
+    requiredTagsPlaced,
+    maxQuietGap: computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP),
   };
 }
 
-function measureObstacleWidth(obstacles: Obstacle[], startX: number): number {
-  let end = startX;
-  for (const o of obstacles) {
-    end = Math.max(end, o.x + o.width);
+function buildKnownSafeFallback(levelIndex: number, ctx: SegmentContext, canvasWidth: number): BuildResult {
+  const safeTypes: SegmentType[] = ['spikeJump', 'lowCeilingCrouch', 'longGapPlatforms'];
+  const segmentBuilds: SegmentBuild[] = [];
+  let cursor = SAFE_SPAWN_END + 26;
+
+  const targetCount = Math.max(3, Math.min(6, 2 + Math.floor(levelIndex / 2)));
+  for (let i = 0; i < targetCount; i++) {
+    const type = safeTypes[i % safeTypes.length];
+    const seg = buildSegment(type, cursor, ctx, levelIndex * 71 + i * 19);
+    segmentBuilds.push(seg);
+    cursor += seg.length + clampInt(ctx.reactionSpacing * 0.72, 90, 160);
   }
-  return Math.max(1, Math.round(end - startX));
+
+  return rebuildBuildResultFromSegments(segmentBuilds, canvasWidth);
 }
 
-function isPlacementSafe(
-  candidate: Obstacle[],
-  existing: Obstacle[],
-  baseSpacing: number,
-  levelIndex: number,
-  pathStart: number,
-  pathEnd: number,
-): boolean {
-  for (const obs of candidate) {
-    if (obs.x < pathStart || obs.x + obs.width > pathEnd) return false;
-    for (const ext of existing) {
-      if (rectsOverlap(obs, ext)) return false;
-      const gap = obs.x > ext.x
-        ? obs.x - (ext.x + ext.width)
-        : ext.x - (obs.x + obs.width);
-      if (gap < requiredSpacing(ext.kind, obs.kind, baseSpacing, levelIndex)) return false;
+function hasSafeLandingWindow(xStart: number, xEnd: number, obstacles: Obstacle[]): boolean {
+  if (xEnd <= xStart) return false;
+  if (xEnd - xStart < MIN_LANDING_WIDTH) return false;
+
+  const supports = computeSupportIntervals(xStart, xEnd, obstacles);
+  if (supports.length === 0) return false;
+
+  const blockedIntervals = [
+    ...obstacles
+      .filter((o) => o.kind === 'spike' || o.kind === 'doubleSpike')
+      .map((o) => ({ start: o.x - 2, end: o.x + o.width + 2 })),
+    ...obstacles
+      .filter((o) => o.kind === 'lowCeiling' && o.height < PLAYER_STANDING_HEIGHT + 3)
+      .map((o) => ({ start: o.x, end: o.x + o.width })),
+    ...obstacles
+      .filter((o) => o.kind === 'choiceObstacle' && o.height < PLAYER_STANDING_HEIGHT + 3)
+      .map((o) => ({ start: o.x, end: o.x + o.width })),
+  ];
+
+  const freeSupports = supports.flatMap((s) => subtractIntervals([s], blockedIntervals));
+  return freeSupports.some((s) => s.end - s.start >= MIN_LANDING_WIDTH);
+}
+
+function computeSupportIntervals(xStart: number, xEnd: number, obstacles: Obstacle[]): Interval[] {
+  const base: Interval[] = [{ start: xStart, end: xEnd }];
+  const gaps = obstacles
+    .filter((o) => o.kind === 'gap')
+    .map((o) => ({ start: o.x, end: o.x + o.width }));
+  const groundSupports = subtractIntervals(base, gaps);
+
+  const platforms = obstacles
+    .filter((o) => o.kind === 'platform')
+    .map((o) => ({ start: o.x + LANDING_BUFFER, end: o.x + o.width - LANDING_BUFFER }))
+    .filter((i) => i.end - i.start >= MIN_LANDING_WIDTH - 4)
+    .map((i) => clampInterval(i, xStart, xEnd))
+    .filter((i): i is Interval => i !== null);
+
+  return mergeIntervals([...groundSupports, ...platforms]);
+}
+
+function subtractIntervals(base: Interval[], blockers: Interval[]): Interval[] {
+  let result = [...base];
+  for (const blocker of blockers) {
+    const next: Interval[] = [];
+    for (const interval of result) {
+      if (blocker.end <= interval.start || blocker.start >= interval.end) {
+        next.push(interval);
+        continue;
+      }
+      if (blocker.start > interval.start) {
+        next.push({ start: interval.start, end: blocker.start });
+      }
+      if (blocker.end < interval.end) {
+        next.push({ start: blocker.end, end: interval.end });
+      }
+    }
+    result = next.filter((i) => i.end - i.start > 1);
+    if (result.length === 0) return [];
+  }
+  return mergeIntervals(result);
+}
+
+function mergeIntervals(intervals: Interval[]): Interval[] {
+  if (intervals.length <= 1) return intervals;
+  const sorted = [...intervals].sort((a, b) => a.start - b.start);
+  const merged: Interval[] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const cur = sorted[i];
+    const prev = merged[merged.length - 1];
+    if (cur.start <= prev.end + 1) {
+      prev.end = Math.max(prev.end, cur.end);
+    } else {
+      merged.push({ ...cur });
     }
   }
-  return true;
+  return merged;
 }
 
-function carryForwardObstacles(
-  ctx: GenerationContext,
-  levelIndex: number,
-  baseSpacing: number,
-): Obstacle[] {
-  const snapshot = ctx.latestRun?.obstaclesSnapshot;
-  if (!snapshot || snapshot.length === 0) return [];
-
-  const carryTarget = levelIndex >= 6 ? 2 : 1;
-  const carryable = snapshot.filter((o) => o.kind !== 'gap' && o.kind !== 'platform');
-  const sorted = [...carryable].sort((a, b) => a.x - b.x);
-  const picked = sorted.slice(0, carryTarget);
-
-  const carried: Obstacle[] = [];
-  for (let i = 0; i < picked.length; i++) {
-    const obs = normalizeObstacle(picked[i], levelIndex);
-    const shift = 20 + i * 28;
-    const x = clampInt(obs.x + shift, ctx.pathStart, ctx.pathEnd - obs.width);
-    carried.push({ ...obs, x });
-  }
-
-  return enforceSafety(carried, levelIndex, ctx.pathEnd, baseSpacing);
+function clampInterval(interval: Interval, min: number, max: number): Interval | null {
+  const start = Math.max(interval.start, min);
+  const end = Math.min(interval.end, max);
+  if (end <= start) return null;
+  return { start, end };
 }
 
-function normalizeObstacle(obs: Obstacle, levelIndex: number): Obstacle {
-  const base = makeObstacle(obs.kind, levelIndex);
-  return {
-    kind: obs.kind,
-    x: obs.x,
-    width: base.width,
-    height: base.height,
-  };
+function rangesOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && aEnd > bStart;
 }
 
-function makeObstacle(kind: ObstacleKind, levelIndex: number): Obstacle {
-  if (kind === 'gap') {
-    return {
-      kind,
-      x: 0,
-      width: clampInt(GAP_MIN_W + levelIndex * 4, GAP_MIN_W, GAP_MAX_W),
-      height: 0,
-    };
+function dedupeStrings(items: string[], maxCount: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+    if (out.length >= maxCount) break;
   }
-  if (kind === 'lowCeiling') {
-    return {
-      kind,
-      x: 0,
-      width: clampInt(LOW_CEILING_MIN_W + levelIndex * 8, LOW_CEILING_MIN_W, LOW_CEILING_MAX_W),
-      height: LOW_CEILING_CLEARANCE,
-    };
-  }
-  if (kind === 'doubleSpike') return { kind, x: 0, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H };
-  if (kind === 'choiceObstacle') return { kind, x: 0, width: CHOICE_OBS_W, height: CHOICE_OBS_H };
-  if (kind === 'platform') return { kind, x: 0, width: 74, height: 20 };
-  return { kind: 'spike', x: 0, width: SPIKE_W, height: SPIKE_H };
-}
-
-function enforceSafety(obstacles: Obstacle[], levelIndex: number, pathEnd: number, baseSpacing: number): Obstacle[] {
-  const safe: Obstacle[] = [];
-  const sorted = [...obstacles].sort((a, b) => a.x - b.x);
-
-  for (const obs of sorted) {
-    const clamped = { ...obs, x: clampInt(obs.x, SAFE_SPAWN_END, pathEnd - obs.width) };
-    const ok = !safe.some((ext) => {
-      if (rectsOverlap(clamped, ext)) return true;
-      const gap = clamped.x > ext.x
-        ? clamped.x - (ext.x + ext.width)
-        : ext.x - (clamped.x + clamped.width);
-      return gap < requiredSpacing(ext.kind, clamped.kind, baseSpacing, levelIndex);
-    });
-    if (ok) safe.push(clamped);
-  }
-
-  return safe;
-}
-
-function requiredSpacing(
-  prevKind: ObstacleKind,
-  nextKind: ObstacleKind,
-  baseSpacing: number,
-  levelIndex: number,
-): number {
-  const difficulty = levelDifficulty(levelIndex);
-  const base = Math.max(120, baseSpacing);
-  const overhead = (k: ObstacleKind) => k === 'lowCeiling' || k === 'choiceObstacle';
-  const ground = (k: ObstacleKind) => k === 'spike' || k === 'doubleSpike' || k === 'gap';
-
-  if ((overhead(prevKind) && ground(nextKind)) || (overhead(nextKind) && ground(prevKind))) {
-    return clampInt(base + 34, 145, 280);
-  }
-  if (prevKind === 'gap' || nextKind === 'gap') {
-    return clampInt(base + 18, 130, 260);
-  }
-  if (prevKind === 'platform' || nextKind === 'platform') {
-    return clampInt(base * 0.55, 70, 180);
-  }
-  if (difficulty === 'expert') {
-    return clampInt(base - 8, 120, 240);
-  }
-  return base;
-}
-
-function rectsOverlap(a: Obstacle, b: Obstacle): boolean {
-  return a.x < b.x + b.width && a.x + a.width > b.x;
+  return out;
 }
 
 function deterministicJitter(seed: number, magnitude: number): number {
   const x = Math.sin(seed * 91.73) * 10000;
   const frac = x - Math.floor(x);
   return Math.round((frac * 2 - 1) * magnitude);
-}
-
-function deterministicPick<T>(items: T[], seed: number): T {
-  const idx = Math.abs(seed) % items.length;
-  return items[idx];
 }
 
 function clamp(value: number, min: number, max: number): number {

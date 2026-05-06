@@ -7,13 +7,23 @@ export interface AdaptiveDebugInfo {
   strategy: string;
   patterns: string[];
   variants: string[];
+  requiredPatterns: string[];
+  placedRequiredPatterns: string[];
   density: 'low' | 'medium' | 'high' | 'extreme';
   antiRepeat: string[];
   attempted: number;
   dropped: string[];
   difficulty: string;
+  challengeZones: number;
+  uniquePatternTypes: number;
+  comboCount: number;
+  advancedCount: number;
+  platformUsed: boolean;
+  difficultyIncreasing: boolean;
   safeJumpDistance: number;
   maxJumpDistance: number;
+  validationStatus: 'valid' | 'repaired' | 'fallback';
+  validationWarnings: string[];
 }
 
 export interface LevelData {
@@ -34,10 +44,11 @@ export interface GroundSegment {
 // Static tutorial fallback only. Levels 2+ are adaptive in game.ts.
 const LEVEL_DEFINITIONS: Array<{ obstacles: Obstacle[] }> = [
   {
-    // Level 1 starter: spike + low ceiling to teach jump and crouch.
+    // Level 1 tutorial challenge: jump + crouch + decision.
     obstacles: [
-      { kind: 'spike', x: 520, width: 44, height: 52 },
-      { kind: 'lowCeiling', x: 980, width: 168, height: 34 },
+      { kind: 'spike', x: 430, width: 44, height: 52 },
+      { kind: 'lowCeiling', x: 760, width: 170, height: 34 },
+      { kind: 'choiceObstacle', x: 1110, width: 100, height: 34 },
     ],
   },
 ];
@@ -46,9 +57,9 @@ export function buildLevel(index: number, canvasHeight: number): LevelData {
   const def = LEVEL_DEFINITIONS[index] ?? LEVEL_DEFINITIONS[0];
   return {
     index,
-    worldWidth: 2000,
+    worldWidth: 1900,
     groundY: canvasHeight - 80,
-    flagX: 1700,
+    flagX: 1620,
     obstacles: def.obstacles,
   };
 }

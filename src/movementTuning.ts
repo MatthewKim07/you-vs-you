@@ -9,9 +9,9 @@ export type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
 
 // levelIndex is 0-based (Level 1 displayed = index 0, tutorial)
 export function levelDifficulty(levelIndex: number): Difficulty {
-  if (levelIndex <= 2) return 'easy';   // displayed L1–3
-  if (levelIndex <= 4) return 'medium'; // displayed L4–5
-  if (levelIndex <= 7) return 'hard';   // displayed L6–8
+  if (levelIndex <= 0) return 'easy';   // displayed L1
+  if (levelIndex <= 2) return 'medium'; // displayed L2–3
+  if (levelIndex <= 4) return 'hard';   // displayed L4–5
   return 'expert';
 }
 
