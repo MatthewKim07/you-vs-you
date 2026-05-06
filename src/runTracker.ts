@@ -1,5 +1,5 @@
 import { Obstacle } from './types';
-import { RunData, PlayerProfile, ChoiceDecisionEvent } from './telemetry';
+import { RunData, PlayerProfile, ChoiceDecisionEvent, RouteChoiceEvent, RouteId } from './telemetry';
 
 interface GenerationMeta {
   difficulty?: string;
@@ -37,6 +37,8 @@ export class RunTracker {
       samples: [],
       actions: [],
       choiceDecisions: [],
+      routeChoices: [],
+      routeUsageCounts: { lower: 0, mid: 0, upper: 0 },
     };
   }
 
@@ -63,6 +65,16 @@ export class RunTracker {
   recordChoiceDecision(event: ChoiceDecisionEvent): void {
     if (!this.current) return;
     this.current.choiceDecisions.push(event);
+  }
+
+  recordRouteChoice(event: RouteChoiceEvent): void {
+    if (!this.current) return;
+    this.current.routeChoices.push(event);
+  }
+
+  recordRoutePresence(routeId: RouteId): void {
+    if (!this.current) return;
+    this.current.routeUsageCounts[routeId] = (this.current.routeUsageCounts[routeId] ?? 0) + 1;
   }
 
   finishRun(completed: boolean, deathReason?: 'spike' | 'gap', deathX?: number): void {

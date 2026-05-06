@@ -1,4 +1,4 @@
-import { ActionEvent, ObstacleChoiceStats, PlayerModel, RunData } from './telemetry';
+import { ActionEvent, ObstacleChoiceStats, PlayerModel, RunData, RouteChoiceEvent, RouteId } from './telemetry';
 
 const WINDOW_RUNS = 5;
 
@@ -21,6 +21,7 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
 
   // Choice preference analysis
   const choiceStats = analyzeChoiceDecisions(recentRuns);
+  const routeStats = analyzeRouteBehavior(recentRuns);
 
   return {
     prefersJump,
@@ -36,7 +37,82 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
     preferredChoiceAction: choiceStats.preferred,
     choiceConsistency: choiceStats.choiceConsistency,
     perObstacleChoiceStats: choiceStats.perObstacleStats,
+    preferredRoute: routeStats.preferredRoute,
+    routeConfidence: routeStats.routeConfidence,
+    routeRiskStyle: routeStats.routeRiskStyle,
+    routeUsage: routeStats.routeUsage,
   };
+}
+
+function analyzeRouteBehavior(runs: RunData[]): {
+  preferredRoute: PlayerModel['preferredRoute'];
+  routeConfidence: number;
+  routeRiskStyle: PlayerModel['routeRiskStyle'];
+  routeUsage: Record<RouteId, number>;
+} {
+  const usage: Record<RouteId, number> = { lower: 0, mid: 0, upper: 0 };
+  const routeEvents = runs.flatMap((r) => r.routeChoices);
+
+  for (const run of runs) {
+    usage.lower += run.routeUsageCounts?.lower ?? 0;
+    usage.mid += run.routeUsageCounts?.mid ?? 0;
+    usage.upper += run.routeUsageCounts?.upper ?? 0;
+  }
+
+  const totalPresence = usage.lower + usage.mid + usage.upper;
+  const totalEvents = routeEvents.length;
+  if (totalPresence === 0 && totalEvents === 0) {
+    return {
+      preferredRoute: 'mixed',
+      routeConfidence: 0,
+      routeRiskStyle: 'opportunist',
+      routeUsage: usage,
+    };
+  }
+
+  const normalized = totalPresence > 0
+    ? {
+      lower: usage.lower / totalPresence,
+      mid: usage.mid / totalPresence,
+      upper: usage.upper / totalPresence,
+    }
+    : { lower: 1 / 3, mid: 1 / 3, upper: 1 / 3 };
+
+  const pairs = ([
+    { id: 'lower' as RouteId, value: normalized.lower },
+    { id: 'mid' as RouteId, value: normalized.mid },
+    { id: 'upper' as RouteId, value: normalized.upper },
+  ]).sort((a, b) => b.value - a.value);
+
+  const dominant = pairs[0];
+  const runnerUp = pairs[1];
+  const dominanceGap = dominant.value - runnerUp.value;
+  const preferredRoute: PlayerModel['preferredRoute'] = dominanceGap >= 0.15 ? dominant.id : 'mixed';
+
+  const volumeConfidence = Math.min(1, (totalEvents + totalPresence * 0.2) / 12);
+  const routeConfidence = Math.max(0, Math.min(1, volumeConfidence * (preferredRoute === 'mixed' ? 0.55 : 0.9)));
+
+  const switches = countRouteSwitches(routeEvents);
+  const switchRate = totalEvents > 1 ? switches / (totalEvents - 1) : 0;
+  let routeRiskStyle: PlayerModel['routeRiskStyle'];
+  if (switchRate >= 0.55) {
+    routeRiskStyle = 'opportunist';
+  } else if (preferredRoute !== 'mixed' && dominanceGap >= 0.2) {
+    routeRiskStyle = 'committed';
+  } else {
+    routeRiskStyle = 'safe-switcher';
+  }
+
+  return { preferredRoute, routeConfidence, routeRiskStyle, routeUsage: usage };
+}
+
+function countRouteSwitches(events: RouteChoiceEvent[]): number {
+  if (events.length <= 1) return 0;
+  let switches = 0;
+  for (let i = 1; i < events.length; i++) {
+    if (events[i].routeId !== events[i - 1].routeId) switches++;
+  }
+  return switches;
 }
 
 // Analyze choice obstacle decisions across recent runs.

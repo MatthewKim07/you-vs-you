@@ -5,6 +5,7 @@ export interface Vec2 {
 
 export type ObstacleKind = 'spike' | 'gap' | 'lowCeiling' | 'doubleSpike' | 'choiceObstacle' | 'platform';
 export type TrapState = 'idle' | 'armed' | 'warning' | 'triggered' | 'spent';
+export type RouteLayer = 'lower' | 'mid' | 'upper';
 
 export interface Obstacle {
   kind: ObstacleKind;
@@ -36,6 +37,8 @@ export interface Obstacle {
   // Spike extension for adaptiveChoiceGateJump — animates 0 → targetSpikeExt (tall upward spikes)
   currentSpikeExt?: number;
   targetSpikeExt?: number;
+  routeLayer?: RouteLayer;
+  routeId?: string;
 }
 
 export type GameState = 'menu' | 'countdown' | 'paused' | 'playing' | 'dead' | 'levelComplete';

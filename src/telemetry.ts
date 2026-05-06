@@ -27,6 +27,16 @@ export interface ActionEvent {
   timeMs: number;
 }
 
+export type RouteId = 'lower' | 'mid' | 'upper';
+
+export interface RouteChoiceEvent {
+  routeId: RouteId;
+  x: number;
+  levelIndex: number;
+  timeMs: number;
+  success: boolean;
+}
+
 // Task: decision-based obstacle tracking
 export interface ChoiceDecisionEvent {
   obstacleId: string;     // e.g. "choice_1"
@@ -57,6 +67,8 @@ export interface RunData {
   samples: PositionSample[];
   actions: ActionEvent[];
   choiceDecisions: ChoiceDecisionEvent[]; // NEW
+  routeChoices: RouteChoiceEvent[];
+  routeUsageCounts: Record<RouteId, number>;
 }
 
 // Per-obstacle choice stats — sourced only from ChoiceDecisionEvents, not global actions.
@@ -87,6 +99,10 @@ export interface PlayerModel {
   choiceConsistency: 'predictable' | 'mixed' | 'unknown';
   // per-obstacle breakdown (gate decisions scoped by obstacleId)
   perObstacleChoiceStats: Record<string, ObstacleChoiceStats>;
+  preferredRoute: RouteId | 'mixed';
+  routeConfidence: number;
+  routeRiskStyle: 'safe-switcher' | 'committed' | 'opportunist';
+  routeUsage: Record<RouteId, number>;
 }
 
 // Derived summary across all stored runs.
