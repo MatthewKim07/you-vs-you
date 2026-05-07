@@ -580,46 +580,59 @@ export class Game {
       this.canCutCurrentJump = false;
     }
 
-    const runsWithCurrent = this.collectRunsWithCurrent();
-    const knowledge = calculateKnowledge(runsWithCurrent, this.playerModel);
-    const runtimeTrap = updateRealtimeTraps({
-      obstacles: level.obstacles,
-      player: {
-        x: player.pos.x,
-        y: player.pos.y,
-        width: player.width,
-        height: player.height,
-        velX: player.vel.x,
-        velY: player.vel.y,
-        onGround: player.onGround,
-        isCrouching: player.isCrouching,
-      },
-      playerModel: this.playerModel,
-      knowledge,
-      recentRuns: runsWithCurrent,
-      levelIndex: this.levelIndex,
-      groundY: level.groundY,
-      dt,
-    });
-    const persistedLastMutation =
-      runtimeTrap.debug.lastMutation !== 'none'
-        ? runtimeTrap.debug.lastMutation
-        : this.trapRuntimeDebug.lastMutation;
-    this.routeMutationTotals.lower += runtimeTrap.debug.mutationCountsByRoute.lower;
-    this.routeMutationTotals.mid += runtimeTrap.debug.mutationCountsByRoute.mid;
-    this.routeMutationTotals.upper += runtimeTrap.debug.mutationCountsByRoute.upper;
-    this.trapRuntimeDebug = {
-      ...runtimeTrap.debug,
-      lastMutation: persistedLastMutation,
-      mutationCountsByRoute: { ...this.routeMutationTotals },
-    };
-    this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
-    if (
-      runtimeTrap.mutations.length > 0 &&
-      this.levelAgeSec - this.lastTrapMessageAt >= TRAP_MESSAGE_COOLDOWN_SECS
-    ) {
-      this.lastTrapMessageAt = this.levelAgeSec;
-      this.showAIMessage(runtimeTrap.mutations[0].message);
+    if (this.levelIndex > 0) {
+      const runsWithCurrent = this.collectRunsWithCurrent();
+      const knowledge = calculateKnowledge(runsWithCurrent, this.playerModel);
+      const runtimeTrap = updateRealtimeTraps({
+        obstacles: level.obstacles,
+        player: {
+          x: player.pos.x,
+          y: player.pos.y,
+          width: player.width,
+          height: player.height,
+          velX: player.vel.x,
+          velY: player.vel.y,
+          onGround: player.onGround,
+          isCrouching: player.isCrouching,
+        },
+        playerModel: this.playerModel,
+        knowledge,
+        recentRuns: runsWithCurrent,
+        levelIndex: this.levelIndex,
+        groundY: level.groundY,
+        dt,
+      });
+      const persistedLastMutation =
+        runtimeTrap.debug.lastMutation !== 'none'
+          ? runtimeTrap.debug.lastMutation
+          : this.trapRuntimeDebug.lastMutation;
+      this.routeMutationTotals.lower += runtimeTrap.debug.mutationCountsByRoute.lower;
+      this.routeMutationTotals.mid += runtimeTrap.debug.mutationCountsByRoute.mid;
+      this.routeMutationTotals.upper += runtimeTrap.debug.mutationCountsByRoute.upper;
+      this.trapRuntimeDebug = {
+        ...runtimeTrap.debug,
+        lastMutation: persistedLastMutation,
+        mutationCountsByRoute: { ...this.routeMutationTotals },
+      };
+      this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
+      if (
+        runtimeTrap.mutations.length > 0 &&
+        this.levelAgeSec - this.lastTrapMessageAt >= TRAP_MESSAGE_COOLDOWN_SECS
+      ) {
+        this.lastTrapMessageAt = this.levelAgeSec;
+        this.showAIMessage(runtimeTrap.mutations[0].message);
+      }
+    } else {
+      // Level 1 is pure baseline observation: no runtime trap mutations.
+      this.trapRuntimeDebug = {
+        ...this.trapRuntimeDebug,
+        phase: 'observe',
+        activeTrap: 'none',
+        trapState: 'none',
+        activeRoute: 'none',
+        trapReason: 'Learning baseline behavior on Level 1',
+      };
+      this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
     }
 
     // Persist for next frame — must happen after physics, before early returns
