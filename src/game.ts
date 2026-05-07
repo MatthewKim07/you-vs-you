@@ -38,6 +38,8 @@ const CHOICE_TILE_WIDTH = 116;
 const CHOICE_TILE_HEIGHT = 34;
 const SUPPORT_EDGE_INSET = 0;     // use full body bounds so platform visuals match collision exactly
 const PLATFORM_SNAP_TOLERANCE = 10;
+const MIN_SUPPORT_WIDTH = 8;
+const GROUND_RECOVERY_TOLERANCE = 10;
 const ROUTE_SWITCH_MIN_X_DELTA = 88;
 const ROUTE_LOWER_MAX_HEIGHT = 22;
 const ROUTE_MID_MAX_HEIGHT = 86;
@@ -529,6 +531,7 @@ export class Game {
     this.resolvePlatformTopCollision(prevBottom);
     this.resolveSolidPlatformHeadCollision(prevTop);
     this.resolvePlatformSideCollision(prevLeft, prevRight);
+    this.resolveGapWallCollision(prevLeft, prevRight);
 
     const targetX = player.pos.x - this.canvas.width * 0.32;
     this.cameraX = Math.max(0, Math.min(targetX, this.level.worldWidth - this.canvas.width));
@@ -669,6 +672,7 @@ export class Game {
     this.resolvePlatformTopCollision(prevBottom);
     this.resolveSolidPlatformHeadCollision(prevTop);
     this.resolvePlatformSideCollision(prevLeft, prevRight);
+    this.resolveGapWallCollision(prevLeft, prevRight);
 
     // --- Ground state transitions ---
     if (wasOnGround && !player.onGround) {
@@ -880,19 +884,32 @@ export class Game {
         o.kind === 'platform' &&
         !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent'),
     );
-    const overlapsX = (obs: Obstacle): boolean =>
-      playerRight > (obs.currentX ?? obs.x) &&
-      playerLeft < (obs.currentX ?? obs.x) + (obs.currentWidth ?? obs.width);
+    const overlapWidth = (obs: Obstacle): number => {
+      const ox = obs.currentX ?? obs.x;
+      const ow = obs.currentWidth ?? obs.width;
+      const left = Math.max(playerLeft, ox);
+      const right = Math.min(playerRight, ox + ow);
+      return Math.max(0, right - left);
+    };
 
-    const fullyInsideGap = gaps.some((g) => {
-      const gx = g.currentX ?? g.x;
-      const gw = g.currentWidth ?? g.width;
-      return playerLeft >= gx && playerRight <= gx + gw;
-    });
-    let floor: number | null = fullyInsideGap ? null : this.level.groundY;
+    const footprintWidth = Math.max(0, playerRight - playerLeft);
+    let totalGapOverlap = 0;
+    for (const g of gaps) {
+      totalGapOverlap += overlapWidth(g);
+    }
+    // Clamp in case overlaps ever stack.
+    totalGapOverlap = Math.min(totalGapOverlap, footprintWidth);
+    const groundSupport = footprintWidth - totalGapOverlap;
+    const canRecoverGround = playerBottom <= this.level.groundY + GROUND_RECOVERY_TOLERANCE;
+    // Do not "snap back" to ground after falling too deep into a gap.
+    let floor: number | null =
+      groundSupport >= MIN_SUPPORT_WIDTH && canRecoverGround
+        ? this.level.groundY
+        : null;
 
     for (const p of platforms) {
-      if (!overlapsX(p)) continue;
+      const platformSupport = overlapWidth(p);
+      if (platformSupport < MIN_SUPPORT_WIDTH) continue;
       const platformTop = this.level.groundY - (p.currentHeight ?? p.height);
       const canStandOnPlatform =
         verticalVelocity >= 0 && playerBottom <= platformTop + PLATFORM_SNAP_TOLERANCE;
@@ -1087,6 +1104,35 @@ export class Game {
       const crossedRightFace = prevLeft >= platformRight && curLeft < platformRight;
       if (crossedRightFace) {
         this.player.pos.x = platformRight - SUPPORT_EDGE_INSET;
+        return;
+      }
+    }
+  }
+
+  private resolveGapWallCollision(prevLeft: number, prevRight: number) {
+    const curLeft = this.player.pos.x + SUPPORT_EDGE_INSET;
+    const curRight = this.player.pos.x + this.player.width - SUPPORT_EDGE_INSET;
+    const playerBottom = this.player.pos.y + this.player.height;
+
+    // Gap walls exist from groundY downward.
+    if (playerBottom <= this.level.groundY - 1) return;
+
+    for (const o of this.level.obstacles) {
+      if (o.kind !== 'gap') continue;
+      const gapLeft = o.currentX ?? o.x;
+      const gapRight = gapLeft + (o.currentWidth ?? o.width);
+
+      // Crossing into the right wall from inside the gap.
+      const crossedRightWall = prevRight <= gapRight && curRight > gapRight;
+      if (crossedRightWall) {
+        this.player.pos.x = gapRight - this.player.width + SUPPORT_EDGE_INSET;
+        return;
+      }
+
+      // Crossing into the left wall from inside the gap.
+      const crossedLeftWall = prevLeft >= gapLeft && curLeft < gapLeft;
+      if (crossedLeftWall) {
+        this.player.pos.x = gapLeft - SUPPORT_EDGE_INSET;
         return;
       }
     }
