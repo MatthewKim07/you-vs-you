@@ -130,6 +130,40 @@ html, body {
   transform: translateY(3px);
 }
 
+#audio-toggle-btn {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 180;
+  width: 48px;
+  min-width: 48px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#audio-toggle-btn.muted {
+  background: rgba(45, 20, 20, 0.86);
+  outline-color: rgba(255, 120, 120, 0.42);
+}
+
+.audio-svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#audio-toggle-btn.muted .audio-svg {
+  stroke: #ffb3b3;
+}
+
 /* ── Debug Panel ───────────────────────────────────────── */
 
 #debug-toggle {

@@ -69,6 +69,7 @@ export class Game {
   private controlBar!: HTMLDivElement;
   private pauseButton!: HTMLButtonElement;
   private exitButton!: HTMLButtonElement;
+  private audioToggleButton!: HTMLButtonElement;
   private lastTrapMessageAt = Number.NEGATIVE_INFINITY;
   private audio = new GameAudio();
 
@@ -98,6 +99,7 @@ export class Game {
   private lastRouteEventX = Number.NEGATIVE_INFINITY;
   private audioArmed = false;
   private lastCountdownAnnounced: number | null = null;
+  private audioMuted = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -117,6 +119,7 @@ export class Game {
 
     const arm = () => {
       this.audio.unlock();
+      if (this.audioMuted) return;
       if (this.state === 'menu') this.audio.startMenuMusic();
       if (this.state === 'playing') this.audio.startGameplayMusic();
     };
@@ -290,6 +293,17 @@ export class Game {
     this.controlBar.appendChild(this.exitButton);
     document.body.appendChild(this.controlBar);
 
+    this.audioToggleButton = document.createElement('button');
+    this.audioToggleButton.id = 'audio-toggle-btn';
+    this.audioToggleButton.className = 'game-control-btn audio-toggle';
+    this.audioToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleAudioMute();
+    });
+    this.audioToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    document.body.appendChild(this.audioToggleButton);
+    this.refreshAudioToggleUi();
+
     this.menuOverlay = document.createElement('div');
     this.menuOverlay.id = 'start-menu';
     this.menuOverlay.innerHTML = `
@@ -368,6 +382,41 @@ export class Game {
     this.menuOverlay.style.display = inMenu ? 'flex' : 'none';
     this.controlBar.style.display = inMenu ? 'none' : 'flex';
     this.pauseButton.textContent = this.state === 'paused' ? 'Resume' : 'II Pause';
+  }
+
+  private toggleAudioMute() {
+    this.audioMuted = !this.audioMuted;
+    this.audio.setEnabled(!this.audioMuted);
+    if (!this.audioMuted) {
+      this.audio.unlock();
+      this.audio.playUiClick();
+      if (this.state === 'menu') {
+        this.audio.startMenuMusic();
+      } else if (this.state === 'playing' || this.state === 'paused') {
+        this.audio.startGameplayMusic();
+        this.audio.setPaused(this.state === 'paused');
+      }
+    }
+    this.refreshAudioToggleUi();
+  }
+
+  private refreshAudioToggleUi() {
+    if (!this.audioToggleButton) return;
+    this.audioToggleButton.classList.toggle('muted', this.audioMuted);
+    this.audioToggleButton.innerHTML = this.audioMuted
+      ? `<svg class="audio-svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 9h4l5-4v14l-5-4H3z"></path>
+          <path d="M15 9.5c.9.6 1.5 1.5 1.5 2.5s-.6 1.9-1.5 2.5"></path>
+          <path d="M17.5 7c1.5 1.1 2.5 2.9 2.5 5s-1 3.9-2.5 5"></path>
+          <path d="M4 20L20 4"></path>
+        </svg>`
+      : `<svg class="audio-svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 9h4l5-4v14l-5-4H3z"></path>
+          <path d="M15 9.5c.9.6 1.5 1.5 1.5 2.5s-.6 1.9-1.5 2.5"></path>
+          <path d="M17.5 7c1.5 1.1 2.5 2.9 2.5 5s-1 3.9-2.5 5"></path>
+        </svg>`;
+    this.audioToggleButton.setAttribute('aria-label', this.audioMuted ? 'Unmute audio' : 'Mute audio');
+    this.audioToggleButton.setAttribute('title', this.audioMuted ? 'Audio muted' : 'Audio on');
   }
 
   private buildMenuPreviewLevel(): LevelData {
