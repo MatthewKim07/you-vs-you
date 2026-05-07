@@ -20,6 +20,7 @@ import {
 } from './aiStrategist';
 import { updateRealtimeTraps, resetTrapHosts, RealtimeTrapDebug } from './aiTrapDirector';
 import { calculateKnowledge } from './aiKnowledge';
+import { GameAudio } from './gameAudio';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -69,6 +70,7 @@ export class Game {
   private pauseButton!: HTMLButtonElement;
   private exitButton!: HTMLButtonElement;
   private lastTrapMessageAt = Number.NEGATIVE_INFINITY;
+  private audio = new GameAudio();
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
@@ -94,6 +96,8 @@ export class Game {
   private routeMutationTotals = { lower: 0, mid: 0, upper: 0 };
   private currentRoute: RouteId = 'lower';
   private lastRouteEventX = Number.NEGATIVE_INFINITY;
+  private audioArmed = false;
+  private lastCountdownAnnounced: number | null = null;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -103,7 +107,22 @@ export class Game {
     this.debugPanel.setPlayerModel(this.playerModel);
     this.setupResize();
     this.setupUi();
+    this.armAudioOnFirstGesture();
     this.enterMenu();
+  }
+
+  private armAudioOnFirstGesture() {
+    if (this.audioArmed) return;
+    this.audioArmed = true;
+
+    const arm = () => {
+      this.audio.unlock();
+      if (this.state === 'menu') this.audio.startMenuMusic();
+      if (this.state === 'playing') this.audio.startGameplayMusic();
+    };
+
+    window.addEventListener('pointerdown', arm, { once: true, passive: true });
+    window.addEventListener('keydown', arm, { once: true });
   }
 
   private resizeCanvas() {
@@ -133,7 +152,15 @@ export class Game {
     this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
+    this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
+
+    if (this.state === 'playing') {
+      this.audio.startGameplayMusic();
+    } else {
+      // During menu overlay + countdown we keep silence / minimal noise.
+      this.audio.stopMusic();
+    }
 
     if (!this.introShown && index === 0) {
       this.showAIMessage(introMessage());
@@ -163,6 +190,8 @@ export class Game {
       this.publishStrategyBrief('levelStart');
     }
     this.syncUiVisibility();
+
+    this.audio.startGameplayMusic();
   }
 
   private buildLevelForIndex(index: number): LevelData {
@@ -252,6 +281,7 @@ export class Game {
     this.exitButton.textContent = 'Exit';
     this.exitButton.addEventListener('click', (e) => {
       e.stopPropagation();
+      this.audio.playUiClick();
       this.enterMenu();
     });
     this.exitButton.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -299,6 +329,7 @@ export class Game {
     this.cameraX = 0;
     this.levelAgeSec = 0;
     this.countdownSec = 0;
+    this.lastCountdownAnnounced = null;
     this.aiMessage = '';
     this.aiMessageTimeLeft = 0;
     this.spawnPreviewPlayer();
@@ -306,9 +337,14 @@ export class Game {
     this.state = 'menu';
     this.debugPanel.setAdaptiveSnapshot(this.level);
     this.syncUiVisibility();
+    this.audio.startMenuMusic();
   }
 
   private startFromMenu() {
+    this.audio.unlock();
+    this.audio.playUiClick();
+    this.audio.playMenuStart();
+    this.audio.stopMusic();
     this.attempts = 1;
     this.startLevel(0, 'countdown');
   }
@@ -321,6 +357,8 @@ export class Game {
     } else {
       return;
     }
+    this.audio.setPaused(this.state === 'paused');
+    this.audio.playUiClick();
     this.pauseButton.textContent = this.state === 'paused' ? 'Resume' : 'II Pause';
     this.syncUiVisibility();
   }
@@ -485,9 +523,18 @@ export class Game {
       case 'countdown':
         this.input.consumeJump();
         this.input.consumeJumpRelease();
+        {
+          const count = Math.max(1, Math.ceil(this.countdownSec));
+          if (this.lastCountdownAnnounced !== count) {
+            this.lastCountdownAnnounced = count;
+            this.audio.playCountdownTick(count);
+          }
+        }
         this.countdownSec = Math.max(0, this.countdownSec - dt);
         if (this.countdownSec <= 0) {
           this.state = 'playing';
+          this.audio.playCountdownGo();
+          this.audio.startGameplayMusic();
         }
         break;
 
@@ -500,6 +547,7 @@ export class Game {
       case 'dead':
         this.deathTimer += dt;
         if (this.deathTimer >= DEATH_INPUT_DELAY && this.input.consumeJump()) {
+          this.audio.playRetry();
           this.restartLevel();
         }
         break;
@@ -508,6 +556,7 @@ export class Game {
         if (this.input.consumeJump()) {
           const next = this.levelIndex + 1;
           this.attempts = 1;
+          this.audio.playAdvance();
           this.startLevel(next);
         }
         break;
@@ -539,6 +588,7 @@ export class Game {
       }
       const didJump = player.jump();
       if (didJump) {
+        this.audio.playJump();
         this.canCutCurrentJump = true;
       }
       if (wasCrouching && !player.isCrouching) {
@@ -623,6 +673,9 @@ export class Game {
       ) {
         this.lastTrapMessageAt = this.levelAgeSec;
         this.showAIMessage(runtimeTrap.mutations[0].message);
+      }
+      for (const mutation of runtimeTrap.mutations) {
+        this.audio.playTrapCue(mutation.trapType);
       }
     } else {
       // Level 1 is pure baseline observation: no runtime trap mutations.
@@ -753,6 +806,8 @@ export class Game {
       tracker.finishRun(true);
       this.refreshPlayerModel();
       this.debugPanel.setPlayerModel(this.playerModel);
+      this.audio.playLevelComplete();
+      this.audio.stopMusic();
       this.state = 'levelComplete';
     }
   }
@@ -997,6 +1052,8 @@ export class Game {
     this.tracker.finishRun(false, reason, deathX);
     this.refreshPlayerModel();
     this.debugPanel.setPlayerModel(this.playerModel);
+    this.audio.playDeath();
+    this.audio.stopMusic();
     this.state = 'dead';
     this.deathTimer = 0;
   }
