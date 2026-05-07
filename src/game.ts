@@ -409,10 +409,14 @@ export class Game {
       o.height = CHOICE_TILE_HEIGHT;
       if (o.currentWidth !== undefined) o.currentWidth = CHOICE_TILE_WIDTH;
       if (o.targetWidth !== undefined) o.targetWidth = CHOICE_TILE_WIDTH;
-      if (o.currentHeight !== undefined) o.currentHeight = CHOICE_TILE_HEIGHT;
-      if (o.targetHeight !== undefined) o.targetHeight = CHOICE_TILE_HEIGHT;
       if (o.trapInitialWidth !== undefined) o.trapInitialWidth = CHOICE_TILE_WIDTH;
-      if (o.trapInitialHeight !== undefined) o.trapInitialHeight = CHOICE_TILE_HEIGHT;
+      // Keep AI-authored crouch-counter heights (targetHeight ~= floor).
+      const preserveTrapHeights = o.trapType === 'adaptiveChoiceGateCrouch';
+      if (!preserveTrapHeights) {
+        if (o.currentHeight !== undefined) o.currentHeight = CHOICE_TILE_HEIGHT;
+        if (o.targetHeight !== undefined) o.targetHeight = CHOICE_TILE_HEIGHT;
+        if (o.trapInitialHeight !== undefined) o.trapInitialHeight = CHOICE_TILE_HEIGHT;
+      }
     }
   }
 
