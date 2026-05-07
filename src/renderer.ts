@@ -448,22 +448,19 @@ export class Renderer {
   }
 
   // Tall upward-pointing spikes from bar top; height = spikeH.
-  // Fewer, wider spikes so they look menacing and clearly fill the kill zone.
-  private drawJumpBlockerSpikes(sx: number, surfaceY: number, width: number, worldX: number, cameraX: number, spikeH: number) {
+  // Centered whole spikes keep matching choice bars visually identical.
+  private drawJumpBlockerSpikes(sx: number, surfaceY: number, width: number, _worldX: number, _cameraX: number, spikeH: number) {
     const { ctx } = this;
     const spikeW = 14;
     const pitch  = 20;
+    const edgePad = 8;
+    const spikeCount = Math.max(1, Math.floor((width - edgePad * 2 + (pitch - spikeW)) / pitch));
+    const totalW = (spikeCount - 1) * pitch + spikeW;
+    const startX = sx + (width - totalW) / 2;
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(sx, surfaceY - spikeH - 2, width, spikeH + 2);
-    ctx.clip();
-
-    const n0 = Math.floor(worldX / pitch);
-    let wx = n0 * pitch;
-    while (wx < worldX + width + pitch) {
-      const left = px(wx - cameraX);
-      const tipX = px(wx - cameraX + spikeW / 2);
+    for (let i = 0; i < spikeCount; i++) {
+      const left = px(startX + i * pitch);
+      const tipX = px(startX + i * pitch + spikeW / 2);
       const tipY = surfaceY - spikeH;
 
       ctx.fillStyle = P_SPIKE_DK;
@@ -489,31 +486,24 @@ export class Renderer {
       ctx.lineTo(left + 2, surfaceY);
       ctx.closePath();
       ctx.fill();
-
-      wx += pitch;
     }
-    ctx.restore();
   }
 
   // Upward-pointing pixel spikes on the top surface of a ceiling obstacle.
-  // World-aligned so pattern stays fixed as camera pans.
-  private drawTopSpikes(sx: number, surfaceY: number, width: number, worldX: number, cameraX: number) {
+  // Centered whole spikes avoid clipped half-spikes at obstacle edges.
+  private drawTopSpikes(sx: number, surfaceY: number, width: number, _worldX: number, _cameraX: number) {
     const { ctx } = this;
     const spikeW = 8;
     const spikeH = 8;
     const pitch  = 16; // one spike per tile
+    const edgePad = 8;
+    const spikeCount = Math.max(1, Math.floor((width - edgePad * 2 + (pitch - spikeW)) / pitch));
+    const totalW = (spikeCount - 1) * pitch + spikeW;
+    const startX = sx + (width - totalW) / 2;
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(sx, surfaceY - spikeH - 1, width, spikeH + 1);
-    ctx.clip();
-
-    const n0 = Math.floor(worldX / pitch);
-    let wx = n0 * pitch;
-
-    while (wx < worldX + width + pitch) {
-      const left = px(wx - cameraX);
-      const tipX = px(wx - cameraX + spikeW / 2);
+    for (let i = 0; i < spikeCount; i++) {
+      const left = px(startX + i * pitch);
+      const tipX = px(startX + i * pitch + spikeW / 2);
       const tipY = surfaceY - spikeH;
 
       // Shadow (offset right face)
@@ -542,11 +532,7 @@ export class Renderer {
       ctx.lineTo(left + 2, surfaceY);
       ctx.closePath();
       ctx.fill();
-
-      wx += pitch;
     }
-
-    ctx.restore();
   }
 
   private drawFlag(screenX: number, groundY: number) {
