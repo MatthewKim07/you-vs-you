@@ -99,7 +99,7 @@ html, body {
 
 #game-controls {
   position: fixed;
-  top: 44px;
+  top: 58px;
   left: 10px;
   right: 10px;
   z-index: 120;
