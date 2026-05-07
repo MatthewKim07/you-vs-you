@@ -16,6 +16,8 @@ const SAFE_FLAG_GAP = 240;
 const FLAG_OFFSET = 240;
 const PLAYER_WIDTH = 32;
 const PLAYER_STANDING_HEIGHT = 48;
+const PLAYER_CROUCH_HEIGHT = 30;
+const MIN_VISIBLE_CROUCH_CLEARANCE = PLAYER_CROUCH_HEIGHT + 2;
 const MIN_PLATFORM_ELEVATION = PLAYER_STANDING_HEIGHT + 44;
 const ISOLATED_PLATFORM_MIN_ELEVATION = PLAYER_STANDING_HEIGHT + 76;
 const PLATFORM_NEAR_RADIUS = 260;
@@ -1451,7 +1453,8 @@ function buildPersistentAdaptiveLayout(
   const spike1X = 620;
   const lowCeilingX = 1020 + stage * 10;
   const lowCeilingWidth = clampInt(190 + stage * 8, 190, 246);
-  const lowCeilingClearance = clampInt(34 - stage - jumpBias * 2, 28, 34);
+  // Keep baseline low ceilings visibly crouch-passable unless a runtime trap seals them.
+  const lowCeilingClearance = clampInt(34 - stage - jumpBias * 2, MIN_VISIBLE_CROUCH_CLEARANCE, 34);
   const gapX = 1300 + stage * 12;
   const gapWidth = clampInt(84 + stage * 10 + crouchBias * 8, 84, 150);
   const doubleSpikeX = 1540 + stage * 16;
