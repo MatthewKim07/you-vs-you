@@ -7,7 +7,7 @@ import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
 import { introMessage } from './aiGameMaster';
-import { PlayerModel, ChoiceDecisionEvent, RouteId } from './telemetry';
+import { PlayerModel, ChoiceDecisionEvent, ObstacleInteractionEvent, RouteId } from './telemetry';
 import { analyzePlayer } from './playerAnalyzer';
 import { JUMP_CUT_FACTOR } from './movementTuning';
 import {
@@ -78,6 +78,7 @@ export class Game {
   // Choice obstacle tracking: which choice obs we've already recorded a decision for
   private observedChoices = new Set<string>();
   private choicePassState = new Map<string, { airborne: boolean; crouching: boolean }>();
+  private observedObstacleInteractions = new Set<string>();
   private trapRuntimeDebug: RealtimeTrapDebug = {
     phase: 'observe',
     activeTrap: 'none',
@@ -190,6 +191,7 @@ export class Game {
     this.canCutCurrentJump = false;
     this.observedChoices.clear();
     this.choicePassState.clear();
+    this.observedObstacleInteractions.clear();
     this.lastTrapMessageAt = Number.NEGATIVE_INFINITY;
     this.trapRuntimeDebug = {
       phase: 'observe',
@@ -706,6 +708,8 @@ export class Game {
       this.choicePassState.delete(obsId);
     }
 
+    this.trackObstacleInteractions();
+
     // --- Position samples at fixed interval (not every frame) ---
     this.sampleTimer += dt;
     if (this.sampleTimer >= SAMPLE_INTERVAL) {
@@ -866,8 +870,6 @@ export class Game {
   }
 
   private hitLowCeiling(): boolean {
-    if (this.player.isCrouching) return false;
-
     const ceilings = this.level.obstacles.filter(
       (o): o is Obstacle & { kind: 'lowCeiling' } => o.kind === 'lowCeiling'
     );
@@ -983,6 +985,7 @@ export class Game {
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
+    this.recordDeathObstacleInteraction(deathX);
     this.tracker.recordRouteChoice({
       routeId: this.detectRouteFromPlayer(),
       x: deathX,
@@ -996,6 +999,71 @@ export class Game {
     this.debugPanel.setPlayerModel(this.playerModel);
     this.state = 'dead';
     this.deathTimer = 0;
+  }
+
+  private trackObstacleInteractions(): void {
+    const playerLeft = this.player.pos.x;
+    for (const obs of this.level.obstacles) {
+      const obsX = obs.currentX ?? obs.x;
+      const obsWidth = obs.currentWidth ?? obs.width;
+      if (playerLeft <= obsX + obsWidth + 20) continue;
+
+      const obstacleId = this.obstacleInteractionId(obs);
+      if (this.observedObstacleInteractions.has(obstacleId)) continue;
+
+      this.tracker.recordObstacleInteraction(this.buildObstacleInteraction(obs, 'passed'));
+      this.observedObstacleInteractions.add(obstacleId);
+    }
+  }
+
+  private recordDeathObstacleInteraction(deathX: number): void {
+    const target = this.level.obstacles
+      .filter((obs) => Math.abs(((obs.currentX ?? obs.x) + (obs.currentWidth ?? obs.width) * 0.5) - deathX) <= 120)
+      .sort((a, b) => {
+        const ac = (a.currentX ?? a.x) + (a.currentWidth ?? a.width) * 0.5;
+        const bc = (b.currentX ?? b.x) + (b.currentWidth ?? b.width) * 0.5;
+        return Math.abs(ac - deathX) - Math.abs(bc - deathX);
+      })[0];
+    if (!target) return;
+
+    const obstacleId = this.obstacleInteractionId(target);
+    if (this.observedObstacleInteractions.has(obstacleId)) return;
+
+    this.tracker.recordObstacleInteraction(this.buildObstacleInteraction(target, 'death'));
+    this.observedObstacleInteractions.add(obstacleId);
+  }
+
+  private buildObstacleInteraction(obs: Obstacle, outcome: ObstacleInteractionEvent['outcome']): ObstacleInteractionEvent {
+    const obsX = obs.currentX ?? obs.x;
+    return {
+      obstacleId: this.obstacleInteractionId(obs),
+      obstacleKind: obs.kind,
+      trapType: obs.trapType,
+      routeLayer: obs.routeLayer,
+      x: obsX,
+      levelIndex: this.levelIndex,
+      action: this.inferObstacleAction(obs),
+      outcome,
+      timeMs: this.levelAgeSec * 1000,
+    };
+  }
+
+  private obstacleInteractionId(obs: Obstacle): string {
+    if (obs.trapGroupId) return obs.trapGroupId;
+    return `${obs.kind}_${Math.round(obs.x)}_${Math.round(obs.width)}`;
+  }
+
+  private inferObstacleAction(obs: Obstacle): ObstacleInteractionEvent['action'] {
+    const obsX = obs.currentX ?? obs.x;
+    const obsWidth = obs.currentWidth ?? obs.width;
+    const recentActions = this.tracker.getCurrentRun()?.actions ?? [];
+    const localActions = recentActions.filter((a) => a.x >= obsX - 95 && a.x <= obsX + obsWidth + 60);
+    const jumped = localActions.some((a) => a.action === 'jump');
+    const crouched = localActions.some((a) => a.action === 'crouchStart');
+    if (jumped && crouched) return 'mixed';
+    if (jumped) return 'jump';
+    if (crouched) return 'crouch';
+    return 'none';
   }
 
   private detectRouteFromPlayer(): RouteId {

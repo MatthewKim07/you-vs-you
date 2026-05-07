@@ -49,6 +49,18 @@ export interface ChoiceDecisionEvent {
   success: boolean;       // did the player survive the choice?
 }
 
+export interface ObstacleInteractionEvent {
+  obstacleId: string;
+  obstacleKind: string;
+  trapType?: string;
+  routeLayer?: RouteId;
+  x: number;
+  levelIndex: number;
+  action: 'jump' | 'crouch' | 'mixed' | 'none';
+  outcome: 'passed' | 'death';
+  timeMs: number;
+}
+
 export interface RunData {
   levelIndex: number;
   attemptNumber: number;
@@ -67,6 +79,7 @@ export interface RunData {
   samples: PositionSample[];
   actions: ActionEvent[];
   choiceDecisions: ChoiceDecisionEvent[]; // NEW
+  obstacleInteractions: ObstacleInteractionEvent[];
   routeChoices: RouteChoiceEvent[];
   routeUsageCounts: Record<RouteId, number>;
 }
@@ -81,6 +94,24 @@ export interface ObstacleChoiceStats {
   crouchRate: number;
   confidence: number;
   preferred: 'jump' | 'crouch' | 'mixed';
+}
+
+export interface ObstacleInteractionStats {
+  obstacleId: string;
+  obstacleKind: string;
+  trapType?: string;
+  routeLayer?: RouteId;
+  x: number;
+  total: number;
+  passCount: number;
+  deathCount: number;
+  jumpCount: number;
+  crouchCount: number;
+  mixedCount: number;
+  noneCount: number;
+  preferredAction: 'jump' | 'crouch' | 'mixed' | 'none';
+  failureRate: number;
+  confidence: number;
 }
 
 export interface PlayerModel {
@@ -99,6 +130,8 @@ export interface PlayerModel {
   choiceConsistency: 'predictable' | 'mixed' | 'unknown';
   // per-obstacle breakdown (gate decisions scoped by obstacleId)
   perObstacleChoiceStats: Record<string, ObstacleChoiceStats>;
+  // every obstacle gets a scoped behavior record: action used, coordinate, and outcome
+  perObstacleInteractionStats: Record<string, ObstacleInteractionStats>;
   preferredRoute: RouteId | 'mixed';
   routeConfidence: number;
   routeRiskStyle: 'safe-switcher' | 'committed' | 'opportunist';

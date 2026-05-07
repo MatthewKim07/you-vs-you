@@ -51,6 +51,7 @@ export class DebugPanel {
     preferredChoiceAction: 'unknown',
     choiceConsistency: 'unknown',
     perObstacleChoiceStats: {},
+    perObstacleInteractionStats: {},
     preferredRoute: 'mixed',
     routeConfidence: 0,
     routeRiskStyle: 'opportunist',
@@ -147,6 +148,13 @@ export class DebugPanel {
           `<div class="dbg-row"><span>${s.obstacleId.slice(-12)}</span><span>J:${(s.jumpRate * 100).toFixed(0)}% C:${(s.crouchRate * 100).toFixed(0)}% (${s.total} samples, conf ${(s.confidence * 100).toFixed(0)}%)</span></div>`
         ).join('')}
         ${Object.keys(model.perObstacleChoiceStats ?? {}).length === 0 ? '<div class="dbg-row"><span>—</span><span>no gate decisions yet</span></div>' : ''}
+      </div>
+      <div class="dbg-section">
+        <div class="dbg-title">OBJECT LEARNING</div>
+        ${Object.values(model.perObstacleInteractionStats ?? {}).slice(0, 5).map((s) =>
+          `<div class="dbg-row"><span>${s.obstacleId.slice(-12)}</span><span>${s.obstacleKind} ${formatStyle(s.preferredAction)} pass:${s.passCount} death:${s.deathCount} fail:${(s.failureRate * 100).toFixed(0)}%</span></div>`
+        ).join('')}
+        ${Object.keys(model.perObstacleInteractionStats ?? {}).length === 0 ? '<div class="dbg-row"><span>—</span><span>no object interactions yet</span></div>' : ''}
       </div>
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>

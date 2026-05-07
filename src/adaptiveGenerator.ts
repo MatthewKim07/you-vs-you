@@ -25,6 +25,7 @@ const MIN_PLATFORM_GAP_FLAT = 96;
 const MIN_PLATFORM_GAP_RISE = 122;
 const SPIKE_OVERHEAD_MIN_HEIGHT = 208;
 const SPIKE_HEADROOM_X_PAD = 96;
+const FORCED_ACTION_RECOVERY_GAP = 148;
 const MIN_LANDING_WIDTH = PLAYER_WIDTH + 10;
 const LANDING_BUFFER = 6;
 // Physics: JUMP_FORCE=620, GRAVITY=1400 → apex ≈ 137px above feet.
@@ -909,6 +910,7 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
   applyPlatformOrganization(obstacles);
   enforceReachablePlatforms(obstacles);
   enforceSpikeJumpHeadroom(obstacles);
+  enforceForcedActionRecovery(obstacles);
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX = worldWidth - FLAG_OFFSET;
   const maxQuietGap = computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP);
@@ -1007,6 +1009,42 @@ function enforceSpikeJumpHeadroom(obstacles: Obstacle[]): void {
     if (!overlapsJumpHazard) continue;
     p.height = Math.max(p.height, SPIKE_OVERHEAD_MIN_HEIGHT);
   }
+}
+
+// Hard fairness rule: never put a forced crouch/jump gate immediately before
+// a spike. The player needs enough ground to finish one action and start the
+// next, otherwise the section becomes impossible rather than adaptive.
+function enforceForcedActionRecovery(obstacles: Obstacle[]): void {
+  const ordered = [...obstacles].sort((a, b) => a.x - b.x);
+
+  for (let i = 0; i < ordered.length; i++) {
+    const current = ordered[i];
+    if (!isForcedActionObstacle(current)) continue;
+
+    const requiredSpikeX = current.x + current.width + FORCED_ACTION_RECOVERY_GAP;
+    for (let j = i + 1; j < ordered.length; j++) {
+      const next = ordered[j];
+      if (next.x - (current.x + current.width) >= FORCED_ACTION_RECOVERY_GAP) break;
+      if (!isGroundSpike(next)) continue;
+
+      const shift = requiredSpikeX - next.x;
+      next.x += shift;
+      if (next.currentX !== undefined) next.currentX += shift;
+      if (next.targetX !== undefined) next.targetX += shift;
+      if (next.trapInitialX !== undefined) next.trapInitialX += shift;
+    }
+    ordered.sort((a, b) => a.x - b.x);
+  }
+
+  obstacles.sort((a, b) => a.x - b.x);
+}
+
+function isForcedActionObstacle(o: Obstacle): boolean {
+  return o.kind === 'lowCeiling' || o.kind === 'choiceObstacle';
+}
+
+function isGroundSpike(o: Obstacle): boolean {
+  return o.kind === 'spike' || o.kind === 'doubleSpike';
 }
 
 // Universal reachability enforcement: every platform must be reachable via
@@ -1479,6 +1517,7 @@ function buildPersistentAdaptiveLayout(
   applyPlatformOrganization(obs);
   enforceReachablePlatforms(obs);
   enforceSpikeJumpHeadroom(obs);
+  enforceForcedActionRecovery(obs);
   const lastEnd = obs.reduce((max, o) => Math.max(max, o.x + o.width), 0);
   const worldWidth = Math.max(
     Math.round(canvasWidth * 2),

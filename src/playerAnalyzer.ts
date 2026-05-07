@@ -1,4 +1,4 @@
-import { ActionEvent, ObstacleChoiceStats, PlayerModel, RunData, RouteChoiceEvent, RouteId } from './telemetry';
+import { ActionEvent, ObstacleChoiceStats, ObstacleInteractionEvent, ObstacleInteractionStats, PlayerModel, RunData, RouteChoiceEvent, RouteId } from './telemetry';
 
 const WINDOW_RUNS = 5;
 
@@ -21,6 +21,7 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
 
   // Choice preference analysis
   const choiceStats = analyzeChoiceDecisions(recentRuns);
+  const perObstacleInteractionStats = buildPerObstacleInteractionStats(recentRuns);
   const routeStats = analyzeRouteBehavior(recentRuns);
 
   return {
@@ -37,11 +38,56 @@ export function analyzePlayer(runs: RunData[]): PlayerModel {
     preferredChoiceAction: choiceStats.preferred,
     choiceConsistency: choiceStats.choiceConsistency,
     perObstacleChoiceStats: choiceStats.perObstacleStats,
+    perObstacleInteractionStats,
     preferredRoute: routeStats.preferredRoute,
     routeConfidence: routeStats.routeConfidence,
     routeRiskStyle: routeStats.routeRiskStyle,
     routeUsage: routeStats.routeUsage,
   };
+}
+
+function buildPerObstacleInteractionStats(runs: RunData[]): Record<string, ObstacleInteractionStats> {
+  const byId: Record<string, ObstacleInteractionEvent[]> = {};
+  for (const ev of runs.flatMap((r) => r.obstacleInteractions ?? [])) {
+    if (!byId[ev.obstacleId]) byId[ev.obstacleId] = [];
+    byId[ev.obstacleId].push(ev);
+  }
+
+  const result: Record<string, ObstacleInteractionStats> = {};
+  for (const [obstacleId, events] of Object.entries(byId)) {
+    const total = events.length;
+    const passCount = events.filter((e) => e.outcome === 'passed').length;
+    const deathCount = total - passCount;
+    const jumpCount = events.filter((e) => e.action === 'jump').length;
+    const crouchCount = events.filter((e) => e.action === 'crouch').length;
+    const mixedCount = events.filter((e) => e.action === 'mixed').length;
+    const noneCount = events.filter((e) => e.action === 'none').length;
+    const actionCounts = [
+      { action: 'jump' as const, count: jumpCount },
+      { action: 'crouch' as const, count: crouchCount },
+      { action: 'mixed' as const, count: mixedCount },
+      { action: 'none' as const, count: noneCount },
+    ].sort((a, b) => b.count - a.count);
+    const first = events[0];
+    result[obstacleId] = {
+      obstacleId,
+      obstacleKind: first.obstacleKind,
+      trapType: first.trapType,
+      routeLayer: first.routeLayer,
+      x: first.x,
+      total,
+      passCount,
+      deathCount,
+      jumpCount,
+      crouchCount,
+      mixedCount,
+      noneCount,
+      preferredAction: actionCounts[0]?.action ?? 'none',
+      failureRate: total > 0 ? deathCount / total : 0,
+      confidence: Math.min(1, total / 4),
+    };
+  }
+  return result;
 }
 
 function analyzeRouteBehavior(runs: RunData[]): {

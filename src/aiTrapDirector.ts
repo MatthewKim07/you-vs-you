@@ -9,6 +9,8 @@ import {
 } from './aiKnowledge';
 import { calculateMaxJumpDistance } from './movementTuning';
 
+const FORCED_ACTION_RECOVERY_GAP = 148;
+
 export interface TrapDirectiveOutput {
   obstacles: Obstacle[];
   activeTraps: string[];
@@ -104,14 +106,18 @@ export function directTraps(
   if (phase !== 'observe' && maxHosts > 0) {
     if (
       hostsApplied < maxHosts &&
-      isTrapUnlocked('reactiveLowCeiling', knowledge) &&
-      (model.prefersJump || model.preferredChoiceAction === 'jump')
+      (isTrapUnlocked('reactiveLowCeiling', knowledge) || levelIndex >= 2) &&
+      shouldSealCrouchLane(mutatedObstacles, model, preferredRoute)
     ) {
-      const applied = hostReactiveLowCeiling(mutatedObstacles, levelIndex, preferredRoute);
+      const applied = hostReactiveLowCeiling(
+        mutatedObstacles,
+        model.perObstacleInteractionStats,
+        preferredRoute,
+      );
       if (applied) {
         hostsApplied++;
         activeTraps.push('reactiveLowCeiling');
-        trapReasons.push('Armed a reactive low ceiling for jump-heavy behavior');
+        trapReasons.push('Armed a low-ceiling lane seal for crouch-route reliance');
       }
     }
 
@@ -147,9 +153,15 @@ export function directTraps(
 
     if (
       hostsApplied < maxHosts &&
-      isTrapUnlocked('shiftingGap', knowledge)
+      (isTrapUnlocked('shiftingGap', knowledge) || levelIndex >= 2)
     ) {
-      const applied = hostShiftingGap(mutatedObstacles, levelIndex, model.reactionTiming, preferredRoute);
+      const applied = hostShiftingGap(
+        mutatedObstacles,
+        levelIndex,
+        model.reactionTiming,
+        model.perObstacleInteractionStats,
+        preferredRoute,
+      );
       if (applied) {
         hostsApplied++;
         activeTraps.push('shiftingGap');
@@ -174,10 +186,14 @@ export function directTraps(
 
     if (
       hostsApplied < maxHosts &&
-      (phase === 'predict' || phase === 'dominate') &&
-      isTrapUnlocked('collapsingPlatform', knowledge)
+      (phase === 'counter' || phase === 'predict' || phase === 'dominate') &&
+      (isTrapUnlocked('collapsingPlatform', knowledge) || model.routeConfidence > 0.35)
     ) {
-      const applied = hostCollapsingPlatform(mutatedObstacles, preferredRoute);
+      const applied = hostCollapsingPlatform(
+        mutatedObstacles,
+        model.perObstacleInteractionStats,
+        preferredRoute,
+      );
       if (applied) {
         hostsApplied++;
         activeTraps.push('collapsingPlatform');
@@ -242,6 +258,20 @@ export function directTraps(
           activeTraps.push('routeReturnPunisher');
           trapReasons.push('Punished return lane: armed upper-route platform needle (prefers lower)');
         }
+      }
+    }
+
+    if (hostsApplied === 0 && hasChoiceObstacles) {
+      const fallbackPreference = choicePreference ?? (levelIndex % 2 === 0 ? 'jump' : 'crouch');
+      const result = fallbackPreference === 'jump'
+        ? hostCounterJumpChoices(mutatedObstacles, reactionSpacing, levelIndex, perObstacleStats)
+        : hostCounterCrouchChoices(mutatedObstacles, reactionSpacing, perObstacleStats);
+      if (result.appliedCount > 0) {
+        hostsApplied += result.appliedCount;
+        activeTraps.push(fallbackPreference === 'jump' ? 'adaptiveChoiceGateJump' : 'adaptiveChoiceGateCrouch');
+        trapReasons.push('Armed fallback choice mutation so this adaptive phase remains visible');
+        mutationFallbackUsed = true;
+        mutationTargetObstacleId = result.targetIds.slice(0, 3).join(', ');
       }
     }
   }
@@ -427,13 +457,14 @@ export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutpu
 
 function hostReactiveLowCeiling(
   obstacles: Obstacle[],
-  levelIndex: number,
+  interactionStats: PlayerModel['perObstacleInteractionStats'],
   preferredRoute?: 'lower' | 'mid' | 'upper',
 ): boolean {
   const target = pickObstacleByRoute(
     obstacles,
-    (o) => o.kind === 'lowCeiling' && !o.trapHost,
+    (o) => o.kind === 'lowCeiling' && !o.trapHost && hasNearbyPlatformBypass(obstacles, o),
     preferredRoute,
+    interactionStats,
   );
   if (!target) return false;
 
@@ -443,9 +474,42 @@ function hostReactiveLowCeiling(
   target.trapState = 'idle';
   target.currentHeight = clamp(target.height + 10, 34, 62);
   target.trapInitialHeight = target.currentHeight;
-  target.targetHeight = clamp(target.height - clamp(levelIndex, 4, 12), 34, 56);
-  target.trapReason = 'You jump early and often; ceiling will lower while you approach';
+  target.targetHeight = 0;
+  target.trapReason = 'You keep using this crouch lane; the ceiling drops to the ground to force a reroute';
   return true;
+}
+
+function shouldSealCrouchLane(
+  obstacles: Obstacle[],
+  model: PlayerModel,
+  preferredRoute?: 'lower' | 'mid' | 'upper',
+): boolean {
+  const hasSealableCeiling = obstacles.some(
+    (o) => o.kind === 'lowCeiling' && !o.trapHost && hasNearbyPlatformBypass(obstacles, o),
+  );
+  if (!hasSealableCeiling) return false;
+
+  if (model.prefersCrouch || model.preferredChoiceAction === 'crouch') return true;
+  if (preferredRoute === 'lower' || preferredRoute === 'mid') return true;
+
+  return Object.values(model.perObstacleInteractionStats ?? {}).some(
+    (s) =>
+      s.obstacleKind === 'lowCeiling' &&
+      s.confidence > 0.25 &&
+      (s.preferredAction === 'crouch' || s.preferredAction === 'none' || s.failureRate > 0),
+  );
+}
+
+function hasNearbyPlatformBypass(obstacles: Obstacle[], target: Obstacle): boolean {
+  const left = target.x - 220;
+  const right = target.x + target.width + 260;
+  return obstacles.some((o) =>
+    o.kind === 'platform' &&
+    o.solid !== false &&
+    o.x + o.width > left &&
+    o.x < right &&
+    o.height >= 72,
+  );
 }
 
 // Jump-counter: spikes grow upward from the bar top (0 → 120px).
@@ -542,12 +606,14 @@ function hostLandingPunisher(obstacles: Obstacle[], predictedLandingX: number): 
 
 function hostCollapsingPlatform(
   obstacles: Obstacle[],
+  interactionStats: PlayerModel['perObstacleInteractionStats'],
   preferredRoute?: 'lower' | 'mid' | 'upper',
 ): boolean {
   const target = pickObstacleByRoute(
     obstacles,
     (o) => o.kind === 'platform' && !o.trapHost,
     preferredRoute,
+    interactionStats,
   );
   if (!target) return false;
 
@@ -566,6 +632,7 @@ function hostShiftingGap(
   obstacles: Obstacle[],
   levelIndex: number,
   reactionTiming: PlayerModel['reactionTiming'],
+  interactionStats: PlayerModel['perObstacleInteractionStats'],
   preferredRoute?: 'lower' | 'mid' | 'upper',
 ): boolean {
   const maxJump = calculateMaxJumpDistance();
@@ -573,6 +640,7 @@ function hostShiftingGap(
     obstacles,
     (o) => o.kind === 'gap' && !o.trapHost && o.width < maxJump * 0.82,
     preferredRoute,
+    interactionStats,
   );
   if (!target) return false;
 
@@ -1013,7 +1081,7 @@ function trapTriggerMessage(
         ? 'You jump early, so I stretched the far edge.'
         : 'Your timing is late, so I shifted the near edge.';
     case 'reactiveLowCeiling':
-      return 'You jump first. I lowered the ceiling in real time.';
+      return 'You used the crouch lane. I sealed it.';
     default:
       return 'I changed the trap while you approached it.';
   }
@@ -1152,6 +1220,10 @@ function computePredictedLandingX(runs: RunData[]): number | undefined {
 }
 
 function verifyValidPathExists(obstacles: Obstacle[]): boolean {
+  if (hasImpossibleForcedActionChain(obstacles)) {
+    return false;
+  }
+
   const maxJump = calculateMaxJumpDistance();
   const gaps = obstacles.filter((o) => o.kind === 'gap');
   const platforms = obstacles.filter((o) => o.kind === 'platform');
@@ -1172,6 +1244,32 @@ function verifyValidPathExists(obstacles: Obstacle[]): boolean {
   }
 
   return true;
+}
+
+function hasImpossibleForcedActionChain(obstacles: Obstacle[]): boolean {
+  const ordered = [...obstacles].sort((a, b) => (a.currentX ?? a.x) - (b.currentX ?? b.x));
+  for (let i = 0; i < ordered.length; i++) {
+    const current = ordered[i];
+    if (!isForcedActionObstacle(current)) continue;
+    const currentX = current.currentX ?? current.x;
+    const currentW = current.currentWidth ?? current.width;
+
+    for (let j = i + 1; j < ordered.length; j++) {
+      const next = ordered[j];
+      const nextX = next.currentX ?? next.x;
+      if (nextX - (currentX + currentW) >= FORCED_ACTION_RECOVERY_GAP) break;
+      if (isGroundSpike(next)) return true;
+    }
+  }
+  return false;
+}
+
+function isForcedActionObstacle(o: Obstacle): boolean {
+  return o.kind === 'lowCeiling' || o.kind === 'choiceObstacle';
+}
+
+function isGroundSpike(o: Obstacle): boolean {
+  return o.kind === 'spike' || o.kind === 'doubleSpike';
 }
 
 function initializeRuntimeFields<T extends Obstacle>(obs: T): T {
@@ -1210,10 +1308,30 @@ function pickObstacleByRoute(
   obstacles: Obstacle[],
   predicate: (o: Obstacle) => boolean,
   preferredRoute?: 'lower' | 'mid' | 'upper',
+  interactionStats?: PlayerModel['perObstacleInteractionStats'],
 ): Obstacle | undefined {
-  if (preferredRoute) {
-    const routed = obstacles.find((o) => o.routeLayer === preferredRoute && predicate(o));
-    if (routed) return routed;
-  }
-  return obstacles.find(predicate);
+  const candidates = obstacles.filter(predicate);
+  if (candidates.length === 0) return undefined;
+
+  return candidates
+    .map((o, index) => ({
+      obstacle: o,
+      score:
+        (preferredRoute && o.routeLayer === preferredRoute ? 10 : 0) +
+        scoreObstacleInteraction(o, interactionStats) -
+        index * 0.001,
+    }))
+    .sort((a, b) => b.score - a.score)[0]?.obstacle;
+}
+
+function scoreObstacleInteraction(
+  obstacle: Obstacle,
+  interactionStats?: PlayerModel['perObstacleInteractionStats'],
+): number {
+  if (!interactionStats) return 0;
+  const id = obstacle.trapGroupId ?? `${obstacle.kind}_${Math.round(obstacle.x)}_${Math.round(obstacle.width)}`;
+  const stats = interactionStats[id];
+  if (!stats) return 0;
+  const actionSignal = stats.preferredAction === 'none' ? 0 : 0.2;
+  return stats.confidence + stats.failureRate + actionSignal;
 }

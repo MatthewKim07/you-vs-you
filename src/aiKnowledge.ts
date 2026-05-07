@@ -83,7 +83,7 @@ export function determinePhase(
     (predictableChoice ? 0.08 : 0) +
     (hasChoiceRead ? 0.04 : 0);
 
-  if (levelIndex <= 1 || confidenceScore < 0.22) {
+  if (levelIndex <= 1) {
     return 'observe';
   }
   if (confidenceScore < 0.42) {
