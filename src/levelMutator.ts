@@ -18,6 +18,11 @@ const MUTATION_COSTS: Record<LevelMutationActionType, number> = {
   APPLY_PULSING_SPIKE: 2,
   APPLY_DROPPING_PLATFORM: 2,
   APPLY_TEMP_BLOCKER: 3,
+  APPLY_PATROL_SPIKE: 2,
+  ADD_ELECTRIC_FIELD: 3,
+  ADD_CRUSHER_CEILING: 3,
+  APPLY_CRUMBLE_PLATFORM: 2,
+  ADD_WARNING_MARKER: 0,
 };
 
 const SAFE_SPAWN_END = 320;
@@ -51,6 +56,35 @@ export const BLOCKER_INACTIVE_MS = 2200;
 export const BLOCKER_WARNING_MS  = 500;
 export const BLOCKER_ACTIVE_MS   = 1800;
 export const BLOCKER_RETRACT_MS  = 400;
+
+// Patrolling hazard
+export const PATROL_RANGE        = 80;   // px each direction from center
+export const PATROL_SPEED_DEFAULT = 80;  // px/s
+
+// Electric field cycle (ms)
+export const ELECTRIC_INACTIVE_MS = 3000;
+export const ELECTRIC_WARNING_MS  = 800;
+export const ELECTRIC_ACTIVE_MS   = 1200;
+// Electric field dimensions (px)
+export const ELECTRIC_WIDTH       = 160;
+export const ELECTRIC_HEIGHT      = 52;
+
+// Crusher ceiling cycle (ms)
+export const CRUSHER_RAISED_MS   = 2800;
+export const CRUSHER_WARNING_MS  = 700;
+export const CRUSHER_CRUSHING_MS = 400;
+export const CRUSHER_LOWERED_MS  = 2000;
+export const CRUSHER_RAISING_MS  = 400;
+// Crusher ceiling geometry (px)
+export const CRUSHER_RAISED_H    = 68;   // clearance when raised (player stands freely)
+export const CRUSHER_LOWERED_H   = 32;   // clearance when crushed (must crouch; crouch height=30)
+export const CRUSHER_WIDTH       = 200;
+
+// Crumble platform (ms) — faster than droppingPlatform, distinct orange visual
+export const CRUMBLE_WARNING_MS  = 300;
+export const CRUMBLE_FALL_MS     = 250;
+export const CRUMBLE_INVISIBLE_MS = 1500;
+export const CRUMBLE_SPAWN_MS    = 400;
 
 export interface MutatorOutput {
   obstacles: Obstacle[];
@@ -149,6 +183,28 @@ export function resetAiModifiers(obstacles: Obstacle[]): void {
       case 'temporaryBlocker':
         o.aiModState = 'inactive';
         break;
+      case 'patrollingHazard':
+        o.currentX = o.x;
+        o.patrolDir = 1;
+        break;
+      case 'crumblePlatform':
+        o.aiModState = 'inactive';
+        o.aiModDropOffset = 0;
+        break;
+    }
+  }
+}
+
+// Reset electricField and crusherCeiling obstacle kinds to initial state for next run.
+export function resetNewHazardKinds(obstacles: Obstacle[]): void {
+  for (const o of obstacles) {
+    if (o.kind === 'electricField') {
+      o.aiModState = 'inactive';
+      o.aiModTimer = 0;
+    } else if (o.kind === 'crusherCeiling') {
+      o.aiModState = 'inactive';
+      o.aiModTimer = 0;
+      o.aiModVisualHeight = o.height;
     }
   }
 }

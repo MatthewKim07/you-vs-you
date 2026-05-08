@@ -2145,6 +2145,12 @@ function obstacleBounds(ob: Obstacle): { left: number; right: number; top: numbe
       return { left, right, top: GROUND_TOP - ob.height - 12, bottom: GROUND_TOP - ob.height };
     case 'platform':
       return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP - ob.height + 16 };
+    case 'electricField':
+      return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP };
+    case 'crusherCeiling':
+      return { left, right, top: GROUND_TOP - ob.height - 20, bottom: GROUND_TOP - ob.height };
+    case 'warningMarker':
+      return null;
   }
 }
 
