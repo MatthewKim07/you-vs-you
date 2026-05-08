@@ -11,6 +11,7 @@ export class Player {
   readonly normalHeight = 48;
   readonly crouchHeight = 30;
   private currentHeight = this.normalHeight;
+  private speedMultiplier = 1;
   onGround = false;
   isCrouching = false;
 
@@ -20,7 +21,7 @@ export class Player {
 
   constructor(x: number, y: number) {
     this.pos = { x, y };
-    this.vel = { x: MOVE_SPEED, y: 0 };
+    this.vel = { x: MOVE_SPEED * this.speedMultiplier, y: 0 };
   }
 
   jump(): boolean {
@@ -63,6 +64,7 @@ export class Player {
   // onSolidGround: false when player is over a gap — skip floor collision
   update(dt: number, groundY: number, onSolidGround: boolean) {
     this.vel.y += GRAVITY * dt;
+    this.vel.x = MOVE_SPEED * this.speedMultiplier;
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
 
@@ -82,9 +84,14 @@ export class Player {
 
   reset(x: number, y: number) {
     this.pos = { x, y };
-    this.vel = { x: MOVE_SPEED, y: 0 };
+    this.vel = { x: MOVE_SPEED * this.speedMultiplier, y: 0 };
     this.onGround = false;
     this.isCrouching = false;
     this.currentHeight = this.normalHeight;
+  }
+
+  setSpeedMultiplier(multiplier: number) {
+    this.speedMultiplier = Math.max(0.7, Math.min(1.5, multiplier));
+    this.vel.x = MOVE_SPEED * this.speedMultiplier;
   }
 }

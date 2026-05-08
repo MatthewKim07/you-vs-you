@@ -24,8 +24,13 @@ const P_CEIL_LT    = '#6A7A92';
 const P_CHOICE     = '#A855F7';
 const P_CHOICE_DK  = '#7C3AED';
 const P_PLYR_HAT   = '#F2C94C';
-const P_PLYR       = '#4A90E2';
-const P_PLYR_DK    = '#2A6AB0';
+const PLAYER_SKINS = {
+  classic: { hat: '#F2C94C', body: '#4A90E2', dark: '#2A6AB0' },
+  ember: { hat: '#FFD166', body: '#F97316', dark: '#9A3412' },
+  forest: { hat: '#84CC16', body: '#22C55E', dark: '#166534' },
+  void: { hat: '#C084FC', body: '#8B5CF6', dark: '#4C1D95' },
+} as const;
+type PlayerSkinId = keyof typeof PLAYER_SKINS;
 // New hazard colors
 const P_ELEC_POST  = '#1A2A3A';  // electric field post
 const P_ELEC_BEAM  = '#00FFFF';  // active electric beam
@@ -741,7 +746,7 @@ export class Renderer {
     ctx.fillRect(sx - 1, px(groundY - poleH) - 5, 6, 5);
   }
 
-  drawPlayer(player: Player, cameraX: number, isDead: boolean) {
+  drawPlayer(player: Player, cameraX: number, isDead: boolean, skinId: PlayerSkinId = 'classic') {
     const { ctx } = this;
     const sx = px(player.pos.x - cameraX);
     const sy = px(player.pos.y);
@@ -750,15 +755,20 @@ export class Renderer {
 
     if (isDead) ctx.globalAlpha = 0.4;
 
+    const skin = PLAYER_SKINS[skinId] ?? PLAYER_SKINS.classic;
+    const hatColor = skin.hat;
+    const bodyColor = skin.body;
+    const darkColor = skin.dark;
+
     if (player.isCrouching) {
       // Dark outline
-      ctx.fillStyle = P_PLYR_DK;
+      ctx.fillStyle = darkColor;
       ctx.fillRect(sx, sy, w, h);
       // Body fill
-      ctx.fillStyle = P_PLYR;
+      ctx.fillStyle = bodyColor;
       ctx.fillRect(sx + 2, sy + 2, w - 4, h - 4);
       // Hat (thin strip)
-      ctx.fillStyle = P_PLYR_HAT;
+      ctx.fillStyle = hatColor;
       ctx.fillRect(sx + 4, sy, w - 8, 5);
       // Wide scared eyes
       ctx.fillStyle = '#fff';
@@ -772,15 +782,15 @@ export class Renderer {
       ctx.fillRect(sx + 20, sy + 9, 2, 2);
     } else {
       // Outline
-      ctx.fillStyle = P_PLYR_DK;
+      ctx.fillStyle = darkColor;
       ctx.fillRect(sx, sy, w, h);
       // Hat (top 8px)
-      ctx.fillStyle = P_PLYR_HAT;
+      ctx.fillStyle = hatColor;
       ctx.fillRect(sx + 3, sy, w - 6, 8);
       ctx.fillStyle = 'rgba(255,255,255,0.3)';
       ctx.fillRect(sx + 3, sy, w - 6, 3); // hat highlight
       // Head (8–22px)
-      ctx.fillStyle = P_PLYR;
+      ctx.fillStyle = bodyColor;
       ctx.fillRect(sx + 2, sy + 8, w - 4, 14);
       // Eyes
       ctx.fillStyle = '#fff';
@@ -793,16 +803,16 @@ export class Renderer {
       ctx.fillRect(sx + 8, sy + 14, 2, 2);
       ctx.fillRect(sx + 20, sy + 14, 2, 2);
       // Body (22–36px)
-      ctx.fillStyle = P_PLYR_DK;
+      ctx.fillStyle = darkColor;
       ctx.fillRect(sx + 2, sy + 22, w - 4, 14);
-      ctx.fillStyle = P_PLYR;
+      ctx.fillStyle = bodyColor;
       ctx.fillRect(sx + 6, sy + 24, 8, 10);
       ctx.fillRect(sx + 17, sy + 24, 7, 10);
       // Belt
-      ctx.fillStyle = P_PLYR_HAT;
+      ctx.fillStyle = hatColor;
       ctx.fillRect(sx + 2, sy + 35, w - 4, 2);
       // Legs (36–48px)
-      ctx.fillStyle = P_PLYR_DK;
+      ctx.fillStyle = darkColor;
       ctx.fillRect(sx + 4, sy + 37, 10, 11);
       ctx.fillRect(sx + 18, sy + 37, 10, 11);
       // Shoes

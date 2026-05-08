@@ -58,6 +58,63 @@ const GROUND_RECOVERY_TOLERANCE = 10;
 const ROUTE_SWITCH_MIN_X_DELTA = 88;
 const ROUTE_LOWER_MAX_HEIGHT = 22;
 const ROUTE_MID_MAX_HEIGHT = 86;
+const COIN_STORAGE_KEY_BASE = 'you-vs-you-shop-v1';
+
+type SkinId = 'classic' | 'ember' | 'forest' | 'void';
+type PowerUpId = 'secondWind' | 'speedBoost';
+
+interface ShopState {
+  coins: number;
+  ownedSkins: SkinId[];
+  equippedSkin: SkinId;
+  ownedPowerUps: PowerUpId[];
+}
+
+const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: string }> = [
+  { id: 'ember', label: 'Ember Skin', cost: 75, preview: '🔥' },
+  { id: 'forest', label: 'Forest Skin', cost: 140, preview: '🌿' },
+  { id: 'void', label: 'Void Skin', cost: 220, preview: '🌌' },
+];
+
+const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; description: string; preview: string }> = [
+  { id: 'secondWind', label: 'Second Wind', cost: 120, description: 'Auto revive once each level.', preview: '🛡️' },
+  { id: 'speedBoost', label: 'Speed Core', cost: 180, description: 'Permanent +8% run speed.', preview: '⚡' },
+];
+
+type ShopSection = 'hub' | 'looks' | 'boosts' | 'inventory';
+
+function skinDisplayMeta(id: SkinId): { label: string; preview: string; subtitle: string } {
+  if (id === 'classic') {
+    return { label: 'Classic', preview: '🎮', subtitle: 'Default look' };
+  }
+  const row = SKIN_CATALOG.find((s) => s.id === id);
+  if (row) return { label: row.label, preview: row.preview, subtitle: 'Skin' };
+  return { label: id, preview: '❔', subtitle: 'Skin' };
+}
+
+/** 8×8 pixel coin for HUD + shop (crispEdges SVG). */
+function pixelCoinSvg(cssClass: string): string {
+  const face = '#ffd46e';
+  const edge = '#b8860b';
+  const hi = '#fff3c4';
+  const cells: Array<[number, number, string]> = [
+    [2, 0, edge], [3, 0, hi], [4, 0, hi], [5, 0, edge],
+    [1, 1, edge], [2, 1, face], [3, 1, face], [4, 1, face], [5, 1, face], [6, 1, edge],
+    [0, 2, edge], [1, 2, face], [6, 2, face], [7, 2, edge],
+    [0, 3, edge], [1, 3, face], [6, 3, face], [7, 3, edge],
+    [0, 4, edge], [1, 4, face], [6, 4, face], [7, 4, edge],
+    [1, 5, edge], [2, 5, face], [3, 5, face], [4, 5, face], [5, 5, face], [6, 5, edge],
+    [2, 6, edge], [3, 6, hi], [4, 6, hi], [5, 6, edge],
+  ];
+  const rects = cells
+    .map(([x, y, c]) => `<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`)
+    .join('');
+  return `<svg class="${cssClass}" viewBox="0 0 8 8" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" aria-hidden="true" focusable="false">${rects}</svg>`;
+}
+
+function shopBuyButtonHtml(price: number): string {
+  return `<span class="shop-buy-row"><span class="shop-buy-word">Buy</span><span class="shop-buy-price">${pixelCoinSvg('pixel-coin pixel-coin--btn')}<span class="shop-buy-amount">${price}</span></span></span>`;
+}
 
 export class Game {
   private player!: Player;
@@ -87,6 +144,7 @@ export class Game {
   private settingsToggleButton!: HTMLButtonElement;
   private authPanel!: HTMLDivElement;
   private settingsPanel!: HTMLDivElement;
+  private shopPanel!: HTMLDivElement;
   private authStatusLabel!: HTMLParagraphElement;
   private authEmailInput!: HTMLInputElement;
   private authPasswordInput!: HTMLInputElement;
@@ -139,6 +197,22 @@ export class Game {
   private highestLevelUnlocked = 1;
   private authPanelOpen = false;
   private settingsPanelOpen = false;
+  private shopPanelOpen = false;
+  private shopSection: ShopSection = 'hub';
+  private shopBackButton!: HTMLButtonElement;
+  private shopHeadingEl!: HTMLHeadingElement;
+  private shopBodyEl!: HTMLDivElement;
+  private shopHeaderRowEl!: HTMLDivElement;
+  private shopToggleButton!: HTMLButtonElement;
+  private shopStatusLabel!: HTMLParagraphElement;
+  private coinHudBadge!: HTMLDivElement;
+  private shopFeedbackMessage: string | null = null;
+  private shopFeedbackKind: 'info' | 'error' = 'info';
+  private coins = 0;
+  private ownedSkins = new Set<SkinId>(['classic']);
+  private equippedSkin: SkinId = 'classic';
+  private ownedPowerUps = new Set<PowerUpId>();
+  private consumedSecondWind = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -146,6 +220,7 @@ export class Game {
     this.tracker = new RunTracker();
     this.debugPanel = new DebugPanel(this.tracker);
     this.debugPanel.setPlayerModel(this.playerModel);
+    this.loadLocalShopState();
     this.setupResize();
     this.setupUi();
     this.armAudioOnFirstGesture();
@@ -176,6 +251,98 @@ export class Game {
     this.canvas.height = window.innerHeight;
   }
 
+  private baseShopState(): ShopState {
+    return {
+      coins: 0,
+      ownedSkins: ['classic'],
+      equippedSkin: 'classic',
+      ownedPowerUps: [],
+    };
+  }
+
+  private normalizeShopState(input: Partial<ShopState> | null | undefined): ShopState {
+    const base = this.baseShopState();
+    const ownedSkins = new Set<SkinId>(base.ownedSkins);
+    for (const skin of input?.ownedSkins ?? []) {
+      if (skin === 'classic' || SKIN_CATALOG.some((entry) => entry.id === skin)) {
+        ownedSkins.add(skin);
+      }
+    }
+    const ownedPowerUps = new Set<PowerUpId>();
+    for (const power of input?.ownedPowerUps ?? []) {
+      if (POWERUP_CATALOG.some((entry) => entry.id === power)) {
+        ownedPowerUps.add(power);
+      }
+    }
+    const equippedSkin =
+      input?.equippedSkin && ownedSkins.has(input.equippedSkin)
+        ? input.equippedSkin
+        : 'classic';
+    return {
+      coins: Math.max(0, Math.floor(input?.coins ?? base.coins)),
+      ownedSkins: Array.from(ownedSkins),
+      equippedSkin,
+      ownedPowerUps: Array.from(ownedPowerUps),
+    };
+  }
+
+  private applyShopState(state: ShopState) {
+    this.coins = state.coins;
+    this.ownedSkins = new Set(state.ownedSkins);
+    this.equippedSkin = state.equippedSkin;
+    this.ownedPowerUps = new Set(state.ownedPowerUps);
+    this.updatePlayerSpeedFromPowerUps();
+    this.updateCoinHudBadge();
+  }
+
+  private currentShopState(): ShopState {
+    return this.normalizeShopState({
+      coins: this.coins,
+      ownedSkins: Array.from(this.ownedSkins),
+      equippedSkin: this.equippedSkin,
+      ownedPowerUps: Array.from(this.ownedPowerUps),
+    });
+  }
+
+  private loadLocalShopState() {
+    try {
+      const raw = window.localStorage.getItem(this.shopStorageKey());
+      if (!raw) {
+        this.applyShopState(this.baseShopState());
+        return;
+      }
+      const parsed = JSON.parse(raw) as Partial<ShopState>;
+      this.applyShopState(this.normalizeShopState(parsed));
+    } catch {
+      this.applyShopState(this.baseShopState());
+    }
+  }
+
+  private saveLocalShopState() {
+    try {
+      window.localStorage.setItem(this.shopStorageKey(), JSON.stringify(this.currentShopState()));
+    } catch {
+      // Ignore storage failures (private mode/storage quota).
+    }
+  }
+
+  private shopStorageKey(): string {
+    return `${COIN_STORAGE_KEY_BASE}:${this.authUserId ?? 'guest'}`;
+  }
+
+  private updatePlayerSpeedFromPowerUps() {
+    const multiplier = this.ownedPowerUps.has('speedBoost') ? 1.08 : 1;
+    if (this.player) {
+      this.player.setSpeedMultiplier(multiplier);
+    }
+  }
+
+  private updateCoinHudBadge() {
+    if (!this.coinHudBadge) return;
+    this.coinHudBadge.innerHTML = `<span class="coin-hud-inner">${pixelCoinSvg('pixel-coin pixel-coin--hud')}<span class="coin-hud-value">${this.coins}</span></span>`;
+    this.coinHudBadge.setAttribute('aria-label', `Balance ${this.coins}`);
+  }
+
   private startLevel(index: number, startMode: 'immediate' | 'countdown' = 'immediate') {
     this.refreshPlayerModel();
     this.resizeCanvas();
@@ -197,6 +364,7 @@ export class Game {
     this.debugPanel.setAdaptiveSnapshot(this.level);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
+    this.consumedSecondWind = false;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
     this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
@@ -230,6 +398,7 @@ export class Game {
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
+    this.consumedSecondWind = false;
     this.hasSpawnedPlayer = true;
     this.resetFrameTracking();
     this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
@@ -299,6 +468,7 @@ export class Game {
     } else {
       this.player.reset(SPAWN_X, spawnY);
     }
+    this.updatePlayerSpeedFromPowerUps();
     // Spawn starts grounded; prevents a false air→ground landing on first frame.
     this.player.onGround = true;
   }
@@ -324,6 +494,10 @@ export class Game {
     });
     this.menuButton.addEventListener('pointerdown', (e) => e.stopPropagation());
     document.body.appendChild(this.menuButton);
+
+    this.coinHudBadge = document.createElement('div');
+    this.coinHudBadge.id = 'coin-hud-badge';
+    document.body.appendChild(this.coinHudBadge);
 
     this.setupPauseMenuUi();
 
@@ -356,7 +530,10 @@ export class Game {
         return;
       }
       this.authPanelOpen = !this.authPanelOpen;
-      if (this.authPanelOpen) this.settingsPanelOpen = false;
+      if (this.authPanelOpen) {
+        this.settingsPanelOpen = false;
+        this.shopPanelOpen = false;
+      }
       this.refreshAuthUi();
     });
     this.authToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -368,16 +545,37 @@ export class Game {
     this.settingsToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.settingsPanelOpen = !this.settingsPanelOpen;
-      if (this.settingsPanelOpen) this.authPanelOpen = false;
+      if (this.settingsPanelOpen) {
+        this.authPanelOpen = false;
+        this.shopPanelOpen = false;
+      }
       this.refreshAuthUi();
     });
     this.settingsToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    this.shopToggleButton = document.createElement('button');
+    this.shopToggleButton.id = 'shop-toggle-btn';
+    this.shopToggleButton.className = 'menu-secondary-btn';
+    this.shopToggleButton.textContent = 'Shop';
+    this.shopToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const opening = !this.shopPanelOpen;
+      this.shopPanelOpen = opening;
+      if (opening) {
+        this.shopSection = 'hub';
+        this.authPanelOpen = false;
+        this.settingsPanelOpen = false;
+      }
+      this.refreshAuthUi();
+    });
+    this.shopToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
 
     const menuActions = document.createElement('div');
     menuActions.className = 'menu-actions';
     menuActions.appendChild(this.playButton);
     menuActions.appendChild(this.authToggleButton);
     menuActions.appendChild(this.settingsToggleButton);
+    menuActions.appendChild(this.shopToggleButton);
     this.menuOverlay.appendChild(menuActions);
 
     this.authPanel = document.createElement('div');
@@ -390,7 +588,13 @@ export class Game {
     this.menuOverlay.appendChild(this.settingsPanel);
     this.setupMenuSettingsUi();
 
+    this.shopPanel = document.createElement('div');
+    this.shopPanel.id = 'shop-panel';
+    this.menuOverlay.appendChild(this.shopPanel);
+    this.setupShopUi();
+
     document.body.appendChild(this.menuOverlay);
+    this.updateCoinHudBadge();
     this.syncUiVisibility();
   }
 
@@ -551,6 +755,370 @@ export class Game {
     this.refreshPauseAudioUi();
   }
 
+  private setupShopUi() {
+    this.shopPanel.className = 'shop-panel-root';
+    this.shopPanel.innerHTML = `
+      <div class="shop-storefront">
+        <div class="shop-roof-block">
+          <div class="shop-wood-sign">
+            <h3 class="shop-title" id="shop-heading">Shop</h3>
+          </div>
+          <div class="shop-awning" aria-hidden="true">
+            <div class="shop-awning-stripes"></div>
+            <div class="shop-awning-scallops"></div>
+          </div>
+        </div>
+        <div class="shop-facade">
+          <div class="shop-shell">
+            <div id="shop-header-row" class="shop-header-row">
+              <button type="button" id="shop-back-btn" class="shop-back-btn" aria-label="Back to categories">← Back</button>
+            </div>
+            <div id="shop-body" class="shop-body"></div>
+          </div>
+        </div>
+      </div>
+    `;
+    this.shopBackButton = this.shopPanel.querySelector('#shop-back-btn') as HTMLButtonElement;
+    this.shopHeadingEl = this.shopPanel.querySelector('#shop-heading') as HTMLHeadingElement;
+    this.shopBodyEl = this.shopPanel.querySelector('#shop-body') as HTMLDivElement;
+    this.shopHeaderRowEl = this.shopPanel.querySelector('#shop-header-row') as HTMLDivElement;
+    this.shopBackButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.shopSection = 'hub';
+      this.refreshShopUi();
+    });
+    this.shopBackButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.shopStatusLabel = document.createElement('p');
+    this.shopStatusLabel.className = 'auth-status';
+    this.shopStatusLabel.style.textAlign = 'center';
+    this.shopStatusLabel.style.marginTop = '2px';
+    this.shopPanel.appendChild(this.shopStatusLabel);
+    this.refreshShopUi();
+  }
+
+  private refreshShopUi() {
+    if (!this.shopPanel || !this.shopStatusLabel || !this.shopBodyEl || !this.shopHeaderRowEl) return;
+    if (this.shopFeedbackMessage) {
+      this.shopStatusLabel.textContent = this.shopFeedbackMessage;
+      this.shopStatusLabel.style.display = 'block';
+      this.shopStatusLabel.style.color =
+        this.shopFeedbackKind === 'error'
+          ? '#ffd1d1'
+          : 'rgba(210, 235, 255, 0.92)';
+    } else {
+      this.shopStatusLabel.textContent = '';
+      this.shopStatusLabel.style.display = 'none';
+    }
+    this.shopPanel.style.display = this.shopPanelOpen ? 'flex' : 'none';
+
+    const isHub = this.shopSection === 'hub';
+    this.shopBackButton.style.display = isHub ? 'none' : 'inline-flex';
+    this.shopHeaderRowEl.classList.toggle('shop-header-row--with-back', !isHub);
+
+    const headings: Record<ShopSection, string> = {
+      hub: 'Shop',
+      looks: 'Skins',
+      boosts: 'Boosts',
+      inventory: 'Inventory',
+    };
+    this.shopHeadingEl.textContent = headings[this.shopSection];
+
+    this.shopBodyEl.innerHTML = '';
+    if (isHub) {
+      this.renderShopCategoryHub(this.shopBodyEl);
+    } else if (this.shopSection === 'looks') {
+      this.renderShopLooksStore(this.shopBodyEl);
+    } else if (this.shopSection === 'boosts') {
+      this.renderShopBoostsStore(this.shopBodyEl);
+    } else {
+      this.renderShopInventory(this.shopBodyEl);
+    }
+    this.updateCoinHudBadge();
+  }
+
+  private renderShopCategoryHub(container: HTMLDivElement) {
+    const hub = document.createElement('div');
+    hub.className = 'shop-category-hub';
+    const categories: Array<{
+      section: Exclude<ShopSection, 'hub'>;
+      title: string;
+      icon: string;
+    }> = [
+      { section: 'looks', title: 'Skins', icon: '👤' },
+      { section: 'boosts', title: 'Boosts', icon: '⚡' },
+      { section: 'inventory', title: 'Inventory', icon: '🎒' },
+    ];
+    for (const cat of categories) {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'shop-category-tile';
+      tile.innerHTML = `
+        <span class="shop-category-icon" aria-hidden="true">${cat.icon}</span>
+        <span class="shop-category-title">${cat.title}</span>
+      `;
+      tile.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.shopSection = cat.section;
+        this.refreshShopUi();
+      });
+      tile.addEventListener('pointerdown', (e) => e.stopPropagation());
+      hub.appendChild(tile);
+    }
+    container.appendChild(hub);
+  }
+
+  private renderShopLooksStore(container: HTMLDivElement) {
+    const grid = document.createElement('div');
+    grid.className = 'shop-grid';
+    for (const skin of SKIN_CATALOG) {
+      const owned = this.ownedSkins.has(skin.id);
+      const canAfford = this.coins >= skin.cost;
+      const subtitle = 'Skin';
+      const actionLabel = owned ? 'Owned' : '';
+      const buttonKind = owned ? 'owned' : canAfford ? 'buy-ready' : 'buy-locked';
+      const card = this.createShopCard({
+        title: skin.label,
+        subtitle,
+        preview: skin.preview,
+        actionLabel,
+        buyPrice: owned ? undefined : skin.cost,
+        buttonKind,
+        onAffordableClick: () => this.buySkin(skin.id),
+        onInsufficientFundsTap: () => {
+          if (owned || canAfford) return;
+          const missing = skin.cost - this.coins;
+          this.shopFeedbackMessage = `Need ${missing} more for ${skin.label}.`;
+          this.shopFeedbackKind = 'error';
+          this.refreshShopUi();
+        },
+      });
+      grid.appendChild(card);
+    }
+    container.appendChild(grid);
+  }
+
+  private renderShopBoostsStore(container: HTMLDivElement) {
+    const grid = document.createElement('div');
+    grid.className = 'shop-grid';
+    for (const power of POWERUP_CATALOG) {
+      const owned = this.ownedPowerUps.has(power.id);
+      const canAfford = this.coins >= power.cost;
+      const actionLabel = owned ? 'Owned' : '';
+      const buttonKind = owned ? 'owned' : canAfford ? 'buy-ready' : 'buy-locked';
+      const card = this.createShopCard({
+        title: power.label,
+        subtitle: power.description,
+        preview: power.preview,
+        actionLabel,
+        buyPrice: owned ? undefined : power.cost,
+        buttonKind,
+        onAffordableClick: () => this.buyPowerUp(power.id),
+        onInsufficientFundsTap: () => {
+          if (owned || canAfford) return;
+          const missing = power.cost - this.coins;
+          this.shopFeedbackMessage = `Need ${missing} more for ${power.label}.`;
+          this.shopFeedbackKind = 'error';
+          this.refreshShopUi();
+        },
+      });
+      grid.appendChild(card);
+    }
+    container.appendChild(grid);
+  }
+
+  private renderShopInventory(container: HTMLDivElement) {
+    const wrap = document.createElement('div');
+    wrap.className = 'shop-inventory';
+
+    const skinsTitle = document.createElement('h4');
+    skinsTitle.className = 'shop-inventory-section-title';
+    skinsTitle.textContent = 'Skins';
+    wrap.appendChild(skinsTitle);
+
+    const skinGrid = document.createElement('div');
+    skinGrid.className = 'shop-grid';
+    const skinOrder: SkinId[] = ['classic', ...SKIN_CATALOG.map((s) => s.id)];
+    for (const skinId of skinOrder) {
+      if (!this.ownedSkins.has(skinId)) continue;
+      const meta = skinDisplayMeta(skinId);
+      const equipped = this.equippedSkin === skinId;
+      const actionLabel = equipped ? 'Equipped' : 'Equip';
+      const buttonKind = equipped ? 'equipped' : 'equip';
+      const card = this.createShopCard({
+        title: meta.label,
+        subtitle: meta.subtitle,
+        preview: meta.preview,
+        actionLabel,
+        buttonKind,
+        onAffordableClick: () => {
+          this.equippedSkin = skinId;
+          this.shopFeedbackMessage = `${meta.label} equipped.`;
+          this.shopFeedbackKind = 'info';
+          this.saveLocalShopState();
+          this.persistProgressIfSignedIn();
+          this.refreshShopUi();
+        },
+      });
+      skinGrid.appendChild(card);
+    }
+    wrap.appendChild(skinGrid);
+
+    const boostsTitle = document.createElement('h4');
+    boostsTitle.className = 'shop-inventory-section-title';
+    boostsTitle.textContent = 'Boosts (all active when owned)';
+    wrap.appendChild(boostsTitle);
+
+    const boostGrid = document.createElement('div');
+    boostGrid.className = 'shop-grid';
+    let anyBoost = false;
+    for (const power of POWERUP_CATALOG) {
+      if (!this.ownedPowerUps.has(power.id)) continue;
+      anyBoost = true;
+      const card = this.createShopCard({
+        title: power.label,
+        subtitle: power.description,
+        preview: power.preview,
+        actionLabel: 'Active',
+        buttonKind: 'active',
+        onAffordableClick: () => undefined,
+      });
+      boostGrid.appendChild(card);
+    }
+    if (!anyBoost) {
+      const empty = document.createElement('p');
+      empty.className = 'auth-status shop-inventory-empty';
+      empty.textContent = 'No boosts yet. Open Boosts to purchase.';
+      wrap.appendChild(empty);
+    } else {
+      wrap.appendChild(boostGrid);
+    }
+
+    container.appendChild(wrap);
+  }
+
+  private createShopCard(opts: {
+    title: string;
+    subtitle: string;
+    preview: string;
+    actionLabel: string;
+    buyPrice?: number;
+    buttonKind: 'buy-ready' | 'buy-locked' | 'equip' | 'equipped' | 'owned' | 'active';
+    onAffordableClick: () => void;
+    onInsufficientFundsTap?: () => void;
+  }): HTMLDivElement {
+    const card = document.createElement('div');
+    card.className = 'shop-card';
+    const isLocked = opts.buttonKind === 'buy-locked';
+    const isActive = opts.buttonKind === 'buy-ready' || opts.buttonKind === 'equip';
+    if (isLocked) {
+      card.classList.add('shop-card--locked');
+      card.style.cursor = 'pointer';
+      card.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).closest('button')) return;
+        opts.onInsufficientFundsTap?.();
+      });
+    }
+
+    const preview = document.createElement('div');
+    preview.className = 'shop-item-preview';
+    preview.textContent = opts.preview;
+
+    const title = document.createElement('p');
+    title.className = 'shop-item-title';
+    title.textContent = opts.title;
+
+    const subtitle = document.createElement('p');
+    subtitle.className = 'shop-item-subtitle';
+    subtitle.textContent = opts.subtitle;
+
+    const button = document.createElement('button');
+    button.className = 'shop-buy-btn';
+    const useBuyLayout =
+      opts.buyPrice !== undefined && (opts.buttonKind === 'buy-ready' || opts.buttonKind === 'buy-locked');
+    if (useBuyLayout) {
+      button.innerHTML = shopBuyButtonHtml(opts.buyPrice!);
+      button.setAttribute('aria-label', `Buy for ${opts.buyPrice}`);
+    } else {
+      button.textContent = opts.actionLabel;
+    }
+    if (isActive) {
+      button.classList.add('shop-buy-btn--active');
+      button.disabled = false;
+      button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        opts.onAffordableClick();
+      });
+    } else if (isLocked) {
+      button.classList.add('shop-buy-btn--muted', 'shop-buy-btn--locked');
+      button.disabled = false;
+      button.setAttribute('aria-disabled', 'true');
+      button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        opts.onInsufficientFundsTap?.();
+      });
+    } else {
+      button.classList.add('shop-buy-btn--muted');
+      if (opts.buttonKind === 'active') {
+        button.classList.add('shop-buy-btn--active-tag');
+      }
+      button.disabled = true;
+    }
+
+    card.appendChild(preview);
+    card.appendChild(title);
+    card.appendChild(subtitle);
+    card.appendChild(button);
+    return card;
+  }
+
+  private buySkin(skinId: SkinId) {
+    const item = SKIN_CATALOG.find((entry) => entry.id === skinId);
+    if (!item || this.ownedSkins.has(skinId)) return;
+    if (this.coins < item.cost) {
+      const missing = item.cost - this.coins;
+      this.shopFeedbackMessage = `Need ${missing} more for ${item.label}.`;
+      this.shopFeedbackKind = 'error';
+      this.refreshShopUi();
+      return;
+    }
+    this.coins -= item.cost;
+    this.ownedSkins.add(skinId);
+    this.equippedSkin = skinId;
+    this.shopFeedbackMessage = `${item.label} purchased and equipped!`;
+    this.shopFeedbackKind = 'info';
+    this.saveLocalShopState();
+    this.persistProgressIfSignedIn();
+    this.refreshShopUi();
+  }
+
+  private buyPowerUp(powerId: PowerUpId) {
+    const item = POWERUP_CATALOG.find((entry) => entry.id === powerId);
+    if (!item || this.ownedPowerUps.has(powerId)) return;
+    if (this.coins < item.cost) {
+      const missing = item.cost - this.coins;
+      this.shopFeedbackMessage = `Need ${missing} more for ${item.label}.`;
+      this.shopFeedbackKind = 'error';
+      this.refreshShopUi();
+      return;
+    }
+    this.coins -= item.cost;
+    this.ownedPowerUps.add(powerId);
+    this.shopFeedbackMessage = `${item.label} purchased!`;
+    this.shopFeedbackKind = 'info';
+    this.updatePlayerSpeedFromPowerUps();
+    this.saveLocalShopState();
+    this.persistProgressIfSignedIn();
+    this.refreshShopUi();
+  }
+
+  private rewardCoinsForLevel(levelIndex: number): number {
+    const reward = 20 + levelIndex * 12;
+    this.coins += reward;
+    this.saveLocalShopState();
+    this.refreshShopUi();
+    return reward;
+  }
+
   private async initializeAuth() {
     if (!this.authClient.isConfigured()) {
       this.setAuthStatus('Auth not configured. Guest mode only.');
@@ -572,6 +1140,7 @@ export class Game {
 
   private async handleAuthUserChanged(userId: string | null, email: string | null) {
     this.authUserId = userId;
+    this.loadLocalShopState();
     if (!userId) {
       this.highestLevelUnlocked = 1;
       this.playButton.textContent = 'Play';
@@ -689,6 +1258,7 @@ export class Game {
     this.authSignOutButton.style.display = signedIn ? 'block' : 'none';
     this.authPanel.style.display = this.authPanelOpen ? 'flex' : 'none';
     this.settingsPanel.style.display = this.settingsPanelOpen ? 'flex' : 'none';
+    this.refreshShopUi();
   }
 
   private setAuthStatus(message: string) {
@@ -758,6 +1328,8 @@ export class Game {
     this.attempts = 1;
     this.authPanelOpen = false;
     this.settingsPanelOpen = false;
+    this.shopPanelOpen = false;
+    this.shopSection = 'hub';
     this.refreshAuthUi();
     const startAt = Math.max(0, this.highestLevelUnlocked - 1);
     this.startLevel(startAt, 'countdown');
@@ -1284,6 +1856,8 @@ export class Game {
       this.refreshPlayerModel();
       this.debugPanel.setPlayerModel(this.playerModel);
       this.highestLevelUnlocked = Math.max(this.highestLevelUnlocked, this.levelIndex + 2);
+      const earnedCoins = this.rewardCoinsForLevel(this.levelIndex + 1);
+      this.showAIMessage(`Level clear: +${earnedCoins}`);
       this.persistProgressIfSignedIn();
       this.audio.playLevelComplete();
       this.audio.stopMusic();
@@ -1878,6 +2452,14 @@ export class Game {
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
+    if (this.ownedPowerUps.has('secondWind') && !this.consumedSecondWind) {
+      this.consumedSecondWind = true;
+      this.showAIMessage('Second Wind activated!');
+      this.audio.playRetry();
+      this.spawnPlayer();
+      this.cameraX = Math.max(0, this.player.pos.x - this.canvas.width * 0.25);
+      return;
+    }
     this.recordDeathObstacleInteraction(deathX);
     this.tracker.recordRouteChoice({
       routeId: this.detectRouteFromPlayer(),
@@ -2087,7 +2669,7 @@ export class Game {
     const showFlag = this.state !== 'menu' && this.state !== 'countdown';
     this.renderer.drawLevel(this.level, this.cameraX, obstaclePulse, showFlag);
     if (this.hasSpawnedPlayer) {
-      this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead');
+      this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead', this.equippedSkin);
     }
     if (this.state !== 'menu' && this.hasSpawnedPlayer) {
       this.renderer.drawHUD(
