@@ -541,8 +541,8 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
     case 'ADD_SPIKE':
     case 'ADD_LANDING_HAZARD': {
       if (mutation.targetX < SAFE_SPAWN_END) return false;
-      // Edge-to-edge clearance: gap between new spike and any obstacle must be >= 48px (> player width 32px)
-      const MIN_CLEARANCE = 48;
+      // Minimum edge-to-edge gap: 2.5× player width (32px), giving comfortable run-up room.
+      const MIN_CLEARANCE = 80;
       const newLeft  = mutation.targetX;
       const newRight = mutation.targetX + 44;
       const tooClose = obstacles.some(o => {
