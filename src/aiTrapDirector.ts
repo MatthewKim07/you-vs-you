@@ -10,6 +10,7 @@ import {
 import { calculateMaxJumpDistance } from './movementTuning';
 
 const FORCED_ACTION_RECOVERY_GAP = 148;
+const MIN_CHOICE_HOST_SPACING = 260;
 
 export interface TrapDirectiveOutput {
   obstacles: Obstacle[];
@@ -527,7 +528,8 @@ function hostCounterJumpChoices(
   let appliedCount = 0;
   let fallbackCount = 0;
   const targetIds: string[] = [];
-  for (const { obstacle: target, usedFallback } of targets) {
+  const spacedTargets = enforceChoiceHostSpacing(targets, MIN_CHOICE_HOST_SPACING);
+  for (const { obstacle: target, usedFallback } of spacedTargets) {
     initializeRuntimeFields(target);
     const group = target.trapGroupId ?? `choice_group_${Math.round(target.x)}`;
     target.trapGroupId = group;
@@ -563,7 +565,8 @@ function hostCounterCrouchChoices(
   let appliedCount = 0;
   let fallbackCount = 0;
   const targetIds: string[] = [];
-  for (const { obstacle: target, usedFallback } of targets) {
+  const spacedTargets = enforceChoiceHostSpacing(targets, MIN_CHOICE_HOST_SPACING);
+  for (const { obstacle: target, usedFallback } of spacedTargets) {
     initializeRuntimeFields(target);
     const group = target.trapGroupId ?? `choice_group_${Math.round(target.x)}`;
     target.trapGroupId = group;
@@ -972,6 +975,19 @@ function pickChoiceMutationHosts(
     obstacle: o,
     usedFallback: conf <= 0 || hasTopPlatform(o),
   }));
+}
+
+function enforceChoiceHostSpacing(
+  hosts: Array<{ obstacle: Obstacle; usedFallback: boolean }>,
+  minSpacing: number,
+): Array<{ obstacle: Obstacle; usedFallback: boolean }> {
+  const picked: Array<{ obstacle: Obstacle; usedFallback: boolean }> = [];
+  for (const host of hosts) {
+    const tooClose = picked.some((p) => Math.abs(p.obstacle.x - host.obstacle.x) < minSpacing);
+    if (tooClose) continue;
+    picked.push(host);
+  }
+  return picked;
 }
 
 // Reset all trap host obstacles to their initial state so traps can fire again on the next
