@@ -1019,4 +1019,78 @@ export class Renderer {
     ctx.setLineDash([]);
     ctx.restore();
   }
+
+  drawHitboxOverlay(
+    obstacles: import('./types').Obstacle[],
+    groundY: number,
+    cameraX: number,
+    playerX: number,
+    playerY: number,
+    playerW: number,
+    playerH: number,
+  ) {
+    const { ctx } = this;
+    const INSET = 4;
+    const DOUBLE_SPIKE_GAP = 16;
+    ctx.save();
+    ctx.globalAlpha = 0.75;
+    ctx.lineWidth = 1.5;
+
+    // Player — green
+    ctx.strokeStyle = '#00ff88';
+    ctx.strokeRect(
+      px(playerX + INSET - cameraX),
+      px(playerY),
+      px(playerW - INSET * 2),
+      px(playerH),
+    );
+
+    for (const o of obstacles) {
+      const sx = px((o.currentX ?? o.x) - cameraX);
+      const sw = px(o.currentWidth ?? o.width);
+      const sh = px(o.currentHeight ?? o.height);
+
+      if (o.kind === 'spike') {
+        const tipX = sx + sw / 2;
+        const tipY = px(groundY) - sh;
+        ctx.strokeStyle = '#ff4444';
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(sx + sw, px(groundY));
+        ctx.lineTo(sx, px(groundY));
+        ctx.closePath();
+        ctx.stroke();
+      } else if (o.kind === 'doubleSpike') {
+        const spikeW = (px(o.currentWidth ?? o.width) - px(DOUBLE_SPIKE_GAP)) / 2;
+        const gapPx = px(DOUBLE_SPIKE_GAP);
+        const tipY = px(groundY) - sh;
+        ctx.strokeStyle = '#ff4444';
+        for (let i = 0; i < 2; i++) {
+          const left = sx + i * (spikeW + gapPx);
+          ctx.beginPath();
+          ctx.moveTo(left + spikeW / 2, tipY);
+          ctx.lineTo(left + spikeW, px(groundY));
+          ctx.lineTo(left, px(groundY));
+          ctx.closePath();
+          ctx.stroke();
+        }
+      } else if (o.kind === 'platform' && o.disappearState !== 'invisible') {
+        ctx.strokeStyle = '#4488ff';
+        ctx.strokeRect(sx, px(groundY) - sh, sw, sh);
+      } else if (o.kind === 'lowCeiling') {
+        ctx.strokeStyle = '#ffff00';
+        ctx.strokeRect(sx, px(groundY) - sh - 16, sw, 16);
+      } else if (o.kind === 'choiceObstacle') {
+        ctx.strokeStyle = '#ff88ff';
+        ctx.strokeRect(sx, px(groundY) - sh, sw, sh);
+      } else if (o.kind === 'gap') {
+        ctx.strokeStyle = '#ff8800';
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(sx, px(groundY) - 4, sw, 8);
+        ctx.setLineDash([]);
+      }
+    }
+
+    ctx.restore();
+  }
 }

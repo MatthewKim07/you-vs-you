@@ -75,6 +75,7 @@ export class Game {
   private audioToggleButton!: HTMLButtonElement;
   private lastTrapMessageAt = Number.NEGATIVE_INFINITY;
   private audio = new GameAudio();
+  private showHitboxes = false;
 
   // Ground-state tracking for landing/airtime detection
   private wasOnGround = true; // previous frame's ground state, persisted across frames
@@ -129,6 +130,9 @@ export class Game {
 
     window.addEventListener('pointerdown', arm, { once: true, passive: true });
     window.addEventListener('keydown', arm, { once: true });
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyH') this.showHitboxes = !this.showHitboxes;
+    });
   }
 
   private resizeCanvas() {
@@ -1462,6 +1466,18 @@ export class Game {
     if (this.aiMessageTimeLeft > 0) {
       const fade = Math.min(1, this.aiMessageTimeLeft / 0.4);
       this.renderer.drawAIGameMasterMessage(this.aiMessage, fade);
+    }
+
+    if (this.showHitboxes && this.hasSpawnedPlayer) {
+      this.renderer.drawHitboxOverlay(
+        this.level.obstacles,
+        this.level.groundY,
+        this.cameraX,
+        this.player.pos.x,
+        this.player.pos.y,
+        this.player.width,
+        this.player.height,
+      );
     }
 
     this.debugPanel.update();
