@@ -262,6 +262,20 @@ export function directTraps(
       }
     }
 
+    if (
+      hostsApplied < maxHosts &&
+      (phase === 'counter' || phase === 'predict' || phase === 'dominate') &&
+      model.routeConfidence > 0.4 &&
+      preferredRoute === 'upper'
+    ) {
+      const applied = hostVanishingUpperPlatform(mutatedObstacles, model.perObstacleInteractionStats);
+      if (applied) {
+        hostsApplied++;
+        activeTraps.push('vanishingUpperPlatform');
+        trapReasons.push('Upper route overused; armed a floating tile vanish trap on a safe drop zone');
+      }
+    }
+
     if (hostsApplied === 0 && hasChoiceObstacles) {
       const fallbackPreference = choicePreference ?? (levelIndex % 2 === 0 ? 'jump' : 'crouch');
       const result = fallbackPreference === 'jump'
@@ -405,6 +419,9 @@ export function updateRealtimeTraps(ctx: RealtimeTrapContext): RealtimeTrapOutpu
         }
         if (obs.trapType === 'adaptiveChoiceGateCrouch') {
           obs.currentHeight = obs.targetHeight ?? obs.height;
+        }
+        if (obs.trapType === 'vanishingUpperPlatform') {
+          activateVanishingPlatform(obs, ctx.playerModel.routeConfidence);
         }
 
         const message = trapTriggerMessage(obs.trapType, predictedAction, predictedLandingX);
@@ -940,6 +957,62 @@ function hostPlatformNeedle(
   return true;
 }
 
+function hostVanishingUpperPlatform(
+  obstacles: Obstacle[],
+  interactionStats: PlayerModel['perObstacleInteractionStats'],
+): boolean {
+  const candidates = obstacles
+    .filter((o) => o.kind === 'platform' && !o.trapHost && o.routeLayer === 'upper')
+    .filter((o) => hasSafeDropBelow(o, obstacles));
+  if (candidates.length === 0) return false;
+
+  const scored = candidates
+    .map((o, index) => ({
+      obstacle: o,
+      score: scoreObstacleInteraction(o, interactionStats) - index * 0.001,
+    }))
+    .sort((a, b) => b.score - a.score);
+  const target = scored[0]?.obstacle;
+  if (!target) return false;
+
+  initializeRuntimeFields(target);
+  target.trapHost = true;
+  target.trapType = 'vanishingUpperPlatform';
+  target.trapState = 'idle';
+  target.trapReason = 'You keep committing to this upper tile; it will vanish and force a route swap';
+  return true;
+}
+
+function activateVanishingPlatform(platform: Obstacle, routeConfidence: number): void {
+  if (platform.kind !== 'platform') return;
+  const usesBreakOnTouch = routeConfidence >= 0.7;
+  platform.disappearMode = usesBreakOnTouch ? 'onTouch' : 'afterDelay';
+  platform.disappearDelayMs = usesBreakOnTouch ? 350 : 520;
+  platform.reappearDelayMs = 1200;
+  platform.maxDisappearCount = null;
+  platform.disappearState = 'visible';
+  platform.disappearTimer = 0;
+  platform.disappearCount = 0;
+}
+
+function hasSafeDropBelow(platform: Obstacle, obstacles: Obstacle[]): boolean {
+  const left = platform.x + 8;
+  const right = platform.x + platform.width - 8;
+  if (left >= right) return false;
+
+  const hitsGap = obstacles.some((o) =>
+    o.kind === 'gap' &&
+    rangesOverlap(left, right, o.x + 8, o.x + o.width - 8),
+  );
+  if (hitsGap) return false;
+
+  const hitsGroundHazard = obstacles.some((o) =>
+    (o.kind === 'spike' || o.kind === 'doubleSpike' || o.kind === 'lowCeiling' || o.kind === 'choiceObstacle') &&
+    rangesOverlap(left, right, o.x + 4, o.x + o.width - 4),
+  );
+  return !hitsGroundHazard;
+}
+
 // Pick the best choice gate to mutate. Prefers the gate where the player shows the
 // strongest per-obstacle preference for `preferenceType` (jump or crouch). Falls back to
 // a gate without a top platform, or any eligible gate.
@@ -1098,6 +1171,8 @@ function trapTriggerMessage(
         : 'Your timing is late, so I shifted the near edge.';
     case 'reactiveLowCeiling':
       return 'You used the crouch lane. I sealed it.';
+    case 'vanishingUpperPlatform':
+      return 'You keep taking upper tiles. This one now disappears.';
     default:
       return 'I changed the trap while you approached it.';
   }
@@ -1139,6 +1214,8 @@ function mutationDurationForType(trapType?: string): number {
       return 0.11;
     case 'platformNeedle':
       return 0.16;
+    case 'vanishingUpperPlatform':
+      return 0.14;
     case 'shiftingGap':
       return 0.22;
     case 'collapsingPlatform':
