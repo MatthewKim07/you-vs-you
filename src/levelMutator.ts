@@ -14,6 +14,10 @@ const MUTATION_COSTS: Record<LevelMutationActionType, number> = {
   MAKE_PLATFORM_DISAPPEAR: 2,
   INCREASE_GAP: 2,
   ADD_ROUTE_BLOCKER: 3,
+  APPLY_RISING_SPIKE: 2,
+  APPLY_PULSING_SPIKE: 2,
+  APPLY_DROPPING_PLATFORM: 2,
+  APPLY_TEMP_BLOCKER: 3,
 };
 
 const SAFE_SPAWN_END = 320;
@@ -22,6 +26,31 @@ const SAFE_SPAWN_END = 320;
 export const DISAPPEAR_FLICKER_MS = 400;
 export const DISAPPEAR_INVISIBLE_MS = 2000;
 export const DISAPPEAR_REAPPEAR_MS = 400;
+
+// Rising spike cycle (ms)
+export const RISING_INACTIVE_MS = 1200;
+export const RISING_WARNING_MS  = 600;
+export const RISING_RISE_MS     = 400;
+export const RISING_HOLD_MS     = 1800;
+export const RISING_RETRACT_MS  = 400;
+
+// Pulsing spike cycle (ms)
+export const PULSE_ACTIVE_MS    = 1200;
+export const PULSE_RETRACT_MS   = 300;
+export const PULSE_INACTIVE_MS  = 800;
+export const PULSE_RISE_MS      = 300;
+
+// Dropping platform (ms)
+export const DROP_WARNING_MS    = 700;
+export const DROP_FALL_MS       = 400;
+export const DROP_INVISIBLE_MS  = 2000;
+export const DROP_SPAWN_MS      = 500;
+
+// Temporary blocker ceiling (ms)
+export const BLOCKER_INACTIVE_MS = 2200;
+export const BLOCKER_WARNING_MS  = 500;
+export const BLOCKER_ACTIVE_MS   = 1800;
+export const BLOCKER_RETRACT_MS  = 400;
 
 export interface MutatorOutput {
   obstacles: Obstacle[];
@@ -99,6 +128,31 @@ export function resetDisappearingPlatforms(obstacles: Obstacle[]): void {
   }
 }
 
+// Reset all AI modifier state machines to their initial states for the next run.
+export function resetAiModifiers(obstacles: Obstacle[]): void {
+  for (const o of obstacles) {
+    if (!o.aiModifier) continue;
+    o.aiModTimer = 0;
+    switch (o.aiModifier) {
+      case 'risingSpike':
+        o.aiModState = 'inactive';
+        o.aiModVisualHeight = 0;
+        break;
+      case 'pulsingSpike':
+        o.aiModState = 'active';
+        o.aiModVisualHeight = o.height;
+        break;
+      case 'droppingPlatform':
+        o.aiModState = 'inactive';
+        o.aiModDropOffset = 0;
+        break;
+      case 'temporaryBlocker':
+        o.aiModState = 'inactive';
+        break;
+    }
+  }
+}
+
 function computeDifficultyBudget(runs: RunData[], levelIndex: number): DifficultyBudget {
   const recentRuns = runs.slice(-6);
   const completions = recentRuns.filter(r => r.completed).length;
@@ -109,11 +163,11 @@ function computeDifficultyBudget(runs: RunData[], levelIndex: number): Difficult
     return { total: 0, spent: 0 };
   }
 
-  // Base budget grows slightly with level, capped at 5 to avoid overwhelming
-  const base = Math.min(2 + Math.floor(levelIndex * 0.5), 5);
-  // Success adds budget, deaths reduce it
-  const delta = completions * 2 - Math.floor(deaths * 0.5);
-  const total = Math.max(0, Math.min(10, base + delta));
+  // Budget grows slowly; cap at 6 to prevent dumping many mutations at once
+  const base = Math.min(1 + Math.floor(levelIndex * 0.4), 4);
+  // Success adds budget, deaths reduce it (less aggressive growth)
+  const delta = completions * 1 - Math.floor(deaths * 0.7);
+  const total = Math.max(0, Math.min(6, base + delta));
 
   return { total, spent: 0 };
 }
@@ -130,46 +184,73 @@ function selectCandidateMutations(
     ? recentRuns.filter(r => !r.completed).length / recentRuns.length
     : 0;
 
-  // Back off if player is already struggling
-  if (deathRate > 0.8 && recentRuns.length >= 3) {
-    return [];
-  }
+  if (deathRate > 0.8 && recentRuns.length >= 3) return [];
 
-  const preferredRoute: RouteLayer | null =
-    model.preferredRoute === 'mixed' ? null : model.preferredRoute;
+  const interactionStats = model.perObstacleInteractionStats;
+  const hasStats = Object.keys(interactionStats).length > 0;
 
-  // 1. Make platforms disappear on the player's preferred route (costs 2)
-  if (model.routeConfidence > 0.35 && preferredRoute && levelIndex >= 2) {
-    const routePlatforms = obstacles.filter(o =>
-      o.kind === 'platform' &&
-      o.disappearMode === undefined &&
-      !o.trapHost &&
-      o.routeLayer === preferredRoute,
-    );
-    // Target middle platforms — they're the most relied-upon stepping stones
-    const midIdx = Math.floor(routePlatforms.length / 2);
-    const targets = routePlatforms.slice(
-      Math.max(0, midIdx - 1),
-      Math.min(routePlatforms.length, midIdx + 1),
-    );
-    for (const p of targets) {
-      candidates.push({
-        id: `disappear_${Math.round(p.x)}`,
-        type: 'MAKE_PLATFORM_DISAPPEAR',
-        targetX: p.x,
-        targetRouteLayer: preferredRoute,
-        difficultyCost: MUTATION_COSTS.MAKE_PLATFORM_DISAPPEAR,
-        reason: `${preferredRoute} route relied on (conf:${(model.routeConfidence * 100).toFixed(0)}%)`,
-      });
+  // 1. MAKE_PLATFORM_DISAPPEAR — target platforms the player actually relies on.
+  //    Use per-obstacle interaction data: high passCount + low failureRate = player depends on it.
+  //    Fall back to preferred-route middle-pick only if no interaction data exists.
+  if (levelIndex >= 2) {
+    const preferredRoute: RouteLayer | null =
+      model.preferredRoute === 'mixed' ? null : model.preferredRoute;
+
+    if (hasStats) {
+      // Find platforms player has actually passed 2+ times with low death rate
+      const reliablePlatforms = obstacles
+        .filter(o =>
+          o.kind === 'platform' &&
+          o.disappearMode === undefined &&
+          !o.trapHost,
+        )
+        .map(o => {
+          const id = `platform_${Math.round(o.x)}_${Math.round(o.width)}`;
+          const stats = interactionStats[id];
+          return { obs: o, stats };
+        })
+        .filter(({ stats }) => stats && stats.passCount >= 2 && stats.failureRate < 0.4)
+        .sort((a, b) => (b.stats?.passCount ?? 0) - (a.stats?.passCount ?? 0));
+
+      for (const { obs, stats } of reliablePlatforms.slice(0, 2)) {
+        candidates.push({
+          id: `disappear_${Math.round(obs.x)}`,
+          type: 'MAKE_PLATFORM_DISAPPEAR',
+          targetX: obs.x,
+          targetRouteLayer: obs.routeLayer as RouteLayer | undefined,
+          difficultyCost: MUTATION_COSTS.MAKE_PLATFORM_DISAPPEAR,
+          reason: `Platform at x=${Math.round(obs.x)} passed ${stats!.passCount}x, fail ${(stats!.failureRate * 100).toFixed(0)}% — player relies on it`,
+        });
+      }
+    } else if (model.routeConfidence > 0.35 && preferredRoute) {
+      // No interaction data yet — fall back to route-based structural pick
+      const routePlatforms = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        o.disappearMode === undefined &&
+        !o.trapHost &&
+        o.routeLayer === preferredRoute,
+      );
+      const midIdx = Math.floor(routePlatforms.length / 2);
+      for (const p of routePlatforms.slice(Math.max(0, midIdx - 1), Math.min(routePlatforms.length, midIdx + 1))) {
+        candidates.push({
+          id: `disappear_${Math.round(p.x)}`,
+          type: 'MAKE_PLATFORM_DISAPPEAR',
+          targetX: p.x,
+          targetRouteLayer: preferredRoute,
+          difficultyCost: MUTATION_COSTS.MAKE_PLATFORM_DISAPPEAR,
+          reason: `${preferredRoute} route structural pick (no interaction data yet)`,
+        });
+      }
     }
   }
 
-  // 2. Place hazards at common landing zones (costs 1 each)
-  const recentLandings = recentRuns.flatMap(r => r.landings).map(l => l.x);
+  // 2. ADD_LANDING_HAZARD — use confirmed ground landings (y near groundY) from hot zones.
+  //    Weight by actual landing count so spike lands exactly where player repeatedly touches down.
+  const recentLandings = recentRuns.flatMap(r => r.landings);
   if (recentLandings.length >= 4) {
     const buckets = new Map<number, number>();
-    for (const x of recentLandings) {
-      const key = Math.floor(x / 80) * 80;
+    for (const l of recentLandings) {
+      const key = Math.floor(l.x / 80) * 80;
       buckets.set(key, (buckets.get(key) ?? 0) + 1);
     }
     const hotZones = [...buckets.entries()]
@@ -182,43 +263,218 @@ function selectCandidateMutations(
         type: 'ADD_LANDING_HAZARD',
         targetX: x + 8,
         difficultyCost: MUTATION_COSTS.ADD_LANDING_HAZARD,
-        reason: `Hot landing zone ~${Math.round(x)}px (${count} landings)`,
+        reason: `Hot landing zone x≈${Math.round(x)} (${count} landings across ${recentRuns.length} runs)`,
       });
     }
   }
 
-  // 3. Add a spike on the preferred route (costs 1)
-  if (preferredRoute && deathRate < 0.6) {
-    const spikeX = findClearX(obstacles, 450, 1850, 90);
-    if (spikeX !== null) {
-      candidates.push({
-        id: `route_spike_${Math.round(spikeX)}`,
-        type: 'ADD_SPIKE',
-        targetX: spikeX,
-        targetRouteLayer: preferredRoute,
-        difficultyCost: MUTATION_COSTS.ADD_SPIKE,
-        reason: `Spike on ${preferredRoute} route (player committed)`,
-      });
+  // 3. ADD_SPIKE — place at approach position of an obstacle player CONSISTENTLY passes.
+  //    Use avgApproachX from interaction stats: player jumps from this exact spot each time.
+  //    Prefer obstacles with consistent jump action + high pass rate — that's a learned pattern.
+  if (deathRate < 0.6) {
+    const preferredRoute: RouteLayer | null =
+      model.preferredRoute === 'mixed' ? null : model.preferredRoute;
+
+    if (hasStats) {
+      // Find the obstacle where player has the most consistent jump pattern and highest pass rate
+      const jumpPatternObstacle = Object.values(interactionStats)
+        .filter(s =>
+          s.total >= 2 &&
+          s.preferredAction === 'jump' &&
+          s.failureRate < 0.4 &&
+          s.avgApproachX >= SAFE_SPAWN_END + 80 &&
+          // Only obstacles the player approaches predictably (tight approach cluster)
+          s.confidence >= 0.5,
+        )
+        .sort((a, b) => b.passCount - a.passCount)[0];
+
+      if (jumpPatternObstacle) {
+        // Place spike at their avg approach x — exactly where they launch from
+        const spikeX = findClearX(obstacles, jumpPatternObstacle.avgApproachX - 40, jumpPatternObstacle.avgApproachX + 40, 90)
+          ?? findClearX(obstacles, SAFE_SPAWN_END + 80, 1850, 90);
+        if (spikeX !== null) {
+          candidates.push({
+            id: `approach_spike_${Math.round(spikeX)}`,
+            type: 'ADD_SPIKE',
+            targetX: spikeX,
+            targetRouteLayer: preferredRoute ?? undefined,
+            difficultyCost: MUTATION_COSTS.ADD_SPIKE,
+            reason: `Spike at player's jump-off x≈${Math.round(jumpPatternObstacle.avgApproachX)} (passes ${jumpPatternObstacle.obstacleId} ${jumpPatternObstacle.passCount}x by jumping)`,
+          });
+        }
+      }
+    } else if (preferredRoute) {
+      // No interaction data — place on preferred route at any clear position
+      const spikeX = findClearX(obstacles, SAFE_SPAWN_END + 80, 1850, 90);
+      if (spikeX !== null) {
+        candidates.push({
+          id: `route_spike_${Math.round(spikeX)}`,
+          type: 'ADD_SPIKE',
+          targetX: spikeX,
+          targetRouteLayer: preferredRoute,
+          difficultyCost: MUTATION_COSTS.ADD_SPIKE,
+          reason: `Spike on ${preferredRoute} route (no approach data yet)`,
+        });
+      }
     }
   }
 
-  // 4. Widen a gap if player clears levels easily (costs 2)
+  // 4. INCREASE_GAP — target the gap player crosses most easily (lowest failure rate in stats).
+  //    If no stats, fall back to the gap with the lowest current width (easiest to cross).
   const hasCompletions = recentRuns.some(r => r.completed);
   if (deathRate < 0.3 && hasCompletions && levelIndex >= 2) {
-    const gapTargets = obstacles.filter(o => o.kind === 'gap' && !o.trapHost);
-    if (gapTargets.length > 0) {
-      const target = gapTargets[Math.floor(gapTargets.length / 2)];
+    const gapObstacles = obstacles.filter(o => o.kind === 'gap' && !o.trapHost);
+    if (gapObstacles.length > 0) {
+      let targetGap: Obstacle | undefined;
+
+      if (hasStats) {
+        // Find gap player crosses with lowest failure rate = easiest for them
+        const gapWithStats = gapObstacles
+          .map(o => {
+            const id = `gap_${Math.round(o.x)}_${Math.round(o.width)}`;
+            return { obs: o, stats: interactionStats[id] };
+          })
+          .filter(({ stats }) => stats && stats.total >= 2)
+          .sort((a, b) => (a.stats?.failureRate ?? 1) - (b.stats?.failureRate ?? 1));
+
+        targetGap = gapWithStats[0]?.obs ?? gapObstacles[Math.floor(gapObstacles.length / 2)];
+      } else {
+        targetGap = gapObstacles[Math.floor(gapObstacles.length / 2)];
+      }
+
+      if (targetGap) {
+        const statsEntry = interactionStats[`gap_${Math.round(targetGap.x)}_${Math.round(targetGap.width)}`];
+        candidates.push({
+          id: `widen_gap_${Math.round(targetGap.x)}`,
+          type: 'INCREASE_GAP',
+          targetX: targetGap.x,
+          difficultyCost: MUTATION_COSTS.INCREASE_GAP,
+          reason: statsEntry
+            ? `Easiest gap (x=${Math.round(targetGap.x)}, fail ${(statsEntry.failureRate * 100).toFixed(0)}%/${statsEntry.total} runs) — widening`
+            : `Gap at x=${Math.round(targetGap.x)} widened (death rate ${(deathRate * 100).toFixed(0)}%)`,
+        });
+      }
+    }
+  }
+
+  // 5. APPLY_RISING_SPIKE — turn a static spike into a rising spike where player predictably jumps.
+  //    Trigger: spike exists on player's preferred route, player has passed it (not died).
+  if (levelIndex >= 3 && deathRate < 0.7) {
+    const unmodifiedSpikes = obstacles.filter(o =>
+      (o.kind === 'spike' || o.kind === 'doubleSpike') &&
+      !o.aiModifier &&
+      (o.currentX ?? o.x) >= SAFE_SPAWN_END + 80,
+    );
+    // Prefer spikes the player has passed before (interaction data) — those are "solved" patterns
+    const targetSpike = hasStats
+      ? unmodifiedSpikes.find(o => {
+          const id = `${o.kind}_${Math.round(o.x)}_${Math.round(o.width)}`;
+          const s = interactionStats[id];
+          return s && s.passCount >= 2 && s.preferredAction === 'jump' && s.failureRate < 0.5;
+        }) ?? unmodifiedSpikes[0]
+      : unmodifiedSpikes[0];
+
+    if (targetSpike) {
       candidates.push({
-        id: `widen_gap_${Math.round(target.x)}`,
-        type: 'INCREASE_GAP',
-        targetX: target.x,
-        difficultyCost: MUTATION_COSTS.INCREASE_GAP,
-        reason: `Death rate ${(deathRate * 100).toFixed(0)}%, widening gap`,
+        id: `rising_spike_${Math.round(targetSpike.x)}`,
+        type: 'APPLY_RISING_SPIKE',
+        targetX: targetSpike.x,
+        targetRouteLayer: targetSpike.routeLayer as RouteLayer | undefined,
+        difficultyCost: MUTATION_COSTS.APPLY_RISING_SPIKE,
+        reason: `Static spike at x=${Math.round(targetSpike.x)} solved by player — now rises on cycle`,
       });
     }
   }
 
-  // Sort cheapest first to maximize use of budget
+  // 6. APPLY_PULSING_SPIKE — turn a static spike into a pulsing spike with safe windows.
+  //    Trigger: player frequently jumps but hasn't died at this spike (too easy for them).
+  if (levelIndex >= 4 && deathRate < 0.5 && hasCompletions) {
+    const unmodifiedSpikes = obstacles.filter(o =>
+      (o.kind === 'spike' || o.kind === 'doubleSpike') &&
+      !o.aiModifier &&
+      (o.currentX ?? o.x) >= SAFE_SPAWN_END + 80,
+    );
+    // Pick a different spike than rising spike (furthest from spawn to add end-game pressure)
+    const targetSpike = unmodifiedSpikes.slice(-1)[0];
+    if (targetSpike) {
+      candidates.push({
+        id: `pulsing_spike_${Math.round(targetSpike.x)}`,
+        type: 'APPLY_PULSING_SPIKE',
+        targetX: targetSpike.x,
+        targetRouteLayer: targetSpike.routeLayer as RouteLayer | undefined,
+        difficultyCost: MUTATION_COSTS.APPLY_PULSING_SPIKE,
+        reason: `Level ${levelIndex} pressure: spike at x=${Math.round(targetSpike.x)} now pulses`,
+      });
+    }
+  }
+
+  // 7. APPLY_DROPPING_PLATFORM — mark a platform the player relies on as dropping.
+  //    Trigger: player uses upper route heavily.
+  if (levelIndex >= 3 && model.routeUsage) {
+    const total = (model.routeUsage.upper ?? 0) + (model.routeUsage.mid ?? 0) + (model.routeUsage.lower ?? 0);
+    const upperRatio = total > 0 ? (model.routeUsage.upper ?? 0) / total : 0;
+    if (upperRatio > 0.45 || model.preferredRoute === 'upper') {
+      const upperPlatforms = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        !o.aiModifier &&
+        !o.disappearMode &&
+        !o.trapHost &&
+        o.routeLayer === 'upper',
+      );
+      if (upperPlatforms.length >= 2) {
+        // Target a non-first, non-last platform so player can still make it
+        const targetIdx = Math.max(1, Math.floor(upperPlatforms.length / 2));
+        const target = upperPlatforms[targetIdx];
+        candidates.push({
+          id: `dropping_platform_${Math.round(target.x)}`,
+          type: 'APPLY_DROPPING_PLATFORM',
+          targetX: target.x,
+          targetRouteLayer: 'upper',
+          difficultyCost: MUTATION_COSTS.APPLY_DROPPING_PLATFORM,
+          reason: `Upper route usage ${(upperRatio * 100).toFixed(0)}% — platform at x=${Math.round(target.x)} now drops`,
+        });
+      }
+    }
+  }
+
+  // 8. APPLY_TEMP_BLOCKER — make a platform temporarily invisible on a cycle.
+  //    Targets a platform the player regularly jumps on (lower or mid route).
+  //    Trigger: player uses mid/lower route heavily and has reliable platform passes.
+  if (levelIndex >= 5) {
+    const total = (model.routeUsage?.upper ?? 0) + (model.routeUsage?.mid ?? 0) + (model.routeUsage?.lower ?? 0);
+    const nonUpperRatio = total > 0 ? ((model.routeUsage?.mid ?? 0) + (model.routeUsage?.lower ?? 0)) / total : 0;
+    if (nonUpperRatio > 0.5 || model.preferredRoute === 'mid' || model.preferredRoute === 'lower') {
+      const candidatePlatforms = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        !o.aiModifier &&
+        o.disappearMode === undefined &&
+        !o.trapHost &&
+        (o.routeLayer === 'mid' || o.routeLayer === 'lower') &&
+        (o.currentX ?? o.x) >= SAFE_SPAWN_END + 80,
+      );
+      if (candidatePlatforms.length > 0) {
+        // Prefer a platform the player has passed multiple times
+        const target = hasStats
+          ? candidatePlatforms.find(o => {
+              const id = `platform_${Math.round(o.x)}_${Math.round(o.width)}`;
+              const s = interactionStats[id];
+              return s && s.passCount >= 2 && s.failureRate < 0.4;
+            }) ?? candidatePlatforms[Math.floor(candidatePlatforms.length / 2)]
+          : candidatePlatforms[Math.floor(candidatePlatforms.length / 2)];
+        if (target) {
+          candidates.push({
+            id: `temp_blocker_${Math.round(target.x)}`,
+            type: 'APPLY_TEMP_BLOCKER',
+            targetX: target.x,
+            targetRouteLayer: target.routeLayer as RouteLayer | undefined,
+            difficultyCost: MUTATION_COSTS.APPLY_TEMP_BLOCKER,
+            reason: `${target.routeLayer ?? 'mid'} route platform at x=${Math.round(target.x)} now cycles invisible`,
+          });
+        }
+      }
+    }
+  }
+
   return candidates.sort((a, b) => a.difficultyCost - b.difficultyCost);
 }
 
@@ -229,15 +485,25 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
     case 'ADD_SPIKE':
     case 'ADD_LANDING_HAZARD': {
       if (mutation.targetX < SAFE_SPAWN_END) return false;
-      // No overlap with hazards or gap edges within 80px
+      // Edge-to-edge clearance: gap between new spike and any obstacle must be >= 48px (> player width 32px)
+      const MIN_CLEARANCE = 48;
+      const newLeft  = mutation.targetX;
+      const newRight = mutation.targetX + 44;
       const tooClose = obstacles.some(o => {
         if (o.kind === 'gap') {
           const gx = o.currentX ?? o.x;
           const gw = o.currentWidth ?? o.width;
-          return mutation.targetX + 44 > gx - 24 && mutation.targetX < gx + gw + 24;
+          return newRight + 24 > gx && newLeft < gx + gw + 24;
         }
-        const ox = o.currentX ?? o.x;
-        return Math.abs(ox - mutation.targetX) < 80;
+        const ox  = o.currentX ?? o.x;
+        const ow  = o.currentWidth ?? o.width;
+        const obsRight = ox + ow;
+        // too close if gaps on either side are smaller than MIN_CLEARANCE, or they overlap
+        const gapIfObsLeft  = newLeft  - obsRight;   // + if obs is to left of spike
+        const gapIfObsRight = ox       - newRight;   // + if obs is to right of spike
+        if (gapIfObsLeft  >= 0) return gapIfObsLeft  < MIN_CLEARANCE;
+        if (gapIfObsRight >= 0) return gapIfObsRight < MIN_CLEARANCE;
+        return true; // overlap
       });
       return !tooClose;
     }
@@ -275,6 +541,49 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
         Math.abs((o.currentX ?? o.x) - mutation.targetX) < 148,
       );
       return !nearby;
+    }
+
+    case 'APPLY_RISING_SPIKE':
+    case 'APPLY_PULSING_SPIKE': {
+      // Spike must exist and not already have a modifier
+      const target = obstacles.find(o =>
+        (o.kind === 'spike' || o.kind === 'doubleSpike') &&
+        Math.abs(o.x - mutation.targetX) < 5 &&
+        !o.aiModifier,
+      );
+      return !!target && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
+    }
+
+    case 'APPLY_DROPPING_PLATFORM': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5 && !o.aiModifier,
+      );
+      if (!target) return false;
+      // Must have at least one alternate stable platform nearby
+      const alternates = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        o !== target &&
+        !o.aiModifier &&
+        o.disappearMode === undefined &&
+        Math.abs(o.x - target.x) < maxJump * 0.88,
+      );
+      return alternates.length >= 1;
+    }
+
+    case 'APPLY_TEMP_BLOCKER': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5 && !o.aiModifier,
+      );
+      if (!target) return false;
+      // Must have an alternate platform nearby so player has a fallback when this one is invisible
+      const alternates = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        o !== target &&
+        !o.aiModifier &&
+        o.disappearMode === undefined &&
+        Math.abs(o.x - target.x) < maxJump * 0.88,
+      );
+      return alternates.length >= 1 && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
     }
 
     default:
@@ -353,6 +662,61 @@ function applyMutation(obstacles: Obstacle[], mutation: LevelMutationAction): vo
         routeId: mutation.targetRouteLayer ? `blocker_${mutation.targetRouteLayer}` : undefined,
         triggeredByAI: true,
       });
+      break;
+    }
+
+    case 'APPLY_RISING_SPIKE': {
+      const target = obstacles.find(o =>
+        (o.kind === 'spike' || o.kind === 'doubleSpike') && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        target.aiModifier = 'risingSpike';
+        target.aiModState = 'inactive';
+        target.aiModTimer = 0;
+        target.aiModVisualHeight = 0;
+        target.triggeredByAI = true;
+      }
+      break;
+    }
+
+    case 'APPLY_PULSING_SPIKE': {
+      const target = obstacles.find(o =>
+        (o.kind === 'spike' || o.kind === 'doubleSpike') && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        target.aiModifier = 'pulsingSpike';
+        target.aiModState = 'active';
+        target.aiModTimer = 0;
+        target.aiModVisualHeight = target.height;
+        target.triggeredByAI = true;
+      }
+      break;
+    }
+
+    case 'APPLY_DROPPING_PLATFORM': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        target.aiModifier = 'droppingPlatform';
+        target.aiModState = 'inactive';
+        target.aiModTimer = 0;
+        target.aiModDropOffset = 0;
+        target.triggeredByAI = true;
+      }
+      break;
+    }
+
+    case 'APPLY_TEMP_BLOCKER': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        target.aiModifier = 'temporaryBlocker';
+        target.aiModState = 'inactive';
+        target.aiModTimer = 0;
+        target.triggeredByAI = true;
+      }
       break;
     }
   }
