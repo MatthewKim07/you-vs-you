@@ -4,7 +4,13 @@ logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 lerna-debug.log*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
@@ -36,6 +42,7 @@ bower_components
 
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
+build/
 
 # Dependency directories
 node_modules/
@@ -73,6 +80,8 @@ web_modules/
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
+.tmp/
+tmp/
 
 # Next.js build output
 .next
@@ -141,6 +150,21 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+node_modules/.vite/
+
+# Browser/test artifacts
+playwright-report/
+test-results/
+blob-report/
+screenshots/
+videos/
+traces/
 
 # Local TypeScript emit artifacts (project source is .ts)
 src/**/*.js
+src/**/*.js.map
+
+# Generated local media/data artifacts
+*.sqlite
+*.sqlite3
+*.db
