@@ -928,10 +928,11 @@ export class Game {
   }
 
   private hitSpike(): boolean {
-    const px = this.player.pos.x;
-    const pr = px + this.player.width;
+    const pl = this.player.pos.x;
+    const pr = pl + this.player.width;
     const pb = this.player.pos.y + this.player.height;
-    const inset = 6;
+    const INSET = 4;
+    const groundY = this.level.groundY;
 
     return this.level.obstacles
       .filter(o => o.kind === 'spike' || o.kind === 'doubleSpike')
@@ -939,8 +940,26 @@ export class Game {
         const sx = s.currentX ?? s.x;
         const sw = s.currentWidth ?? s.width;
         const sh = s.currentHeight ?? s.height;
-        const spikeHitTop = this.level.groundY - sh + 12;
-        return px + inset < sx + sw - inset && pr - inset > sx + inset && pb > spikeHitTop;
+        const tipY = groundY - sh;
+
+        if (pb <= tipY) return false;
+        const t = Math.min(1, (pb - tipY) / sh);
+
+        if (s.kind === 'spike') {
+          const tipX = sx + sw / 2;
+          const halfW = (sw / 2) * t;
+          return pr - INSET > tipX - halfW && pl + INSET < tipX + halfW;
+        }
+        // doubleSpike: two sub-spikes separated by gap
+        const DOUBLE_SPIKE_GAP = 16;
+        const spikeW = (sw - DOUBLE_SPIKE_GAP) / 2;
+        for (let i = 0; i < 2; i++) {
+          const left = sx + i * (spikeW + DOUBLE_SPIKE_GAP);
+          const tipX = left + spikeW / 2;
+          const halfW = (spikeW / 2) * t;
+          if (pr - INSET > tipX - halfW && pl + INSET < tipX + halfW) return true;
+        }
+        return false;
       });
   }
 
