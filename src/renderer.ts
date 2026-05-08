@@ -307,7 +307,7 @@ export class Renderer {
 
     ctx.fillStyle = P_SPIKE_DK;
     ctx.beginPath();
-    ctx.moveTo(tipX + 3, tipY + 8);
+    ctx.moveTo(tipX, tipY);
     ctx.lineTo(sx + w, baseY);
     ctx.lineTo(sx, baseY);
     ctx.closePath();
@@ -316,8 +316,8 @@ export class Renderer {
     ctx.fillStyle = P_SPIKE;
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
-    ctx.lineTo(sx + w - 3, baseY);
-    ctx.lineTo(sx + 3, baseY);
+    ctx.lineTo(sx + w - 4, baseY);
+    ctx.lineTo(sx + 4, baseY);
     ctx.closePath();
     ctx.fill();
 
@@ -326,7 +326,7 @@ export class Renderer {
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
     ctx.lineTo(tipX - 4, tipY + 16);
-    ctx.lineTo(sx + 3, baseY);
+    ctx.lineTo(sx + 4, baseY);
     ctx.closePath();
     ctx.fill();
   }
@@ -344,7 +344,7 @@ export class Renderer {
 
       this.ctx.fillStyle = P_SPIKE_DK;
       this.ctx.beginPath();
-      this.ctx.moveTo(tipX + 3, tipY + 8);
+      this.ctx.moveTo(tipX, tipY);
       this.ctx.lineTo(left + spikeW, baseY);
       this.ctx.lineTo(left, baseY);
       this.ctx.closePath();
@@ -353,8 +353,8 @@ export class Renderer {
       this.ctx.fillStyle = P_SPIKE;
       this.ctx.beginPath();
       this.ctx.moveTo(tipX, tipY);
-      this.ctx.lineTo(left + spikeW - 3, baseY);
-      this.ctx.lineTo(left + 3, baseY);
+      this.ctx.lineTo(left + spikeW - 4, baseY);
+      this.ctx.lineTo(left + 4, baseY);
       this.ctx.closePath();
       this.ctx.fill();
 
@@ -362,7 +362,7 @@ export class Renderer {
       this.ctx.beginPath();
       this.ctx.moveTo(tipX, tipY);
       this.ctx.lineTo(tipX - 4, tipY + 16);
-      this.ctx.lineTo(left + 3, baseY);
+      this.ctx.lineTo(left + 4, baseY);
       this.ctx.closePath();
       this.ctx.fill();
     }
@@ -503,7 +503,7 @@ export class Renderer {
 
       ctx.fillStyle = P_SPIKE_DK;
       ctx.beginPath();
-      ctx.moveTo(tipX + 3, tipY + 10);
+      ctx.moveTo(tipX, tipY);
       ctx.lineTo(left + spikeW, surfaceY);
       ctx.lineTo(left, surfaceY);
       ctx.closePath();
@@ -512,8 +512,8 @@ export class Renderer {
       ctx.fillStyle = P_SPIKE;
       ctx.beginPath();
       ctx.moveTo(tipX, tipY);
-      ctx.lineTo(left + spikeW - 2, surfaceY);
-      ctx.lineTo(left + 2, surfaceY);
+      ctx.lineTo(left + spikeW - 4, surfaceY);
+      ctx.lineTo(left + 4, surfaceY);
       ctx.closePath();
       ctx.fill();
 
@@ -521,7 +521,7 @@ export class Renderer {
       ctx.beginPath();
       ctx.moveTo(tipX, tipY);
       ctx.lineTo(tipX - 4, tipY + 18);
-      ctx.lineTo(left + 2, surfaceY);
+      ctx.lineTo(left + 4, surfaceY);
       ctx.closePath();
       ctx.fill();
     }
@@ -544,10 +544,10 @@ export class Renderer {
       const tipX = px(startX + i * pitch + spikeW / 2);
       const tipY = surfaceY - spikeH;
 
-      // Shadow (offset right face)
+      // Shadow (same tip as main spike)
       ctx.fillStyle = P_SPIKE_DK;
       ctx.beginPath();
-      ctx.moveTo(tipX + 2, tipY + 6);
+      ctx.moveTo(tipX, tipY);
       ctx.lineTo(left + spikeW, surfaceY);
       ctx.lineTo(left,          surfaceY);
       ctx.closePath();
