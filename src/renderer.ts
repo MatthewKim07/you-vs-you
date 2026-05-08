@@ -1,7 +1,7 @@
 import { Player } from './player';
 import { LevelData, getGroundSegments } from './level';
 import { Obstacle, TrapState } from './types';
-import { BLOCKER_RETRACT_MS } from './levelMutator';
+import { BLOCKER_RETRACT_MS, CRUMBLE_WARNING_MS, CRUSHER_RAISED_H } from './levelMutator';
 
 const TILE = 16;
 
@@ -426,8 +426,9 @@ export class Renderer {
     const disappearState = obs.disappearState;
     if (disappearState === 'invisible') return;
 
-    // Dropping platform: invisible during drop + invisible states
+    // Dropping/crumble platform: invisible during drop + invisible states
     if (obs.aiModifier === 'droppingPlatform' && (obs.aiModState === 'invisible')) return;
+    if (obs.aiModifier === 'crumblePlatform' && (obs.aiModState === 'invisible')) return;
 
     // Temp blocker platform: invisible when active (player falls through)
     let blockerSaved = false;
@@ -458,9 +459,10 @@ export class Renderer {
       ctx.globalAlpha *= computeDisappearAlpha(obs);
     }
 
-    // Dropping platform: shift y by drop offset; use alpha fade during dropping/spawning
-    const dropOffset = (obs.aiModifier === 'droppingPlatform') ? (obs.aiModDropOffset ?? 0) : 0;
-    const isDroppingActive = obs.aiModifier === 'droppingPlatform' &&
+    // Dropping/crumble platform: shift y by drop offset; use alpha fade during dropping/spawning
+    const dropOffset = (obs.aiModifier === 'droppingPlatform' || obs.aiModifier === 'crumblePlatform')
+      ? (obs.aiModDropOffset ?? 0) : 0;
+    const isDroppingActive = (obs.aiModifier === 'droppingPlatform' || obs.aiModifier === 'crumblePlatform') &&
       (obs.aiModState === 'dropping' || obs.aiModState === 'spawning');
     if (isDroppingActive && !useAlpha) ctx.save();
     if (isDroppingActive) ctx.globalAlpha *= obs.aiModState === 'dropping' ? 0.7 : 0.85;
@@ -469,14 +471,18 @@ export class Renderer {
     const surfaceY = px(groundY - h + dropOffset);
     const w = px(obsW(obs));
 
-    // Shake: collapsing trap warning OR droppingPlatform warning state
+    // Shake: collapsing trap warning OR dropping/crumble platform warning state
     const isDropWarning = obs.aiModifier === 'droppingPlatform' && obs.aiModState === 'warning';
+    const isCrumbleWarning = obs.aiModifier === 'crumblePlatform' && obs.aiModState === 'warning';
     const shakeX = (obs.trapType === 'collapsingPlatform' && (obs.trapState === 'warning' || obs.trapState === 'triggered'))
       ? Math.sin((obs.animationProgress ?? 0) * 24) * 2
       : isDropWarning
         ? Math.sin((obs.aiModTimer ?? 0) / 40) * 3
-        : 0;
-    const shakeY = isDropWarning ? Math.sin((obs.aiModTimer ?? 0) / 30 + 1) * 1 : 0;
+        : isCrumbleWarning
+          ? Math.sin((obs.aiModTimer ?? 0) / 20) * 4
+          : 0;
+    const shakeY = isDropWarning ? Math.sin((obs.aiModTimer ?? 0) / 30 + 1) * 1
+      : isCrumbleWarning ? Math.sin((obs.aiModTimer ?? 0) / 22 + 1) * 2 : 0;
     const thick    = TILE; // 16px = 1 tile
 
     const sy = surfaceY + shakeY;
@@ -537,6 +543,20 @@ export class Renderer {
       ctx.fillRect(px(sx + shakeX) + 2, surfaceY + shakeY + 2, w - 4, 2);
       ctx.fillRect(px(sx + shakeX) + w * 0.3, surfaceY + shakeY, 2, 6);
       ctx.fillRect(px(sx + shakeX) + w * 0.6, surfaceY + shakeY, 2, 5);
+      ctx.restore();
+    }
+    // Orange crack overlay on crumblePlatform during warning (faster, more dramatic)
+    if (isCrumbleWarning) {
+      const crack = Math.min(1, (obs.aiModTimer ?? 0) / CRUMBLE_WARNING_MS);
+      const shx = px(sx + shakeX);
+      const shy = surfaceY + shakeY;
+      ctx.save();
+      ctx.globalAlpha = 0.4 + crack * 0.55;
+      ctx.fillStyle = '#FF6600';
+      ctx.fillRect(shx + 2, shy + 1, w - 4, 2);
+      ctx.fillRect(shx + px(w * 0.2), shy - 1, 3, 7);
+      ctx.fillRect(shx + px(w * 0.45), shy - 1, 3, 8);
+      ctx.fillRect(shx + px(w * 0.7), shy - 1, 3, 6);
       ctx.restore();
     }
   }
