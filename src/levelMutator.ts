@@ -493,6 +493,103 @@ function selectCandidateMutations(
     }
   }
 
+  // ── New AI toolbox mechanics ──────────────────────────────────────────────
+
+  // 9. APPLY_PATROL_SPIKE — convert solved static spike into a patrolling hazard.
+  //    Trigger: player clears static spikes consistently (high pass count, level >=2).
+  if (levelIndex >= 2 && deathRate < 0.7) {
+    const unpatrolledSpikes = obstacles.filter(o =>
+      (o.kind === 'spike' || o.kind === 'doubleSpike') &&
+      !o.aiModifier &&
+      (o.currentX ?? o.x) >= SAFE_SPAWN_END + PATROL_RANGE + 80,
+    );
+    const targetSpike = hasStats
+      ? unpatrolledSpikes.find(o => {
+          const id = `${o.kind}_${Math.round(o.x)}_${Math.round(o.width)}`;
+          const s = interactionStats[id];
+          return s && s.passCount >= 2 && s.failureRate < 0.45 && s.preferredAction === 'jump';
+        }) ?? unpatrolledSpikes[0]
+      : unpatrolledSpikes[0];
+    if (targetSpike) {
+      candidates.push({
+        id: `patrol_spike_${Math.round(targetSpike.x)}`,
+        type: 'APPLY_PATROL_SPIKE',
+        targetX: targetSpike.x,
+        targetRouteLayer: targetSpike.routeLayer as RouteLayer | undefined,
+        difficultyCost: MUTATION_COSTS.APPLY_PATROL_SPIKE,
+        reason: `Spike at x=${Math.round(targetSpike.x)} consistently jumped — now patrols ±${PATROL_RANGE}px`,
+      });
+    }
+  }
+
+  // 10. ADD_ELECTRIC_FIELD — timed lethal zone where the player rushes through.
+  //     Trigger: player completes levels quickly or clears obstacles at low death rate.
+  if (levelIndex >= 2 && deathRate < 0.45 && recentRuns.some(r => r.completed)) {
+    const avgTimeMs = recentRuns.filter(r => r.completed && r.endedAt && r.startedAt)
+      .map(r => (r.endedAt! - r.startedAt))
+      .reduce((s, v, _i, a) => s + v / a.length, 0);
+    const isQuick = avgTimeMs < 18000 || deathRate < 0.2; // < 18s avg OR very low death rate
+    if (isQuick) {
+      const fieldX = findClearX(obstacles, SAFE_SPAWN_END + 120, 1800, 120);
+      if (fieldX !== null) {
+        candidates.push({
+          id: `electric_field_${Math.round(fieldX)}`,
+          type: 'ADD_ELECTRIC_FIELD',
+          targetX: fieldX,
+          difficultyCost: MUTATION_COSTS.ADD_ELECTRIC_FIELD,
+          reason: `Level cleared in ${Math.round(avgTimeMs / 1000)}s avg — electric timing hazard at x=${Math.round(fieldX)}`,
+        });
+      }
+    }
+  }
+
+  // 11. ADD_CRUSHER_CEILING — overhead crusher that forces crouching.
+  //     Trigger: player jumps far more often than they crouch.
+  if (levelIndex >= 3 && model.jumpFrequency > model.crouchFrequency * 2.5 && deathRate < 0.65) {
+    const crusherX = findClearX(obstacles, SAFE_SPAWN_END + 150, 1750, 160);
+    if (crusherX !== null) {
+      candidates.push({
+        id: `crusher_ceiling_${Math.round(crusherX)}`,
+        type: 'ADD_CRUSHER_CEILING',
+        targetX: crusherX,
+        difficultyCost: MUTATION_COSTS.ADD_CRUSHER_CEILING,
+        reason: `Jump:crouch ratio ${model.jumpFrequency.toFixed(2)}:${model.crouchFrequency.toFixed(2)} — crusher ceiling at x=${Math.round(crusherX)} forces crouching`,
+      });
+    }
+  }
+
+  // 12. APPLY_CRUMBLE_PLATFORM — fast-crumbling platform on one the player relies on.
+  //     Trigger: platform passed 3+ times without dying (player trusts it).
+  if (levelIndex >= 2) {
+    const reliablePlatformsForCrumble = obstacles
+      .filter(o =>
+        o.kind === 'platform' &&
+        !o.aiModifier &&
+        o.disappearMode === undefined &&
+        !o.trapHost &&
+        (o.currentX ?? o.x) >= SAFE_SPAWN_END + 80,
+      )
+      .map(o => {
+        const id = `platform_${Math.round(o.x)}_${Math.round(o.width)}`;
+        const stats = interactionStats[id];
+        return { obs: o, stats };
+      })
+      .filter(({ stats }) => stats && stats.passCount >= 3 && stats.failureRate < 0.35)
+      .sort((a, b) => (b.stats?.passCount ?? 0) - (a.stats?.passCount ?? 0));
+
+    if (reliablePlatformsForCrumble.length > 0) {
+      const { obs, stats } = reliablePlatformsForCrumble[0];
+      candidates.push({
+        id: `crumble_platform_${Math.round(obs.x)}`,
+        type: 'APPLY_CRUMBLE_PLATFORM',
+        targetX: obs.x,
+        targetRouteLayer: obs.routeLayer as RouteLayer | undefined,
+        difficultyCost: MUTATION_COSTS.APPLY_CRUMBLE_PLATFORM,
+        reason: `Platform at x=${Math.round(obs.x)} trusted ${stats!.passCount}x — now crumbles on touch`,
+      });
+    }
+  }
+
   // 8. APPLY_TEMP_BLOCKER — make a platform temporarily invisible on a cycle.
   //    Targets a platform the player regularly jumps on (lower or mid route).
   //    Trigger: player uses mid/lower route heavily and has reliable platform passes.
@@ -642,6 +739,77 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
       return alternates.length >= 1 && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
     }
 
+    case 'APPLY_PATROL_SPIKE': {
+      const target = obstacles.find(o =>
+        (o.kind === 'spike' || o.kind === 'doubleSpike') &&
+        Math.abs(o.x - mutation.targetX) < 5 &&
+        !o.aiModifier,
+      );
+      if (!target) return false;
+      const spX = target.currentX ?? target.x;
+      if (spX - PATROL_RANGE < SAFE_SPAWN_END) return false;
+      // Ensure patrol path is clear of other obstacles
+      const minPX = spX - PATROL_RANGE;
+      const maxPX = spX + PATROL_RANGE + target.width;
+      const pathBlocked = obstacles.some(o => {
+        if (o === target || o.kind === 'gap') return false;
+        const ox = o.currentX ?? o.x;
+        const ow = o.currentWidth ?? o.width;
+        return rangesOverlap(minPX - 24, maxPX + 24, ox, ox + ow);
+      });
+      return !pathBlocked;
+    }
+
+    case 'ADD_ELECTRIC_FIELD': {
+      if (mutation.targetX < SAFE_SPAWN_END + 60) return false;
+      const fieldRight = mutation.targetX + ELECTRIC_WIDTH;
+      // Must not be over a gap
+      const overGap = obstacles.some(o =>
+        o.kind === 'gap' &&
+        rangesOverlap(mutation.targetX, fieldRight, o.currentX ?? o.x, (o.currentX ?? o.x) + (o.currentWidth ?? o.width)),
+      );
+      if (overGap) return false;
+      // Must not overlap other ground-level hazards (spikes, ceilings, existing electric fields)
+      const tooClose = obstacles.some(o => {
+        if (o.kind === 'gap' || o.kind === 'platform') return false;
+        const ox = o.currentX ?? o.x;
+        const ow = o.currentWidth ?? o.width;
+        return rangesOverlap(mutation.targetX - 60, fieldRight + 60, ox, ox + ow);
+      });
+      return !tooClose;
+    }
+
+    case 'ADD_CRUSHER_CEILING': {
+      if (mutation.targetX < SAFE_SPAWN_END + 80) return false;
+      const cRight = mutation.targetX + CRUSHER_WIDTH;
+      const tooClose = obstacles.some(o => {
+        if (o.kind === 'gap' || o.kind === 'platform') return false;
+        const ox = o.currentX ?? o.x;
+        const ow = o.currentWidth ?? o.width;
+        return rangesOverlap(mutation.targetX - 48, cRight + 48, ox, ox + ow);
+      });
+      return !tooClose;
+    }
+
+    case 'APPLY_CRUMBLE_PLATFORM': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5 && !o.aiModifier && !o.disappearMode,
+      );
+      if (!target) return false;
+      // Need an alternate platform nearby so player isn't stranded
+      const alternates = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        o !== target &&
+        !o.aiModifier &&
+        o.disappearMode === undefined &&
+        Math.abs(o.x - target.x) < maxJump * 0.88,
+      );
+      return alternates.length >= 1 && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
+    }
+
+    case 'ADD_WARNING_MARKER':
+      return mutation.targetX >= SAFE_SPAWN_END;
+
     default:
       return false;
   }
@@ -775,7 +943,96 @@ function applyMutation(obstacles: Obstacle[], mutation: LevelMutationAction): vo
       }
       break;
     }
+
+    case 'APPLY_PATROL_SPIKE': {
+      const target = obstacles.find(o =>
+        (o.kind === 'spike' || o.kind === 'doubleSpike') && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        target.aiModifier = 'patrollingHazard';
+        target.aiModState = 'active';
+        target.aiModTimer = 0;
+        target.patrolMinX = target.x - PATROL_RANGE;
+        target.patrolMaxX = target.x + PATROL_RANGE;
+        target.patrolSpeed = PATROL_SPEED_DEFAULT;
+        target.currentX = target.x;
+        target.patrolDir = 1;
+        target.triggeredByAI = true;
+        // Warning marker 40px before left patrol edge
+        const markerX = target.patrolMinX - 40;
+        if (markerX >= SAFE_SPAWN_END) {
+          obstacles.push({ kind: 'warningMarker', x: markerX, width: 32, height: 0, warningType: 'moving', aiModTimer: 0 });
+        }
+      }
+      break;
+    }
+
+    case 'ADD_ELECTRIC_FIELD': {
+      obstacles.push({
+        kind: 'electricField',
+        x: mutation.targetX,
+        width: ELECTRIC_WIDTH,
+        height: ELECTRIC_HEIGHT,
+        aiModState: 'inactive',
+        aiModTimer: 0,
+        triggeredByAI: true,
+      });
+      const warnX = mutation.targetX - 100;
+      if (warnX >= SAFE_SPAWN_END) {
+        obstacles.push({ kind: 'warningMarker', x: warnX, width: 32, height: 0, warningType: 'electric', aiModTimer: 0 });
+      }
+      break;
+    }
+
+    case 'ADD_CRUSHER_CEILING': {
+      obstacles.push({
+        kind: 'crusherCeiling',
+        x: mutation.targetX,
+        width: CRUSHER_WIDTH,
+        height: CRUSHER_RAISED_H,
+        aiModState: 'inactive',
+        aiModTimer: 0,
+        aiModVisualHeight: CRUSHER_RAISED_H,
+        triggeredByAI: true,
+      });
+      const warnX = mutation.targetX - 80;
+      if (warnX >= SAFE_SPAWN_END) {
+        obstacles.push({ kind: 'warningMarker', x: warnX, width: 32, height: 0, warningType: 'crusher', aiModTimer: 0 });
+      }
+      break;
+    }
+
+    case 'APPLY_CRUMBLE_PLATFORM': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        target.aiModifier = 'crumblePlatform';
+        target.aiModState = 'inactive';
+        target.aiModTimer = 0;
+        target.aiModDropOffset = 0;
+        target.triggeredByAI = true;
+        obstacles.push({ kind: 'warningMarker', x: target.x - 20, width: 32, height: 0, warningType: 'crumble', aiModTimer: 0 });
+      }
+      break;
+    }
+
+    case 'ADD_WARNING_MARKER': {
+      obstacles.push({
+        kind: 'warningMarker',
+        x: mutation.targetX,
+        width: 32,
+        height: 0,
+        warningType: 'moving',
+        aiModTimer: 0,
+      });
+      break;
+    }
   }
+}
+
+function rangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
+  return a1 > b0 && a0 < b1;
 }
 
 // Scan for a clear x position with no obstacles within clearRadius.
