@@ -103,6 +103,11 @@ export class RunTracker {
     return this.runs;
   }
 
+  replaceRuns(runs: RunData[]): void {
+    this.current = null;
+    this.runs = runs.map((run) => cloneRun(run));
+  }
+
   getProfile(): PlayerProfile {
     return buildProfile(this.runs);
   }
@@ -110,6 +115,21 @@ export class RunTracker {
   private elapsed(): number {
     return this.current ? performance.now() - this.current.startedAt : 0;
   }
+}
+
+function cloneRun(run: RunData): RunData {
+  return {
+    ...run,
+    obstaclesSnapshot: run.obstaclesSnapshot?.map((o) => ({ ...o })),
+    jumps: run.jumps.map((j) => ({ ...j })),
+    landings: run.landings.map((l) => ({ ...l })),
+    samples: run.samples.map((s) => ({ ...s })),
+    actions: run.actions.map((a) => ({ ...a })),
+    choiceDecisions: run.choiceDecisions.map((c) => ({ ...c })),
+    obstacleInteractions: run.obstacleInteractions.map((i) => ({ ...i })),
+    routeChoices: run.routeChoices.map((r) => ({ ...r })),
+    routeUsageCounts: { ...run.routeUsageCounts },
+  };
 }
 
 function buildProfile(runs: RunData[]): PlayerProfile {

@@ -35,6 +35,7 @@ import {
 } from './levelMutator';
 import { calculateKnowledge } from './aiKnowledge';
 import { GameAudio } from './gameAudio';
+import { AuthProgressClient, StoredProgress } from './authProgress';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -82,6 +83,14 @@ export class Game {
   private previewLastJumpObstacleX = Number.NEGATIVE_INFINITY;
   private menuOverlay!: HTMLDivElement;
   private playButton!: HTMLButtonElement;
+  private authToggleButton!: HTMLButtonElement;
+  private authPanel!: HTMLDivElement;
+  private authStatusLabel!: HTMLParagraphElement;
+  private authEmailInput!: HTMLInputElement;
+  private authPasswordInput!: HTMLInputElement;
+  private authSignInButton!: HTMLButtonElement;
+  private authSignUpButton!: HTMLButtonElement;
+  private authSignOutButton!: HTMLButtonElement;
   private controlBar!: HTMLDivElement;
   private pauseButton!: HTMLButtonElement;
   private exitButton!: HTMLButtonElement;
@@ -117,6 +126,10 @@ export class Game {
   private audioArmed = false;
   private lastCountdownAnnounced: number | null = null;
   private audioMuted = false;
+  private authClient = new AuthProgressClient();
+  private authUserId: string | null = null;
+  private highestLevelUnlocked = 1;
+  private authPanelOpen = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -128,6 +141,7 @@ export class Game {
     this.setupUi();
     this.armAudioOnFirstGesture();
     this.enterMenu();
+    void this.initializeAuth();
   }
 
   private armAudioOnFirstGesture() {
@@ -341,16 +355,240 @@ export class Game {
 
     this.playButton = document.createElement('button');
     this.playButton.id = 'play-btn';
-    this.playButton.innerHTML = '<span class="play-arrow"></span><span>Play</span>';
+    this.playButton.innerHTML = '<span class="play-arrow"></span><span>Play as Guest</span>';
     this.playButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.startFromMenu();
     });
     this.playButton.addEventListener('pointerdown', (e) => e.stopPropagation());
 
-    this.menuOverlay.appendChild(this.playButton);
+    this.authToggleButton = document.createElement('button');
+    this.authToggleButton.id = 'auth-toggle-btn';
+    this.authToggleButton.className = 'menu-secondary-btn';
+    this.authToggleButton.textContent = 'Log In';
+    this.authToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.authPanelOpen = !this.authPanelOpen;
+      this.refreshAuthUi();
+    });
+    this.authToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    const menuActions = document.createElement('div');
+    menuActions.className = 'menu-actions';
+    menuActions.appendChild(this.playButton);
+    menuActions.appendChild(this.authToggleButton);
+    this.menuOverlay.appendChild(menuActions);
+
+    this.authPanel = document.createElement('div');
+    this.authPanel.id = 'auth-panel';
+    this.menuOverlay.appendChild(this.authPanel);
+    this.setupAuthUi();
+
     document.body.appendChild(this.menuOverlay);
     this.syncUiVisibility();
+  }
+
+  private setupAuthUi() {
+    const authBox = this.authPanel;
+    authBox.className = 'auth-box';
+
+    this.authStatusLabel = document.createElement('p');
+    this.authStatusLabel.className = 'auth-status';
+    this.authStatusLabel.textContent = 'Guest mode: progress is not saved after you leave.';
+    authBox.appendChild(this.authStatusLabel);
+
+    const formRow = document.createElement('div');
+    formRow.className = 'auth-input-row';
+
+    this.authEmailInput = document.createElement('input');
+    this.authEmailInput.type = 'email';
+    this.authEmailInput.placeholder = 'Email';
+    this.authEmailInput.autocomplete = 'email';
+    this.authEmailInput.className = 'auth-input';
+
+    this.authPasswordInput = document.createElement('input');
+    this.authPasswordInput.type = 'password';
+    this.authPasswordInput.placeholder = 'Password';
+    this.authPasswordInput.autocomplete = 'current-password';
+    this.authPasswordInput.className = 'auth-input';
+
+    formRow.appendChild(this.authEmailInput);
+    formRow.appendChild(this.authPasswordInput);
+    authBox.appendChild(formRow);
+
+    const buttonRow = document.createElement('div');
+    buttonRow.className = 'auth-button-row';
+
+    this.authSignInButton = document.createElement('button');
+    this.authSignInButton.className = 'auth-btn';
+    this.authSignInButton.textContent = 'Sign In';
+    this.authSignInButton.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await this.signInWithForm();
+    });
+
+    this.authSignUpButton = document.createElement('button');
+    this.authSignUpButton.className = 'auth-btn';
+    this.authSignUpButton.textContent = 'Sign Up';
+    this.authSignUpButton.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await this.signUpWithForm();
+    });
+
+    this.authSignOutButton = document.createElement('button');
+    this.authSignOutButton.className = 'auth-btn';
+    this.authSignOutButton.textContent = 'Sign Out';
+    this.authSignOutButton.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await this.signOutAccount();
+    });
+
+    buttonRow.appendChild(this.authSignInButton);
+    buttonRow.appendChild(this.authSignUpButton);
+    buttonRow.appendChild(this.authSignOutButton);
+    authBox.appendChild(buttonRow);
+  }
+
+  private async initializeAuth() {
+    if (!this.authClient.isConfigured()) {
+      this.setAuthStatus('Auth not configured. Guest mode only.');
+      this.refreshAuthUi();
+      return;
+    }
+
+    try {
+      const user = await this.authClient.getCurrentUser();
+      await this.handleAuthUserChanged(user?.id ?? null, user?.email ?? null);
+    } catch (err) {
+      this.setAuthStatus(`Auth init failed: ${this.errorMessage(err)}`);
+    }
+
+    this.authClient.onAuthStateChange((user) => {
+      void this.handleAuthUserChanged(user?.id ?? null, user?.email ?? null);
+    });
+  }
+
+  private async handleAuthUserChanged(userId: string | null, email: string | null) {
+    this.authUserId = userId;
+    if (!userId) {
+      this.highestLevelUnlocked = 1;
+      this.playButton.innerHTML = '<span class="play-arrow"></span><span>Play as Guest</span>';
+      this.authToggleButton.textContent = 'Log In';
+      this.setAuthStatus('Guest mode: progress is not saved after you leave.');
+      this.refreshAuthUi();
+      return;
+    }
+
+    this.playButton.innerHTML = '<span class="play-arrow"></span><span>Continue</span>';
+    this.authToggleButton.textContent = 'Account';
+    this.setAuthStatus(`Signed in as ${email ?? 'player'}. Loading progress...`);
+    this.refreshAuthUi();
+
+    try {
+      const progress = await this.authClient.loadProgress(userId);
+      this.applyLoadedProgress(progress);
+      this.setAuthStatus(`Signed in as ${email ?? 'player'}. Progress loaded.`);
+    } catch (err) {
+      this.setAuthStatus(`Failed to load progress: ${this.errorMessage(err)}`);
+    }
+    this.refreshAuthUi();
+  }
+
+  private applyLoadedProgress(progress: StoredProgress | null) {
+    const safeProgress = progress ?? { highestLevelUnlocked: 1, runs: [] };
+    this.highestLevelUnlocked = Math.max(1, safeProgress.highestLevelUnlocked);
+    this.tracker.replaceRuns(safeProgress.runs);
+    this.refreshPlayerModel();
+    this.debugPanel.setPlayerModel(this.playerModel);
+  }
+
+  private async signInWithForm() {
+    if (!this.authClient.isConfigured()) return;
+    const email = this.authEmailInput.value.trim();
+    const password = this.authPasswordInput.value;
+    if (!email || !password) {
+      this.setAuthStatus('Enter email and password.');
+      return;
+    }
+    this.setAuthStatus('Signing in...');
+    try {
+      await this.authClient.signIn(email, password);
+      this.authPasswordInput.value = '';
+    } catch (err) {
+      this.setAuthStatus(`Sign in failed: ${this.errorMessage(err)}`);
+    }
+  }
+
+  private async signUpWithForm() {
+    if (!this.authClient.isConfigured()) return;
+    const email = this.authEmailInput.value.trim();
+    const password = this.authPasswordInput.value;
+    if (!email || !password) {
+      this.setAuthStatus('Enter email and password.');
+      return;
+    }
+    if (password.length < 6) {
+      this.setAuthStatus('Password must be at least 6 characters.');
+      return;
+    }
+    this.setAuthStatus('Creating account...');
+    try {
+      await this.authClient.signUp(email, password);
+      await this.authClient.signIn(email, password);
+      this.authPasswordInput.value = '';
+    } catch (err) {
+      this.setAuthStatus(`Sign up failed: ${this.errorMessage(err)}`);
+    }
+  }
+
+  private async signOutAccount() {
+    try {
+      await this.authClient.signOut();
+      this.tracker.replaceRuns([]);
+      this.refreshPlayerModel();
+      this.debugPanel.setPlayerModel(this.playerModel);
+      this.highestLevelUnlocked = 1;
+      this.setAuthStatus('Signed out. Guest mode active.');
+      this.authToggleButton.textContent = 'Log In';
+      this.refreshAuthUi();
+      this.enterMenu();
+    } catch (err) {
+      this.setAuthStatus(`Sign out failed: ${this.errorMessage(err)}`);
+    }
+  }
+
+  private refreshAuthUi() {
+    const configured = this.authClient.isConfigured();
+    const signedIn = !!this.authUserId;
+    this.authEmailInput.disabled = !configured || signedIn;
+    this.authPasswordInput.disabled = !configured || signedIn;
+    this.authSignInButton.disabled = !configured || signedIn;
+    this.authSignUpButton.disabled = !configured || signedIn;
+    this.authSignOutButton.disabled = !configured || !signedIn;
+    this.authPanel.style.display = this.authPanelOpen ? 'flex' : 'none';
+  }
+
+  private setAuthStatus(message: string) {
+    if (!this.authStatusLabel) return;
+    this.authStatusLabel.textContent = message;
+  }
+
+  private persistProgressIfSignedIn() {
+    if (!this.authUserId) return;
+    const progress: StoredProgress = {
+      highestLevelUnlocked: this.highestLevelUnlocked,
+      runs: this.tracker.getAllRuns().slice(-80),
+    };
+    void this.authClient
+      .saveProgress(this.authUserId, progress)
+      .then(() => this.setAuthStatus('Progress saved.'))
+      .catch((err) => this.setAuthStatus(`Save failed: ${this.errorMessage(err)}`));
+  }
+
+  private errorMessage(err: unknown): string {
+    if (err instanceof Error) return err.message;
+    if (typeof err === 'string') return err;
+    return 'Unknown error';
   }
 
   private enterMenu() {
@@ -358,6 +596,7 @@ export class Game {
       this.tracker.finishRun(false);
       this.refreshPlayerModel();
       this.debugPanel.setPlayerModel(this.playerModel);
+      this.persistProgressIfSignedIn();
     }
 
     this.resizeCanvas();
@@ -386,7 +625,10 @@ export class Game {
     this.audio.playMenuStart();
     this.audio.stopMusic();
     this.attempts = 1;
-    this.startLevel(0, 'countdown');
+    this.authPanelOpen = false;
+    this.refreshAuthUi();
+    const startAt = Math.max(0, this.highestLevelUnlocked - 1);
+    this.startLevel(startAt, 'countdown');
   }
 
   private togglePause() {
@@ -900,6 +1142,8 @@ export class Game {
       tracker.finishRun(true);
       this.refreshPlayerModel();
       this.debugPanel.setPlayerModel(this.playerModel);
+      this.highestLevelUnlocked = Math.max(this.highestLevelUnlocked, this.levelIndex + 2);
+      this.persistProgressIfSignedIn();
       this.audio.playLevelComplete();
       this.audio.stopMusic();
       this.state = 'levelComplete';
@@ -1505,6 +1749,7 @@ export class Game {
     this.tracker.finishRun(false, reason, deathX);
     this.refreshPlayerModel();
     this.debugPanel.setPlayerModel(this.playerModel);
+    this.persistProgressIfSignedIn();
     this.audio.playDeath();
     this.audio.stopMusic();
     this.state = 'dead';

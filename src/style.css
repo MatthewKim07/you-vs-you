@@ -62,6 +62,61 @@ html, body {
   line-height: 1.8;
 }
 
+.auth-box {
+  margin-top: 14px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  background: #0D1B2A;
+  border: 3px solid #F2C94C;
+  padding: 12px;
+}
+
+.auth-status {
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(210, 235, 255, 0.92);
+}
+
+.auth-input-row,
+.auth-button-row {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(255,255,255,0.28);
+  background: rgba(0,0,0,0.28);
+  color: #fff;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.auth-input::placeholder {
+  color: rgba(255,255,255,0.55);
+}
+
+.auth-btn {
+  flex: 1;
+  min-height: 34px;
+  border: 0;
+  border-bottom: 3px solid rgba(0,0,0,0.45);
+  background: #355072;
+  color: #fff;
+  font-family: monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.auth-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 #play-btn {
   min-width: 180px;
   min-height: 60px;
@@ -93,6 +148,36 @@ html, body {
   border-bottom: 10px solid transparent;
   border-left: 16px solid #063524;
   margin-left: 4px;
+}
+
+.menu-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.menu-secondary-btn {
+  min-width: 140px;
+  min-height: 52px;
+  border: 0;
+  border-bottom: 5px solid rgba(0,0,0,0.45);
+  background: #355072;
+  color: #fff;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(12px, 3vw, 16px);
+  cursor: pointer;
+  padding: 0 18px;
+}
+
+.menu-secondary-btn:active {
+  border-bottom-width: 2px;
+  transform: translateY(3px);
+}
+
+#auth-panel {
+  width: min(92vw, 520px);
 }
 
 /* ── In-game Controls ──────────────────────────────────── */
