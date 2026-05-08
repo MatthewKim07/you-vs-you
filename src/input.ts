@@ -10,6 +10,7 @@ export class InputHandler {
 
   constructor(canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
+      if (isTypingTarget(document.activeElement)) return;
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
         e.preventDefault();
         if (!e.repeat) {
@@ -22,6 +23,7 @@ export class InputHandler {
     });
 
     window.addEventListener('keyup', (e) => {
+      if (isTypingTarget(document.activeElement)) return;
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
         this.jumpReleased = true;
       } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
@@ -98,4 +100,11 @@ export class InputHandler {
       this.holdTimer = null;
     }
   }
+}
+
+function isTypingTarget(el: Element | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
