@@ -58,9 +58,9 @@ export class RunTracker {
     this.current.samples.push({ x, y, timeMs: this.elapsed() });
   }
 
-  recordAction(action: 'jump' | 'crouchStart' | 'crouchEnd', x: number): void {
+  recordAction(action: 'jump' | 'crouchStart' | 'crouchEnd', x: number, y: number): void {
     if (!this.current) return;
-    this.current.actions.push({ action, x, timeMs: this.elapsed() });
+    this.current.actions.push({ action, x, y, timeMs: this.elapsed() });
   }
 
   recordChoiceDecision(event: ChoiceDecisionEvent): void {

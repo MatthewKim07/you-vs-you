@@ -24,6 +24,7 @@ export interface PositionSample {
 export interface ActionEvent {
   action: 'jump' | 'crouchStart' | 'crouchEnd';
   x: number;
+  y: number;
   timeMs: number;
 }
 
@@ -54,7 +55,9 @@ export interface ObstacleInteractionEvent {
   obstacleKind: string;
   trapType?: string;
   routeLayer?: RouteId;
-  x: number;
+  x: number;             // obstacle world x
+  playerX: number;       // player x at moment of interaction
+  playerY: number;       // player y at moment of interaction
   levelIndex: number;
   action: 'jump' | 'crouch' | 'mixed' | 'none';
   outcome: 'passed' | 'death';
@@ -112,6 +115,9 @@ export interface ObstacleInteractionStats {
   preferredAction: 'jump' | 'crouch' | 'mixed' | 'none';
   failureRate: number;
   confidence: number;
+  // Mean player position at time of interaction — where player actually was, not obstacle x
+  avgApproachX: number;
+  avgApproachY: number;
 }
 
 export interface PlayerModel {

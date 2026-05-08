@@ -636,10 +636,10 @@ export class Game {
 
     if (wantsCrouch && player.onGround && !player.isCrouching) {
       player.setCrouch(true);
-      tracker.recordAction('crouchStart', player.pos.x);
+      tracker.recordAction('crouchStart', player.pos.x, player.pos.y);
     } else if ((!wantsCrouch || !player.onGround) && player.isCrouching) {
       player.setCrouch(false);
-      tracker.recordAction('crouchEnd', player.pos.x);
+      tracker.recordAction('crouchEnd', player.pos.x, player.pos.y);
     }
 
     // --- Input: only record a jump if the player is actually on the ground ---
@@ -647,7 +647,7 @@ export class Game {
       const wasCrouching = player.isCrouching;
       if (player.onGround) {
         tracker.recordJump(player.pos.x, player.pos.y);
-        tracker.recordAction('jump', player.pos.x);
+        tracker.recordAction('jump', player.pos.x, player.pos.y);
       }
       const didJump = player.jump();
       if (didJump) {
@@ -655,7 +655,7 @@ export class Game {
         this.canCutCurrentJump = true;
       }
       if (wasCrouching && !player.isCrouching) {
-        tracker.recordAction('crouchEnd', player.pos.x);
+        tracker.recordAction('crouchEnd', player.pos.x, player.pos.y);
       }
     }
 
@@ -1288,6 +1288,8 @@ export class Game {
       trapType: obs.trapType,
       routeLayer: obs.routeLayer,
       x: obsX,
+      playerX: this.player.pos.x,
+      playerY: this.player.pos.y,
       levelIndex: this.levelIndex,
       action: this.inferObstacleAction(obs),
       outcome,

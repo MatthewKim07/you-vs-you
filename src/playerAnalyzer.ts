@@ -68,6 +68,8 @@ function buildPerObstacleInteractionStats(runs: RunData[]): Record<string, Obsta
       { action: 'mixed' as const, count: mixedCount },
       { action: 'none' as const, count: noneCount },
     ].sort((a, b) => b.count - a.count);
+    const avgApproachX = events.reduce((s, e) => s + e.playerX, 0) / total;
+    const avgApproachY = events.reduce((s, e) => s + e.playerY, 0) / total;
     const first = events[0];
     result[obstacleId] = {
       obstacleId,
@@ -85,6 +87,8 @@ function buildPerObstacleInteractionStats(runs: RunData[]): Record<string, Obsta
       preferredAction: actionCounts[0]?.action ?? 'none',
       failureRate: total > 0 ? deathCount / total : 0,
       confidence: Math.min(1, total / 4),
+      avgApproachX,
+      avgApproachY,
     };
   }
   return result;
