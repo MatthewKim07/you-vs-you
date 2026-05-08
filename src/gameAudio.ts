@@ -39,6 +39,29 @@ export class GameAudio {
     }
   }
 
+  setSfxVolume(volume01: number): void {
+    this.masterGain = clamp01(volume01) * 0.28;
+  }
+
+  getSfxVolume(): number {
+    return clamp01(this.masterGain / 0.28);
+  }
+
+  setMusicVolume(volume01: number): void {
+    const normalized = clamp01(volume01);
+    this.musicVolume = Math.max(0.0001, normalized);
+    if (!this.musicGain || !this.ctx) return;
+    if (this.musicMode === 'none') return;
+    const now = this.ctx.currentTime;
+    this.musicGain.gain.cancelScheduledValues(now);
+    this.musicGain.gain.setValueAtTime(Math.max(0.0001, this.musicGain.gain.value), now);
+    this.musicGain.gain.exponentialRampToValueAtTime(this.musicVolume, now + 0.08);
+  }
+
+  getMusicVolume(): number {
+    return clamp01(this.musicVolume);
+  }
+
   startMenuMusic(): void {
     if (!this.enabled) return;
     const ctx = this.ensureContext();

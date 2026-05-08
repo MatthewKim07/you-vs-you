@@ -84,17 +84,25 @@ export class Game {
   private menuOverlay!: HTMLDivElement;
   private playButton!: HTMLButtonElement;
   private authToggleButton!: HTMLButtonElement;
+  private settingsToggleButton!: HTMLButtonElement;
   private authPanel!: HTMLDivElement;
+  private settingsPanel!: HTMLDivElement;
   private authStatusLabel!: HTMLParagraphElement;
   private authEmailInput!: HTMLInputElement;
   private authPasswordInput!: HTMLInputElement;
   private authSignInButton!: HTMLButtonElement;
   private authSignUpButton!: HTMLButtonElement;
   private authSignOutButton!: HTMLButtonElement;
-  private controlBar!: HTMLDivElement;
-  private pauseButton!: HTMLButtonElement;
-  private exitButton!: HTMLButtonElement;
-  private audioToggleButton!: HTMLButtonElement;
+  private menuButton!: HTMLButtonElement;
+  private pauseMenu!: HTMLDivElement;
+  private pauseSoundToggleButton!: HTMLButtonElement;
+  private pauseResumeButton!: HTMLButtonElement;
+  private pauseExitButton!: HTMLButtonElement;
+  private pauseSfxSlider!: HTMLInputElement;
+  private pauseMusicSlider!: HTMLInputElement;
+  private menuSoundToggleButton!: HTMLButtonElement;
+  private menuSfxSlider!: HTMLInputElement;
+  private menuMusicSlider!: HTMLInputElement;
   private lastTrapMessageAt = Number.NEGATIVE_INFINITY;
   private audio = new GameAudio();
   private showHitboxes = false;
@@ -130,6 +138,7 @@ export class Game {
   private authUserId: string | null = null;
   private highestLevelUnlocked = 1;
   private authPanelOpen = false;
+  private settingsPanelOpen = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -305,44 +314,18 @@ export class Game {
   }
 
   private setupUi() {
-    this.controlBar = document.createElement('div');
-    this.controlBar.id = 'game-controls';
-
-    this.pauseButton = document.createElement('button');
-    this.pauseButton.id = 'pause-btn';
-    this.pauseButton.className = 'game-control-btn';
-    this.pauseButton.textContent = 'II Pause';
-    this.pauseButton.addEventListener('click', (e) => {
+    this.menuButton = document.createElement('button');
+    this.menuButton.id = 'menu-btn';
+    this.menuButton.className = 'game-control-btn menu-fab';
+    this.menuButton.textContent = '≡';
+    this.menuButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.togglePause();
+      this.togglePauseMenu();
     });
-    this.pauseButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.menuButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    document.body.appendChild(this.menuButton);
 
-    this.exitButton = document.createElement('button');
-    this.exitButton.id = 'exit-btn';
-    this.exitButton.className = 'game-control-btn';
-    this.exitButton.textContent = 'Exit';
-    this.exitButton.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.audio.playUiClick();
-      this.enterMenu();
-    });
-    this.exitButton.addEventListener('pointerdown', (e) => e.stopPropagation());
-
-    this.controlBar.appendChild(this.pauseButton);
-    this.controlBar.appendChild(this.exitButton);
-    document.body.appendChild(this.controlBar);
-
-    this.audioToggleButton = document.createElement('button');
-    this.audioToggleButton.id = 'audio-toggle-btn';
-    this.audioToggleButton.className = 'game-control-btn audio-toggle';
-    this.audioToggleButton.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.toggleAudioMute();
-    });
-    this.audioToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
-    document.body.appendChild(this.audioToggleButton);
-    this.refreshAudioToggleUi();
+    this.setupPauseMenuUi();
 
     this.menuOverlay = document.createElement('div');
     this.menuOverlay.id = 'start-menu';
@@ -355,7 +338,7 @@ export class Game {
 
     this.playButton = document.createElement('button');
     this.playButton.id = 'play-btn';
-    this.playButton.innerHTML = '<span class="play-arrow"></span><span>Play as Guest</span>';
+    this.playButton.textContent = 'Play';
     this.playButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.startFromMenu();
@@ -366,17 +349,35 @@ export class Game {
     this.authToggleButton.id = 'auth-toggle-btn';
     this.authToggleButton.className = 'menu-secondary-btn';
     this.authToggleButton.textContent = 'Log In';
-    this.authToggleButton.addEventListener('click', (e) => {
+    this.authToggleButton.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (this.authUserId) {
+        await this.signOutAccount();
+        return;
+      }
       this.authPanelOpen = !this.authPanelOpen;
+      if (this.authPanelOpen) this.settingsPanelOpen = false;
       this.refreshAuthUi();
     });
     this.authToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    this.settingsToggleButton = document.createElement('button');
+    this.settingsToggleButton.id = 'settings-toggle-btn';
+    this.settingsToggleButton.className = 'menu-secondary-btn';
+    this.settingsToggleButton.textContent = 'Settings';
+    this.settingsToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.settingsPanelOpen = !this.settingsPanelOpen;
+      if (this.settingsPanelOpen) this.authPanelOpen = false;
+      this.refreshAuthUi();
+    });
+    this.settingsToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
 
     const menuActions = document.createElement('div');
     menuActions.className = 'menu-actions';
     menuActions.appendChild(this.playButton);
     menuActions.appendChild(this.authToggleButton);
+    menuActions.appendChild(this.settingsToggleButton);
     this.menuOverlay.appendChild(menuActions);
 
     this.authPanel = document.createElement('div');
@@ -384,8 +385,71 @@ export class Game {
     this.menuOverlay.appendChild(this.authPanel);
     this.setupAuthUi();
 
+    this.settingsPanel = document.createElement('div');
+    this.settingsPanel.id = 'settings-panel';
+    this.menuOverlay.appendChild(this.settingsPanel);
+    this.setupMenuSettingsUi();
+
     document.body.appendChild(this.menuOverlay);
     this.syncUiVisibility();
+  }
+
+  private setupPauseMenuUi() {
+    this.pauseMenu = document.createElement('div');
+    this.pauseMenu.id = 'pause-menu';
+    this.pauseMenu.innerHTML = `
+      <div class="pause-card">
+        <h2>Paused</h2>
+        <div class="pause-audio-row">
+          <div class="pause-sound-row">
+            <button id="pause-sound-toggle" class="pause-icon-btn" aria-label="Toggle sound">🔊</button>
+            <span class="pause-sound-label">Sound</span>
+          </div>
+          <label class="pause-slider-wrap">
+            <span>SFX</span>
+            <input id="pause-sfx-slider" type="range" min="0" max="100" step="1" />
+          </label>
+          <label class="pause-slider-wrap">
+            <span>♪</span>
+            <input id="pause-music-slider" type="range" min="0" max="100" step="1" />
+          </label>
+        </div>
+        <button id="pause-resume-btn" class="pause-action-btn">Resume</button>
+        <button id="pause-exit-btn" class="pause-action-btn">Exit</button>
+      </div>
+    `;
+    document.body.appendChild(this.pauseMenu);
+
+    this.pauseSoundToggleButton = this.pauseMenu.querySelector('#pause-sound-toggle') as HTMLButtonElement;
+    this.pauseResumeButton = this.pauseMenu.querySelector('#pause-resume-btn') as HTMLButtonElement;
+    this.pauseExitButton = this.pauseMenu.querySelector('#pause-exit-btn') as HTMLButtonElement;
+    this.pauseSfxSlider = this.pauseMenu.querySelector('#pause-sfx-slider') as HTMLInputElement;
+    this.pauseMusicSlider = this.pauseMenu.querySelector('#pause-music-slider') as HTMLInputElement;
+
+    this.pauseSfxSlider.value = String(Math.round(this.audio.getSfxVolume() * 100));
+    this.pauseMusicSlider.value = String(Math.round(this.audio.getMusicVolume() * 100));
+
+    this.pauseSoundToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleAudioMute();
+    });
+    this.pauseResumeButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.closePauseMenu();
+    });
+    this.pauseExitButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.audio.playUiClick();
+      this.closePauseMenu();
+      this.enterMenu();
+    });
+    this.pauseSfxSlider.addEventListener('input', () => {
+      this.audio.setSfxVolume(Number(this.pauseSfxSlider.value) / 100);
+    });
+    this.pauseMusicSlider.addEventListener('input', () => {
+      this.audio.setMusicVolume(Number(this.pauseMusicSlider.value) / 100);
+    });
+    this.refreshPauseAudioUi();
   }
 
   private setupAuthUi() {
@@ -449,6 +513,44 @@ export class Game {
     authBox.appendChild(buttonRow);
   }
 
+  private setupMenuSettingsUi() {
+    const panel = this.settingsPanel;
+    panel.className = 'auth-box';
+    panel.innerHTML = `
+      <p class="auth-status">Settings</p>
+      <div class="pause-audio-row">
+        <div class="pause-sound-row">
+          <button id="menu-sound-toggle" class="pause-icon-btn" aria-label="Toggle sound">🔊</button>
+          <span class="pause-sound-label">Sound</span>
+        </div>
+        <label class="pause-slider-wrap">
+          <span>SFX</span>
+          <input id="menu-sfx-slider" type="range" min="0" max="100" step="1" />
+        </label>
+        <label class="pause-slider-wrap">
+          <span>♪</span>
+          <input id="menu-music-slider" type="range" min="0" max="100" step="1" />
+        </label>
+      </div>
+    `;
+
+    this.menuSoundToggleButton = panel.querySelector('#menu-sound-toggle') as HTMLButtonElement;
+    this.menuSfxSlider = panel.querySelector('#menu-sfx-slider') as HTMLInputElement;
+    this.menuMusicSlider = panel.querySelector('#menu-music-slider') as HTMLInputElement;
+
+    this.menuSfxSlider.addEventListener('input', () => {
+      this.audio.setSfxVolume(Number(this.menuSfxSlider.value) / 100);
+    });
+    this.menuMusicSlider.addEventListener('input', () => {
+      this.audio.setMusicVolume(Number(this.menuMusicSlider.value) / 100);
+    });
+    this.menuSoundToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleAudioMute();
+    });
+    this.refreshPauseAudioUi();
+  }
+
   private async initializeAuth() {
     if (!this.authClient.isConfigured()) {
       this.setAuthStatus('Auth not configured. Guest mode only.');
@@ -472,15 +574,17 @@ export class Game {
     this.authUserId = userId;
     if (!userId) {
       this.highestLevelUnlocked = 1;
-      this.playButton.innerHTML = '<span class="play-arrow"></span><span>Play as Guest</span>';
+      this.playButton.textContent = 'Play';
       this.authToggleButton.textContent = 'Log In';
+      this.authToggleButton.classList.remove('danger');
       this.setAuthStatus('Guest mode: progress is not saved after you leave.');
       this.refreshAuthUi();
       return;
     }
 
-    this.playButton.innerHTML = '<span class="play-arrow"></span><span>Continue</span>';
-    this.authToggleButton.textContent = 'Account';
+    this.playButton.textContent = 'Play';
+    this.authToggleButton.textContent = 'Log Out';
+    this.authToggleButton.classList.add('danger');
     this.setAuthStatus(`Signed in as ${email ?? 'player'}. Loading progress...`);
     this.refreshAuthUi();
 
@@ -488,6 +592,11 @@ export class Game {
       const progress = await this.authClient.loadProgress(userId);
       this.applyLoadedProgress(progress);
       this.setAuthStatus(`Signed in as ${email ?? 'player'}. Progress loaded.`);
+      // Successful login should return user to the clean main menu surface.
+      this.authPanelOpen = false;
+      this.settingsPanelOpen = false;
+      this.authPasswordInput.value = '';
+      this.refreshAuthUi();
     } catch (err) {
       this.setAuthStatus(`Failed to load progress: ${this.errorMessage(err)}`);
     }
@@ -534,7 +643,16 @@ export class Game {
     this.setAuthStatus('Creating account...');
     try {
       await this.authClient.signUp(email, password);
-      await this.authClient.signIn(email, password);
+      try {
+        await this.authClient.signIn(email, password);
+      } catch (err) {
+        const msg = this.errorMessage(err);
+        if (msg.toLowerCase().includes('email not confirmed')) {
+          this.setAuthStatus('Account created. Check your email to confirm, then sign in.');
+          return;
+        }
+        throw err;
+      }
       this.authPasswordInput.value = '';
     } catch (err) {
       this.setAuthStatus(`Sign up failed: ${this.errorMessage(err)}`);
@@ -550,6 +668,7 @@ export class Game {
       this.highestLevelUnlocked = 1;
       this.setAuthStatus('Signed out. Guest mode active.');
       this.authToggleButton.textContent = 'Log In';
+      this.authToggleButton.classList.remove('danger');
       this.refreshAuthUi();
       this.enterMenu();
     } catch (err) {
@@ -565,7 +684,11 @@ export class Game {
     this.authSignInButton.disabled = !configured || signedIn;
     this.authSignUpButton.disabled = !configured || signedIn;
     this.authSignOutButton.disabled = !configured || !signedIn;
+    this.authSignInButton.style.display = signedIn ? 'none' : 'block';
+    this.authSignUpButton.style.display = signedIn ? 'none' : 'block';
+    this.authSignOutButton.style.display = signedIn ? 'block' : 'none';
     this.authPanel.style.display = this.authPanelOpen ? 'flex' : 'none';
+    this.settingsPanel.style.display = this.settingsPanelOpen ? 'flex' : 'none';
   }
 
   private setAuthStatus(message: string) {
@@ -587,8 +710,16 @@ export class Game {
 
   private errorMessage(err: unknown): string {
     if (err instanceof Error) return err.message;
+    if (err && typeof err === 'object' && 'message' in err) {
+      const msg = (err as { message?: unknown }).message;
+      if (typeof msg === 'string' && msg.trim().length > 0) return msg;
+    }
     if (typeof err === 'string') return err;
-    return 'Unknown error';
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return 'Unknown error';
+    }
   }
 
   private enterMenu() {
@@ -626,30 +757,44 @@ export class Game {
     this.audio.stopMusic();
     this.attempts = 1;
     this.authPanelOpen = false;
+    this.settingsPanelOpen = false;
     this.refreshAuthUi();
     const startAt = Math.max(0, this.highestLevelUnlocked - 1);
     this.startLevel(startAt, 'countdown');
   }
 
-  private togglePause() {
+  private togglePauseMenu() {
     if (this.state === 'playing') {
-      this.state = 'paused';
-    } else if (this.state === 'paused') {
-      this.state = 'playing';
-    } else {
+      this.openPauseMenu();
       return;
     }
-    this.audio.setPaused(this.state === 'paused');
+    if (this.state === 'paused') {
+      this.closePauseMenu();
+    }
+  }
+
+  private openPauseMenu() {
+    if (this.state !== 'playing') return;
+    this.state = 'paused';
+    this.audio.setPaused(true);
     this.audio.playUiClick();
-    this.pauseButton.textContent = this.state === 'paused' ? 'Resume' : 'II Pause';
+    this.syncUiVisibility();
+  }
+
+  private closePauseMenu() {
+    if (this.state !== 'paused') return;
+    this.state = 'playing';
+    this.audio.setPaused(false);
+    this.audio.playUiClick();
     this.syncUiVisibility();
   }
 
   private syncUiVisibility() {
     const inMenu = this.state === 'menu';
     this.menuOverlay.style.display = inMenu ? 'flex' : 'none';
-    this.controlBar.style.display = inMenu ? 'none' : 'flex';
-    this.pauseButton.textContent = this.state === 'paused' ? 'Resume' : 'II Pause';
+    const inGameplay = this.state === 'playing' || this.state === 'paused';
+    this.menuButton.style.display = inGameplay ? 'inline-flex' : 'none';
+    this.pauseMenu.style.display = this.state === 'paused' ? 'flex' : 'none';
   }
 
   private toggleAudioMute() {
@@ -665,26 +810,21 @@ export class Game {
         this.audio.setPaused(this.state === 'paused');
       }
     }
-    this.refreshAudioToggleUi();
+    this.refreshPauseAudioUi();
   }
 
-  private refreshAudioToggleUi() {
-    if (!this.audioToggleButton) return;
-    this.audioToggleButton.classList.toggle('muted', this.audioMuted);
-    this.audioToggleButton.innerHTML = this.audioMuted
-      ? `<svg class="audio-svg" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3 9h4l5-4v14l-5-4H3z"></path>
-          <path d="M15 9.5c.9.6 1.5 1.5 1.5 2.5s-.6 1.9-1.5 2.5"></path>
-          <path d="M17.5 7c1.5 1.1 2.5 2.9 2.5 5s-1 3.9-2.5 5"></path>
-          <path d="M4 20L20 4"></path>
-        </svg>`
-      : `<svg class="audio-svg" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3 9h4l5-4v14l-5-4H3z"></path>
-          <path d="M15 9.5c.9.6 1.5 1.5 1.5 2.5s-.6 1.9-1.5 2.5"></path>
-          <path d="M17.5 7c1.5 1.1 2.5 2.9 2.5 5s-1 3.9-2.5 5"></path>
-        </svg>`;
-    this.audioToggleButton.setAttribute('aria-label', this.audioMuted ? 'Unmute audio' : 'Mute audio');
-    this.audioToggleButton.setAttribute('title', this.audioMuted ? 'Audio muted' : 'Audio on');
+  private refreshPauseAudioUi() {
+    if (!this.pauseSoundToggleButton) return;
+    this.pauseSoundToggleButton.textContent = this.audioMuted ? '🔇' : '🔊';
+    this.pauseSoundToggleButton.setAttribute('title', this.audioMuted ? 'Sound off' : 'Sound on');
+    if (this.menuSoundToggleButton) {
+      this.menuSoundToggleButton.textContent = this.audioMuted ? '🔇' : '🔊';
+      this.menuSoundToggleButton.setAttribute('title', this.audioMuted ? 'Sound off' : 'Sound on');
+    }
+    if (this.pauseSfxSlider) this.pauseSfxSlider.value = String(Math.round(this.audio.getSfxVolume() * 100));
+    if (this.pauseMusicSlider) this.pauseMusicSlider.value = String(Math.round(this.audio.getMusicVolume() * 100));
+    if (this.menuSfxSlider) this.menuSfxSlider.value = String(Math.round(this.audio.getSfxVolume() * 100));
+    if (this.menuMusicSlider) this.menuMusicSlider.value = String(Math.round(this.audio.getMusicVolume() * 100));
   }
 
   private buildMenuPreviewLevel(): LevelData {
@@ -857,6 +997,7 @@ export class Game {
           this.state = 'playing';
           this.audio.playCountdownGo();
           this.audio.startGameplayMusic();
+          this.syncUiVisibility();
         }
         break;
 
@@ -1963,8 +2104,6 @@ export class Game {
       this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
     } else if (this.state === 'levelComplete') {
       this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2);
-    } else if (this.state === 'paused') {
-      this.renderer.drawPausedOverlay(this.canvas);
     }
 
     if (this.state === 'countdown') {
