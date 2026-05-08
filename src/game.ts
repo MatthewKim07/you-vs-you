@@ -26,6 +26,12 @@ import {
   PULSE_ACTIVE_MS, PULSE_RETRACT_MS, PULSE_INACTIVE_MS, PULSE_RISE_MS,
   DROP_WARNING_MS, DROP_FALL_MS, DROP_INVISIBLE_MS, DROP_SPAWN_MS,
   BLOCKER_INACTIVE_MS, BLOCKER_WARNING_MS, BLOCKER_ACTIVE_MS, BLOCKER_RETRACT_MS,
+  PATROL_SPEED_DEFAULT,
+  ELECTRIC_INACTIVE_MS, ELECTRIC_WARNING_MS, ELECTRIC_ACTIVE_MS,
+  CRUSHER_RAISED_MS, CRUSHER_WARNING_MS, CRUSHER_CRUSHING_MS, CRUSHER_LOWERED_MS, CRUSHER_RAISING_MS,
+  CRUSHER_LOWERED_H,
+  CRUMBLE_WARNING_MS, CRUMBLE_FALL_MS, CRUMBLE_INVISIBLE_MS, CRUMBLE_SPAWN_MS,
+  resetNewHazardKinds,
 } from './levelMutator';
 import { calculateKnowledge } from './aiKnowledge';
 import { GameAudio } from './gameAudio';
@@ -196,6 +202,8 @@ export class Game {
     resetDisappearingPlatforms(this.level.obstacles);
     // Reset AI modifier state machines to initial states.
     resetAiModifiers(this.level.obstacles);
+    // Reset new hazard kind state machines (electricField, crusherCeiling).
+    resetNewHazardKinds(this.level.obstacles);
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
@@ -707,6 +715,8 @@ export class Game {
 
     this.updateDisappearingPlatforms(dt);
     this.updateAiModifiers(dt);
+    this.updateElectricFields(dt);
+    this.updateCrusherCeilings(dt);
 
     if (this.levelIndex > 0) {
       const runsWithCurrent = this.collectRunsWithCurrent();
@@ -868,6 +878,14 @@ export class Game {
       this.triggerDeath('spike', player.pos.x);
       return;
     }
+    if (this.hitElectricField()) {
+      this.triggerDeath('spike', player.pos.x);
+      return;
+    }
+    if (this.hitCrusherCeiling()) {
+      this.triggerDeath('spike', player.pos.x);
+      return;
+    }
 
     // --- Win check ---
     if (player.pos.x + player.width >= level.flagX) {
@@ -904,6 +922,7 @@ export class Game {
         !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent') &&
         o.disappearState !== 'invisible' &&
         !(o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) &&
+        !(o.aiModifier === 'crumblePlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) &&
         !(o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active'),
     );
     const overlapWidth = (obs: Obstacle): number => {
@@ -955,8 +974,9 @@ export class Game {
       .some(s => {
         const sx = s.currentX ?? s.x;
         const sw = s.currentWidth ?? s.width;
-        // For animated modifiers use visual height; if 0 (retracted) → no collision
-        const sh = s.aiModifier ? (s.aiModVisualHeight ?? 0) : (s.currentHeight ?? s.height);
+        // Height-animating modifiers use aiModVisualHeight; patrol/others use real height
+        const usesAnimatedHeight = s.aiModifier === 'risingSpike' || s.aiModifier === 'pulsingSpike';
+        const sh = usesAnimatedHeight ? (s.aiModVisualHeight ?? 0) : (s.currentHeight ?? s.height);
         if (sh < 4) return false;
         const tipY = groundY - sh;
 
@@ -1093,6 +1113,7 @@ export class Game {
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
       if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+      if (o.aiModifier === 'crumblePlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
       if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
 
       const ox = o.currentX ?? o.x;
@@ -1125,6 +1146,7 @@ export class Game {
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
       if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+      if (o.aiModifier === 'crumblePlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
       if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
 
       const ox = o.currentX ?? o.x;
@@ -1158,6 +1180,7 @@ export class Game {
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
       if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+      if (o.aiModifier === 'crumblePlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
       if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
 
       const ox = o.currentX ?? o.x;
@@ -1352,8 +1375,121 @@ export class Game {
           }
           break;
         }
+
+        case 'patrollingHazard': {
+          const speed = (o.patrolSpeed ?? PATROL_SPEED_DEFAULT) * (o.patrolDir ?? 1);
+          o.currentX = (o.currentX ?? o.x) + speed * dt;
+          const minX = o.patrolMinX ?? (o.x - 80);
+          const maxX = o.patrolMaxX ?? (o.x + 80);
+          if ((o.patrolDir ?? 1) > 0 && o.currentX >= maxX) {
+            o.currentX = maxX;
+            o.patrolDir = -1;
+          } else if ((o.patrolDir ?? 1) < 0 && o.currentX <= minX) {
+            o.currentX = minX;
+            o.patrolDir = 1;
+          }
+          break;
+        }
+
+        case 'crumblePlatform': {
+          if (o.aiModState === 'inactive' || o.aiModState === undefined) {
+            const onIt = isPlayerOnPlatform(o, this.player.pos.x, this.player.pos.y, this.player.width, this.player.height, this.level.groundY);
+            if (onIt) { o.aiModState = 'warning'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'warning') {
+            if (t >= CRUMBLE_WARNING_MS) { o.aiModState = 'dropping'; o.aiModTimer = 0; o.aiModDropOffset = 0; }
+          } else if (o.aiModState === 'dropping') {
+            const fallSpeed = (o.height + 100) / (CRUMBLE_FALL_MS / 1000);
+            o.aiModDropOffset = (o.aiModDropOffset ?? 0) + fallSpeed * dt;
+            if (t >= CRUMBLE_FALL_MS) { o.aiModState = 'invisible'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'invisible') {
+            if (t >= CRUMBLE_INVISIBLE_MS) { o.aiModState = 'spawning'; o.aiModTimer = 0; o.aiModDropOffset = o.height + 100; }
+          } else if (o.aiModState === 'spawning') {
+            const fullOff = o.height + 100;
+            o.aiModDropOffset = fullOff * Math.max(0, 1 - t / CRUMBLE_SPAWN_MS);
+            if (t >= CRUMBLE_SPAWN_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; o.aiModDropOffset = 0; }
+          }
+          break;
+        }
       }
     }
+  }
+
+  private updateElectricFields(dt: number): void {
+    const dtMs = dt * 1000;
+    for (const o of this.level.obstacles) {
+      if (o.kind !== 'electricField') continue;
+      o.aiModTimer = (o.aiModTimer ?? 0) + dtMs;
+      const t = o.aiModTimer;
+      if (!o.aiModState || o.aiModState === 'inactive') {
+        if (t >= ELECTRIC_INACTIVE_MS) { o.aiModState = 'warning'; o.aiModTimer = 0; }
+      } else if (o.aiModState === 'warning') {
+        if (t >= ELECTRIC_WARNING_MS) { o.aiModState = 'active'; o.aiModTimer = 0; }
+      } else if (o.aiModState === 'active') {
+        if (t >= ELECTRIC_ACTIVE_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; }
+      }
+    }
+  }
+
+  private updateCrusherCeilings(dt: number): void {
+    const dtMs = dt * 1000;
+    for (const o of this.level.obstacles) {
+      if (o.kind !== 'crusherCeiling') continue;
+      o.aiModTimer = (o.aiModTimer ?? 0) + dtMs;
+      const t = o.aiModTimer;
+      if (!o.aiModState || o.aiModState === 'inactive') {
+        o.aiModVisualHeight = o.height;
+        if (t >= CRUSHER_RAISED_MS) { o.aiModState = 'warning'; o.aiModTimer = 0; }
+      } else if (o.aiModState === 'warning') {
+        o.aiModVisualHeight = o.height;
+        if (t >= CRUSHER_WARNING_MS) { o.aiModState = 'crushing'; o.aiModTimer = 0; }
+      } else if (o.aiModState === 'crushing') {
+        const progress = Math.min(1, t / CRUSHER_CRUSHING_MS);
+        o.aiModVisualHeight = o.height + (CRUSHER_LOWERED_H - o.height) * progress;
+        if (t >= CRUSHER_CRUSHING_MS) { o.aiModState = 'active'; o.aiModTimer = 0; o.aiModVisualHeight = CRUSHER_LOWERED_H; }
+      } else if (o.aiModState === 'active') {
+        o.aiModVisualHeight = CRUSHER_LOWERED_H;
+        if (t >= CRUSHER_LOWERED_MS) { o.aiModState = 'retracting'; o.aiModTimer = 0; }
+      } else if (o.aiModState === 'retracting') {
+        const progress = Math.min(1, t / CRUSHER_RAISING_MS);
+        o.aiModVisualHeight = CRUSHER_LOWERED_H + (o.height - CRUSHER_LOWERED_H) * progress;
+        if (t >= CRUSHER_RAISING_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; o.aiModVisualHeight = o.height; }
+      }
+    }
+  }
+
+  private hitElectricField(): boolean {
+    const pl = this.player.pos.x;
+    const pr = pl + this.player.width;
+    const pb = this.player.pos.y + this.player.height;
+    const pt = this.player.pos.y;
+    const groundY = this.level.groundY;
+    return this.level.obstacles
+      .filter(o => o.kind === 'electricField' && o.aiModState === 'active')
+      .some(ef => {
+        const ex = ef.x;
+        const ew = ef.width;
+        const fieldTop = groundY - ef.height;
+        return pr > ex && pl < ex + ew && pb > fieldTop && pt < groundY;
+      });
+  }
+
+  private hitCrusherCeiling(): boolean {
+    const px = this.player.pos.x;
+    const pr = px + this.player.width;
+    const pt = this.player.pos.y;
+    const pb = pt + this.player.height;
+    const groundY = this.level.groundY;
+    const CEIL_THICKNESS = 16;
+    return this.level.obstacles
+      .filter(o => o.kind === 'crusherCeiling' && o.aiModState === 'active')
+      .some(c => {
+        const clearance = CRUSHER_LOWERED_H;
+        const slabTop = groundY - clearance - CEIL_THICKNESS;
+        const slabBottom = groundY - clearance;
+        const xOverlap = pr > c.x && px < c.x + c.width;
+        const yOverlap = pb > slabTop && pt < slabBottom;
+        return xOverlap && yOverlap;
+      });
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
