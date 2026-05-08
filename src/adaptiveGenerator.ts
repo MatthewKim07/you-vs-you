@@ -491,7 +491,7 @@ function finalizeLevel(
 
 function tierForLevel(levelIndex: number): Difficulty {
   if (levelIndex <= 1) return 'medium';
-  if (levelIndex <= 2) return 'hard';
+  if (levelIndex <= 4) return 'hard';
   return 'expert';
 }
 
@@ -946,12 +946,12 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
 function connectorDistanceForLevel(levelIndex: number, attempt: number): number {
   let base = 130;
   if (levelIndex >= 2) base = 118;
-  if (levelIndex >= 4) base = 98;
-  if (levelIndex >= 6) base = 82;
-  if (levelIndex >= 8) base = 68;
+  if (levelIndex >= 4) base = 108;
+  if (levelIndex >= 6) base = 96;
+  if (levelIndex >= 8) base = 80;
   if (attempt > 0) base -= 8;
   if (attempt > 1) base -= 6;
-  return Math.max(52, base);
+  return Math.max(60, base);
 }
 
 function applyPlatformOrganization(obstacles: Obstacle[]): void {
