@@ -19,7 +19,14 @@ import {
   summarizeRecentRuns,
 } from './aiStrategist';
 import { updateRealtimeTraps, resetTrapHosts, isPlayerOnPlatform, RealtimeTrapDebug } from './aiTrapDirector';
-import { resetDisappearingPlatforms, DISAPPEAR_FLICKER_MS, DISAPPEAR_INVISIBLE_MS, DISAPPEAR_REAPPEAR_MS } from './levelMutator';
+import {
+  resetDisappearingPlatforms, resetAiModifiers,
+  DISAPPEAR_FLICKER_MS, DISAPPEAR_INVISIBLE_MS, DISAPPEAR_REAPPEAR_MS,
+  RISING_INACTIVE_MS, RISING_WARNING_MS, RISING_RISE_MS, RISING_HOLD_MS, RISING_RETRACT_MS,
+  PULSE_ACTIVE_MS, PULSE_RETRACT_MS, PULSE_INACTIVE_MS, PULSE_RISE_MS,
+  DROP_WARNING_MS, DROP_FALL_MS, DROP_INVISIBLE_MS, DROP_SPAWN_MS,
+  BLOCKER_INACTIVE_MS, BLOCKER_WARNING_MS, BLOCKER_ACTIVE_MS, BLOCKER_RETRACT_MS,
+} from './levelMutator';
 import { calculateKnowledge } from './aiKnowledge';
 import { GameAudio } from './gameAudio';
 
@@ -187,6 +194,8 @@ export class Game {
     resetTrapHosts(this.level.obstacles);
     // Reset disappearing platforms to visible so they cycle fresh each run.
     resetDisappearingPlatforms(this.level.obstacles);
+    // Reset AI modifier state machines to initial states.
+    resetAiModifiers(this.level.obstacles);
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
@@ -697,6 +706,7 @@ export class Game {
     }
 
     this.updateDisappearingPlatforms(dt);
+    this.updateAiModifiers(dt);
 
     if (this.levelIndex > 0) {
       const runsWithCurrent = this.collectRunsWithCurrent();
@@ -887,12 +897,14 @@ export class Game {
     verticalVelocity: number,
   ): number | null {
     const gaps = this.level.obstacles.filter((o) => o.kind === 'gap');
-    // Skip spent collapsing platforms and invisible disappearing platforms
+    // Skip spent collapsing, invisible disappearing, and dropping/invisible AI-modifier platforms
     const platforms = this.level.obstacles.filter(
       (o) =>
         o.kind === 'platform' &&
         !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent') &&
-        o.disappearState !== 'invisible',
+        o.disappearState !== 'invisible' &&
+        !(o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) &&
+        !(o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active'),
     );
     const overlapWidth = (obs: Obstacle): number => {
       const ox = obs.currentX ?? obs.x;
@@ -943,7 +955,9 @@ export class Game {
       .some(s => {
         const sx = s.currentX ?? s.x;
         const sw = s.currentWidth ?? s.width;
-        const sh = s.currentHeight ?? s.height;
+        // For animated modifiers use visual height; if 0 (retracted) → no collision
+        const sh = s.aiModifier ? (s.aiModVisualHeight ?? 0) : (s.currentHeight ?? s.height);
+        if (sh < 4) return false;
         const tipY = groundY - sh;
 
         if (pb <= tipY) return false;
@@ -1003,10 +1017,15 @@ export class Game {
   }
 
   private hitPlatformNeedle(): boolean {
-    const px = this.player.pos.x;
-    const pr = px + this.player.width;
+    const pl = this.player.pos.x;
+    const pr = pl + this.player.width;
     const playerTop = this.player.pos.y;
     const playerBottom = playerTop + this.player.height;
+    const INSET = 4;
+    // Must match drawJumpBlockerSpikes geometry exactly
+    const SPIKE_W = 14;
+    const PITCH  = 20;
+    const EDGE_PAD = 8;
 
     return this.level.obstacles
       .filter((o) => o.kind === 'platform' && o.trapType === 'platformNeedle')
@@ -1017,9 +1036,26 @@ export class Game {
         const ow = p.currentWidth ?? p.width;
         const platformTop = this.level.groundY - (p.currentHeight ?? p.height);
         const spikeTop = platformTop - ext;
-        const xOverlap = pr - 4 > ox + 2 && px + 4 < ox + ow - 2;
-        const yOverlap = playerBottom > spikeTop && playerTop < platformTop;
-        return xOverlap && yOverlap;
+        const baseY = platformTop;
+
+        // Player fully above tip or fully below base → no hit
+        if (playerBottom <= spikeTop || playerTop >= baseY) return false;
+
+        // Build the same spike layout as the renderer
+        const spikeCount = Math.max(1, Math.floor((ow - EDGE_PAD * 2 + (PITCH - SPIKE_W)) / PITCH));
+        const totalW = (spikeCount - 1) * PITCH + SPIKE_W;
+        const startX = ox + (ow - totalW) / 2;
+
+        // t = how far player's feet penetrate from tip toward base (0 = tip, 1 = base)
+        const pb = Math.min(playerBottom, baseY);
+        const t = Math.min(1, (pb - spikeTop) / ext);
+
+        for (let i = 0; i < spikeCount; i++) {
+          const tipX = startX + i * PITCH + SPIKE_W / 2;
+          const halfW = (SPIKE_W / 2) * t;
+          if (pr - INSET > tipX - halfW && pl + INSET < tipX + halfW) return true;
+        }
+        return false;
       });
   }
 
@@ -1056,6 +1092,8 @@ export class Game {
       if (o.kind !== 'platform' || !o.solid) continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
+      if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+      if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
 
       const ox = o.currentX ?? o.x;
       const ow = o.currentWidth ?? o.width;
@@ -1086,6 +1124,8 @@ export class Game {
       if (o.kind !== 'platform') continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
+      if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+      if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
 
       const ox = o.currentX ?? o.x;
       const ow = o.currentWidth ?? o.width;
@@ -1117,6 +1157,8 @@ export class Game {
       if (o.kind !== 'platform') continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
+      if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+      if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
 
       const ox = o.currentX ?? o.x;
       const ow = o.currentWidth ?? o.width;
@@ -1224,6 +1266,91 @@ export class Game {
         if ((p.disappearTimer ?? 0) >= DISAPPEAR_REAPPEAR_MS) {
           p.disappearState = 'visible';
           p.disappearTimer = 0;
+        }
+      }
+    }
+  }
+
+  private updateAiModifiers(dt: number): void {
+    const dtMs = dt * 1000;
+    for (const o of this.level.obstacles) {
+      if (!o.aiModifier) continue;
+      o.aiModTimer = (o.aiModTimer ?? 0) + dtMs;
+      const t = o.aiModTimer;
+
+      switch (o.aiModifier) {
+        case 'risingSpike': {
+          const fullH = o.height;
+          if (o.aiModState === 'inactive') {
+            o.aiModVisualHeight = 0;
+            if (t >= RISING_INACTIVE_MS) { o.aiModState = 'warning'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'warning') {
+            o.aiModVisualHeight = 0;
+            if (t >= RISING_WARNING_MS) { o.aiModState = 'rising'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'rising') {
+            o.aiModVisualHeight = fullH * Math.min(1, t / RISING_RISE_MS);
+            if (t >= RISING_RISE_MS) { o.aiModState = 'hold'; o.aiModTimer = 0; o.aiModVisualHeight = fullH; }
+          } else if (o.aiModState === 'hold') {
+            o.aiModVisualHeight = fullH;
+            if (t >= RISING_HOLD_MS) { o.aiModState = 'retracting'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'retracting') {
+            o.aiModVisualHeight = fullH * Math.max(0, 1 - t / RISING_RETRACT_MS);
+            if (t >= RISING_RETRACT_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; o.aiModVisualHeight = 0; }
+          }
+          break;
+        }
+
+        case 'pulsingSpike': {
+          const fullH = o.height;
+          if (o.aiModState === 'active') {
+            o.aiModVisualHeight = fullH;
+            if (t >= PULSE_ACTIVE_MS) { o.aiModState = 'retracting'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'retracting') {
+            o.aiModVisualHeight = fullH * Math.max(0, 1 - t / PULSE_RETRACT_MS);
+            if (t >= PULSE_RETRACT_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; o.aiModVisualHeight = 0; }
+          } else if (o.aiModState === 'inactive') {
+            o.aiModVisualHeight = 0;
+            if (t >= PULSE_INACTIVE_MS) { o.aiModState = 'rising'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'rising') {
+            o.aiModVisualHeight = fullH * Math.min(1, t / PULSE_RISE_MS);
+            if (t >= PULSE_RISE_MS) { o.aiModState = 'active'; o.aiModTimer = 0; o.aiModVisualHeight = fullH; }
+          }
+          break;
+        }
+
+        case 'droppingPlatform': {
+          if (o.aiModState === 'inactive') {
+            // Trigger when player stands on it
+            const onIt = isPlayerOnPlatform(o, this.player.pos.x, this.player.pos.y, this.player.width, this.player.height, this.level.groundY);
+            if (onIt) { o.aiModState = 'warning'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'warning') {
+            // Shake handled in renderer via timer
+            if (t >= DROP_WARNING_MS) { o.aiModState = 'dropping'; o.aiModTimer = 0; o.aiModDropOffset = 0; }
+          } else if (o.aiModState === 'dropping') {
+            const fallSpeed = (o.height + 120) / (DROP_FALL_MS / 1000);
+            o.aiModDropOffset = (o.aiModDropOffset ?? 0) + fallSpeed * dt;
+            if (t >= DROP_FALL_MS) { o.aiModState = 'invisible'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'invisible') {
+            if (t >= DROP_INVISIBLE_MS) { o.aiModState = 'spawning'; o.aiModTimer = 0; o.aiModDropOffset = o.height + 120; }
+          } else if (o.aiModState === 'spawning') {
+            const fullOff = o.height + 120;
+            o.aiModDropOffset = fullOff * Math.max(0, 1 - t / DROP_SPAWN_MS);
+            if (t >= DROP_SPAWN_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; o.aiModDropOffset = 0; }
+          }
+          break;
+        }
+
+        case 'temporaryBlocker': {
+          if (o.aiModState === 'inactive') {
+            if (t >= BLOCKER_INACTIVE_MS) { o.aiModState = 'warning'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'warning') {
+            if (t >= BLOCKER_WARNING_MS) { o.aiModState = 'active'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'active') {
+            if (t >= BLOCKER_ACTIVE_MS) { o.aiModState = 'retracting'; o.aiModTimer = 0; }
+          } else if (o.aiModState === 'retracting') {
+            if (t >= BLOCKER_RETRACT_MS) { o.aiModState = 'inactive'; o.aiModTimer = 0; }
+          }
+          break;
         }
       }
     }
