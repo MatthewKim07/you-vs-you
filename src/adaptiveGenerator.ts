@@ -215,9 +215,10 @@ export function generateAdaptiveLevel(
 
   const requiredRules = requiredRulesForLevel(levelIndex);
 
-  // Levels 1–6: fixed-arena persistent layout that escalates each level.
-  // AI trap director still runs on top. Level 7+ uses full adaptive generation.
-  if (levelIndex >= 1 && levelIndex <= 6) {
+  // All adaptive levels use the persistent arena layout so progression feels
+  // coherent and readable run-to-run. Difficulty still escalates via AI
+  // learning phase, trap hosting, and mutator pressure layered on top.
+  if (levelIndex >= 1) {
     const built = buildPersistentAdaptiveLayout(levelIndex, playerModel, canvasWidth);
     const mutatorResult = mutateLevelObstacles(built.obstacles, playerModel, previousRuns, levelIndex);
     const mutatedBuild: BuildResult = { ...built, obstacles: mutatorResult.obstacles };
@@ -1495,22 +1496,25 @@ function buildPersistentAdaptiveLayout(
   //   1 => Level 2 (first adaptive level)
   // We use "stage" so Level 2 starts from the Level 1 baseline and then
   // gets small additive tweaks each level.
-  const stage = Math.max(1, levelIndex);
+  // Cap geometry drift so higher levels don't reconstruct the arena silhouette.
+  // Extra difficulty beyond this comes from traps/mutations, not hard layout pivots.
+  const stage = clampInt(Math.max(1, levelIndex), 1, 6);
   const jumpBias = playerModel.prefersJump ? 1 : 0;
   const crouchBias = playerModel.prefersCrouch ? 1 : 0;
   const routeUpperBias = playerModel.preferredRoute === 'upper' ? 1 : 0;
 
   // Base lower-route geometry (mirrors Level 1 flow).
   const spike1X = 620;
-  const lowCeilingX = 1020 + stage * 10;
-  const lowCeilingWidth = clampInt(190 + stage * 8, 190, 246);
+  const lowCeilingX = 1008 + stage * 8;
+  const lowCeilingWidth = clampInt(176 + stage * 8, 176, 232);
   // Keep baseline low ceilings visibly crouch-passable unless a runtime trap seals them.
   const lowCeilingClearance = clampInt(34 - stage - jumpBias * 2, MIN_VISIBLE_CROUCH_CLEARANCE, 34);
-  const gapX = 1300 + stage * 12;
+  // Push the core gap later so upper-route drop-down has a real landing window first.
+  const gapX = 1412 + stage * 10;
   const gapWidth = clampInt(84 + stage * 10 + crouchBias * 8, 84, 150);
-  const doubleSpikeX = 1540 + stage * 16;
-  const choice1X = 1760 + stage * 20;
-  const spike2X = 1970 + stage * 30;
+  const doubleSpikeX = gapX + gapWidth + clampInt(170 + stage * 6, 170, 228);
+  const choice1X = doubleSpikeX + clampInt(228 + stage * 8, 228, 292);
+  const spike2X = choice1X + clampInt(206 + stage * 10, 206, 304);
 
   obs.push({ kind: 'spike', x: spike1X, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower', routeId: 'persistent_lower' });
   obs.push({ kind: 'lowCeiling', x: lowCeilingX, width: lowCeilingWidth, height: lowCeilingClearance, routeLayer: 'lower', routeId: 'persistent_lower' });
@@ -1528,21 +1532,26 @@ function buildPersistentAdaptiveLayout(
   });
   obs.push({ kind: 'spike', x: spike2X, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower', routeId: 'persistent_lower' });
 
-  // Base upper route: always present in adaptive levels, with real jump-required gaps.
+  // Base upper route: always present in adaptive levels.
+  // Keep explicit drop windows so upper-route players can intentionally return
+  // to lower/mid lanes before and after key hazards.
   const upperPlan = [
-    { x: 760,  width: 110, height: 84 + routeUpperBias * 4 }, // reachable entry
-    { x: 940,  width: 112, height: 148 + stage },             // above low-ceiling lane
-    { x: 1138, width: 116, height: 156 + stage },             // over low-ceiling exit
-    { x: 1368, width: 120, height: SPIKE_OVERHEAD_MIN_HEIGHT }, // approach to spike lane
-    { x: 1608, width: 124, height: SPIKE_OVERHEAD_MIN_HEIGHT }, // over spike lane
-    { x: 1848, width: 132, height: SPIKE_OVERHEAD_MIN_HEIGHT }, // over late spike lane
+    { x: 760, width: 110, height: 84 + routeUpperBias * 4 }, // reachable entry
+    { x: 950, width: 108, height: 128 + stage },             // early climb
+    // Ends early to force a meaningful first drop decision before the widened gap area.
+    { x: 1138, width: 92, height: 148 + stage },
+    // Gap-overflight lane starts later to keep first re-entry zone clear.
+    { x: gapX + 56, width: 90, height: 164 + stage },
+    // Short late tile so a second drop window opens before the final upper tile.
+    { x: gapX + gapWidth + 248, width: 88, height: 178 + stage },
+    { x: spike2X - 56, width: 118, height: 192 + stage },
   ];
   for (const p of upperPlan) {
     obs.push({
       kind: 'platform',
       x: p.x + stage * 6,
       width: p.width,
-      height: clampInt(p.height, 84, 170),
+      height: clampInt(p.height, 84, 228),
       solid: true,
       routeLayer: 'upper',
       routeId: 'persistent_upper',
