@@ -47,6 +47,10 @@ export interface AdaptiveDebugInfo {
   routeConnectivityStatus?: 'valid' | 'weak';
   routeTargeted?: string;
   routeMutationCounts?: { lower: number; mid: number; upper: number };
+  // Level mutator fields
+  mutatorBudget?: { total: number; spent: number };
+  appliedMutations?: Array<{ type: string; targetX: number; reason: string }>;
+  mutatorDebugLines?: string[];
 }
 
 export interface LevelData {

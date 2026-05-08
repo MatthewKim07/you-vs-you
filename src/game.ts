@@ -18,7 +18,8 @@ import {
   maybeFetchStrategyBrief,
   summarizeRecentRuns,
 } from './aiStrategist';
-import { updateRealtimeTraps, resetTrapHosts, RealtimeTrapDebug } from './aiTrapDirector';
+import { updateRealtimeTraps, resetTrapHosts, isPlayerOnPlatform, RealtimeTrapDebug } from './aiTrapDirector';
+import { resetDisappearingPlatforms, DISAPPEAR_FLICKER_MS, DISAPPEAR_INVISIBLE_MS, DISAPPEAR_REAPPEAR_MS } from './levelMutator';
 import { calculateKnowledge } from './aiKnowledge';
 import { GameAudio } from './gameAudio';
 
@@ -180,6 +181,8 @@ export class Game {
     this.level.groundY = this.canvas.height - 80;
     // Reset trap host states so they can re-arm on the new run.
     resetTrapHosts(this.level.obstacles);
+    // Reset disappearing platforms to visible so they cycle fresh each run.
+    resetDisappearingPlatforms(this.level.obstacles);
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
@@ -689,6 +692,8 @@ export class Game {
       this.canCutCurrentJump = false;
     }
 
+    this.updateDisappearingPlatforms(dt);
+
     if (this.levelIndex > 0) {
       const runsWithCurrent = this.collectRunsWithCurrent();
       const knowledge = calculateKnowledge(runsWithCurrent, this.playerModel);
@@ -878,11 +883,12 @@ export class Game {
     verticalVelocity: number,
   ): number | null {
     const gaps = this.level.obstacles.filter((o) => o.kind === 'gap');
-    // Task 5: Skip spent/triggered platforms (collapsing platform trap)
+    // Skip spent collapsing platforms and invisible disappearing platforms
     const platforms = this.level.obstacles.filter(
       (o) =>
         o.kind === 'platform' &&
-        !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent'),
+        !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent') &&
+        o.disappearState !== 'invisible',
     );
     const overlapWidth = (obs: Obstacle): number => {
       const ox = obs.currentX ?? obs.x;
@@ -1026,6 +1032,7 @@ export class Game {
     for (const o of this.level.obstacles) {
       if (o.kind !== 'platform' || !o.solid) continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+      if (o.disappearState === 'invisible') continue;
 
       const ox = o.currentX ?? o.x;
       const ow = o.currentWidth ?? o.width;
@@ -1055,6 +1062,7 @@ export class Game {
     for (const o of this.level.obstacles) {
       if (o.kind !== 'platform') continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+      if (o.disappearState === 'invisible') continue;
 
       const ox = o.currentX ?? o.x;
       const ow = o.currentWidth ?? o.width;
@@ -1085,6 +1093,7 @@ export class Game {
     for (const o of this.level.obstacles) {
       if (o.kind !== 'platform') continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+      if (o.disappearState === 'invisible') continue;
 
       const ox = o.currentX ?? o.x;
       const ow = o.currentWidth ?? o.width;
@@ -1134,6 +1143,65 @@ export class Game {
       if (crossedLeftWall) {
         this.player.pos.x = gapLeft - SUPPORT_EDGE_INSET;
         return;
+      }
+    }
+  }
+
+  private updateDisappearingPlatforms(dt: number): void {
+    const { player, level } = this;
+    for (const p of level.obstacles) {
+      if (p.kind !== 'platform' || p.disappearMode === undefined) continue;
+
+      const state = p.disappearState ?? 'visible';
+
+      if (state === 'visible') {
+        if (p.disappearMode === 'onTouch') {
+          const onIt = isPlayerOnPlatform(p, player.pos.x, player.pos.y, player.width, player.height, level.groundY);
+          if (onIt) {
+            p.disappearState = 'disappearing';
+            p.disappearTimer = 0;
+            p.disappearCount = (p.disappearCount ?? 0) + 1;
+          }
+        } else if (p.disappearMode === 'timed') {
+          p.disappearTimer = (p.disappearTimer ?? 0) + dt * 1000;
+          const period = p.disappearDelayMs ?? 2000;
+          if ((p.disappearTimer ?? 0) >= period) {
+            p.disappearState = 'disappearing';
+            p.disappearTimer = 0;
+            p.disappearCount = (p.disappearCount ?? 0) + 1;
+          }
+        } else if (p.disappearMode === 'afterDelay') {
+          p.disappearTimer = (p.disappearTimer ?? 0) + dt * 1000;
+          const delay = p.disappearDelayMs ?? 3000;
+          if ((p.disappearTimer ?? 0) >= delay) {
+            p.disappearState = 'disappearing';
+            p.disappearTimer = 0;
+            p.disappearCount = (p.disappearCount ?? 0) + 1;
+          }
+        }
+      } else if (state === 'disappearing') {
+        p.disappearTimer = (p.disappearTimer ?? 0) + dt * 1000;
+        if ((p.disappearTimer ?? 0) >= DISAPPEAR_FLICKER_MS) {
+          p.disappearState = 'invisible';
+          p.disappearTimer = 0;
+        }
+      } else if (state === 'invisible') {
+        const maxCount = p.maxDisappearCount;
+        if (maxCount !== null && maxCount !== undefined && (p.disappearCount ?? 0) >= maxCount) {
+          continue; // stay invisible permanently
+        }
+        p.disappearTimer = (p.disappearTimer ?? 0) + dt * 1000;
+        const reappearDelay = p.reappearDelayMs ?? DISAPPEAR_INVISIBLE_MS;
+        if ((p.disappearTimer ?? 0) >= reappearDelay) {
+          p.disappearState = 'reappearing';
+          p.disappearTimer = 0;
+        }
+      } else if (state === 'reappearing') {
+        p.disappearTimer = (p.disappearTimer ?? 0) + dt * 1000;
+        if ((p.disappearTimer ?? 0) >= DISAPPEAR_REAPPEAR_MS) {
+          p.disappearState = 'visible';
+          p.disappearTimer = 0;
+        }
       }
     }
   }

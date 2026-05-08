@@ -54,6 +54,23 @@ function routeAccentColor(obs: Obstacle): string | null {
   return null;
 }
 
+// Alpha value for disappearing/reappearing platforms.
+function computeDisappearAlpha(obs: Obstacle): number {
+  const timer = obs.disappearTimer ?? 0;
+  const FLICKER_MS = 400;
+  const t = Math.min(1, timer / FLICKER_MS);
+
+  if (obs.disappearState === 'disappearing') {
+    // Rapid flicker + fade out
+    const flicker = 0.5 + 0.5 * Math.sin(t * Math.PI * 7);
+    return Math.max(0.05, (1 - t) * flicker);
+  }
+  if (obs.disappearState === 'reappearing') {
+    return Math.min(1, t);
+  }
+  return 1;
+}
+
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
 
@@ -352,10 +369,21 @@ export class Renderer {
   }
 
   private drawPlatform(obs: Obstacle, groundY: number, cameraX: number) {
+    const disappearState = obs.disappearState;
+    if (disappearState === 'invisible') return;
+
     const { ctx } = this;
     const h = obsH(obs);
     if (h <= 0.5) return;
     if (obs.trapType === 'collapsingPlatform' && obs.trapState === 'spent') return;
+
+    // Apply alpha for disappearing/reappearing states
+    const useAlpha = disappearState === 'disappearing' || disappearState === 'reappearing';
+    if (useAlpha) {
+      ctx.save();
+      ctx.globalAlpha *= computeDisappearAlpha(obs);
+    }
+
     const sx       = px(obsX(obs) - cameraX);
     const surfaceY = px(groundY - h);
     const w = px(obsW(obs));
@@ -388,6 +416,16 @@ export class Renderer {
     const spikeExt = obs.trapType === 'platformNeedle' ? (obs.currentSpikeExt ?? 0) : 0;
     if (spikeExt > 1) {
       this.drawJumpBlockerSpikes(sx + shakeX, surfaceY, w, obsX(obs), cameraX, spikeExt);
+    }
+
+    if (useAlpha) {
+      ctx.restore();
+    }
+
+    // Orange warning strip on disappear-mode platforms when still solid
+    if (obs.disappearMode && disappearState === 'visible') {
+      ctx.fillStyle = 'rgba(255,140,0,0.55)';
+      ctx.fillRect(px(sx), surfaceY, w, 3);
     }
   }
 

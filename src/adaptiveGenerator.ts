@@ -9,6 +9,7 @@ import {
 } from './movementTuning';
 import { calculateKnowledge, determinePhase, AIKnowledge, getTopLearnedHabit } from './aiKnowledge';
 import { directTraps } from './aiTrapDirector';
+import { mutateLevelObstacles } from './levelMutator';
 
 const GROUND_TOP = 0;
 const SAFE_SPAWN_END = 320;
@@ -218,12 +219,14 @@ export function generateAdaptiveLevel(
   // AI trap director still runs on top. Level 7+ uses full adaptive generation.
   if (levelIndex >= 1 && levelIndex <= 6) {
     const built = buildPersistentAdaptiveLayout(levelIndex, playerModel, canvasWidth);
+    const mutatorResult = mutateLevelObstacles(built.obstacles, playerModel, previousRuns, levelIndex);
+    const mutatedBuild: BuildResult = { ...built, obstacles: mutatorResult.obstacles };
     const trapResult = directTraps(
       phase, knowledge, playerModel, profile,
-      built.obstacles, levelIndex, segmentCtx.reactionSpacing,
+      mutatedBuild.obstacles, levelIndex, segmentCtx.reactionSpacing,
     );
-    const trappedBuild: BuildResult = { ...built, obstacles: trapResult.obstacles };
-    return finalizeLevel(
+    const trappedBuild: BuildResult = { ...mutatedBuild, obstacles: trapResult.obstacles };
+    const levelData = finalizeLevel(
       levelIndex, segmentCtx, strategy, trappedBuild,
       [{ type: 'persistentLayout' }],
       requiredRules, previousRuns, latestRun, latestSuccess,
@@ -233,6 +236,14 @@ export function generateAdaptiveLevel(
       trapResult.predictedLandingX, trapResult.mutationFallbackUsed,
       trapResult.mutationTargetObstacleId,
     );
+    if (levelData.aiDebug) {
+      levelData.aiDebug.mutatorBudget = mutatorResult.budget;
+      levelData.aiDebug.appliedMutations = mutatorResult.appliedMutations.map(m => ({
+        type: m.type, targetX: m.targetX, reason: m.reason,
+      }));
+      levelData.aiDebug.mutatorDebugLines = mutatorResult.debugLines;
+    }
+    return levelData;
   }
 
   let lastWarnings: string[] = [];
@@ -253,24 +264,27 @@ export function generateAdaptiveLevel(
 
     lastWarnings = [...repaired.warnings, ...valid.warnings];
     if (valid.ok) {
+      const mutatorResult = mutateLevelObstacles(repaired.built.obstacles, playerModel, previousRuns, levelIndex);
+      const mutatedBuilt: BuildResult = { ...repaired.built, obstacles: mutatorResult.obstacles };
+
       // Task 5: Apply trap mutations after successful build
       const trapResult = directTraps(
         phase,
         knowledge,
         playerModel,
         profile,
-        repaired.built.obstacles,
+        mutatedBuilt.obstacles,
         levelIndex,
         segmentCtx.reactionSpacing,
       );
 
       // Update build with trapped obstacles
       const trappedBuild: BuildResult = {
-        ...repaired.built,
+        ...mutatedBuilt,
         obstacles: trapResult.obstacles,
       };
 
-      return finalizeLevel(
+      const levelData = finalizeLevel(
         levelIndex,
         segmentCtx,
         strategy,
@@ -292,6 +306,14 @@ export function generateAdaptiveLevel(
         trapResult.mutationFallbackUsed,
         trapResult.mutationTargetObstacleId,
       );
+      if (levelData.aiDebug) {
+        levelData.aiDebug.mutatorBudget = mutatorResult.budget;
+        levelData.aiDebug.appliedMutations = mutatorResult.appliedMutations.map(m => ({
+          type: m.type, targetX: m.targetX, reason: m.reason,
+        }));
+        levelData.aiDebug.mutatorDebugLines = mutatorResult.debugLines;
+      }
+      return levelData;
     }
   }
 

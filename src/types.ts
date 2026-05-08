@@ -39,6 +39,36 @@ export interface Obstacle {
   targetSpikeExt?: number;
   routeLayer?: RouteLayer;
   routeId?: string;
+  // Disappearing platform configuration
+  disappearMode?: 'onTouch' | 'timed' | 'afterDelay';
+  disappearDelayMs?: number;
+  reappearDelayMs?: number;
+  maxDisappearCount?: number | null;
+  // Disappearing platform runtime state
+  disappearState?: 'visible' | 'disappearing' | 'invisible' | 'reappearing';
+  disappearTimer?: number;
+  disappearCount?: number;
 }
 
 export type GameState = 'menu' | 'countdown' | 'paused' | 'playing' | 'dead' | 'levelComplete';
+
+export type LevelMutationActionType =
+  | 'ADD_SPIKE'
+  | 'ADD_LANDING_HAZARD'
+  | 'MAKE_PLATFORM_DISAPPEAR'
+  | 'INCREASE_GAP'
+  | 'ADD_ROUTE_BLOCKER';
+
+export interface LevelMutationAction {
+  id: string;
+  type: LevelMutationActionType;
+  targetX: number;
+  targetRouteLayer?: RouteLayer;
+  difficultyCost: number;
+  reason: string;
+}
+
+export interface DifficultyBudget {
+  total: number;
+  spent: number;
+}

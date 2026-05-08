@@ -157,6 +157,17 @@ export class DebugPanel {
         ${Object.keys(model.perObstacleInteractionStats ?? {}).length === 0 ? '<div class="dbg-row"><span>—</span><span>no object interactions yet</span></div>' : ''}
       </div>
       <div class="dbg-section">
+        <div class="dbg-title">AI MUTATIONS (Level ${this.currentLevelIndex + 1})</div>
+        <div class="dbg-row"><span>Budget</span><span>${dbg?.mutatorBudget ? `${dbg.mutatorBudget.spent}/${dbg.mutatorBudget.total} pts spent` : '—'}</span></div>
+        <div class="dbg-row"><span>Applied</span><span>${dbg?.appliedMutations?.length ?? 0} mutation(s)</span></div>
+        ${(dbg?.appliedMutations ?? []).map((m) =>
+          `<div class="dbg-row"><span>${m.type}</span><span>@${Math.round(m.targetX)}px — ${m.reason}</span></div>`
+        ).join('')}
+        ${(dbg?.mutatorDebugLines ?? []).map((line) =>
+          `<div class="dbg-row"><span style="color:#aaa;font-size:9px" colspan="2">${line}</span></div>`
+        ).join('')}
+      </div>
+      <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>
         <div class="dbg-row"><span>Diff score</span><span>${dbg ? `${dbg.totalDifficultyScore}/${dbg.requiredDifficultyScore}` : '—'}</span></div>
         <div class="dbg-row"><span>Seg scores</span><span>${dbg?.segmentScores.join(' ') || '—'}</span></div>
