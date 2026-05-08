@@ -2,6 +2,7 @@ import { RunTracker } from './runTracker';
 import { LevelData, AdaptiveDebugInfo } from './level';
 import { PlayerModel } from './telemetry';
 import { StrategyBrief } from './aiStrategist';
+import { Obstacle } from './types';
 
 interface RealtimeTrapDebugView {
   phase: string;
@@ -24,6 +25,7 @@ export class DebugPanel {
   private visible = false;
   private aiDebugInfo: AdaptiveDebugInfo | undefined;
   private currentLevelIndex = 0;
+  private liveObstacles: Obstacle[] = [];
   private strategyBrief: StrategyBrief | undefined;
   private realtimeTrapDebug: RealtimeTrapDebugView = {
     phase: 'observe',
@@ -167,6 +169,7 @@ export class DebugPanel {
           `<div class="dbg-row"><span style="color:#aaa;font-size:9px" colspan="2">${line}</span></div>`
         ).join('')}
       </div>
+      ${this.renderAiModifiersSection()}
       <div class="dbg-section">
         <div class="dbg-title">ADAPTIVE (Level ${this.currentLevelIndex + 1})</div>
         <div class="dbg-row"><span>Diff score</span><span>${dbg ? `${dbg.totalDifficultyScore}/${dbg.requiredDifficultyScore}` : '—'}</span></div>
@@ -212,6 +215,7 @@ export class DebugPanel {
   setAdaptiveSnapshot(level: LevelData): void {
     this.aiDebugInfo = level.aiDebug;
     this.currentLevelIndex = level.index;
+    this.liveObstacles = level.obstacles;
   }
 
   setPlayerModel(model: PlayerModel): void {
@@ -224,6 +228,21 @@ export class DebugPanel {
 
   setRealtimeTrapDebug(debug: RealtimeTrapDebugView): void {
     this.realtimeTrapDebug = debug;
+  }
+
+  private renderAiModifiersSection(): string {
+    const modified = this.liveObstacles.filter(o => o.aiModifier);
+    if (modified.length === 0) return '';
+    const rows = modified.map(o => {
+      const h = o.aiModVisualHeight !== undefined ? ` h=${Math.round(o.aiModVisualHeight)}` : '';
+      const drop = o.aiModDropOffset !== undefined && o.aiModDropOffset > 0 ? ` drop=${Math.round(o.aiModDropOffset)}` : '';
+      return `<div class="dbg-row"><span>${o.kind}@${Math.round(o.x)}</span><span>${o.aiModifier} [${o.aiModState ?? '?'}]${h}${drop}</span></div>`;
+    }).join('');
+    return `
+      <div class="dbg-section">
+        <div class="dbg-title">AI MODIFIERS (${modified.length} active)</div>
+        ${rows}
+      </div>`;
   }
 
 

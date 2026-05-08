@@ -1,6 +1,7 @@
 import { Player } from './player';
 import { LevelData, getGroundSegments } from './level';
 import { Obstacle, TrapState } from './types';
+import { BLOCKER_RETRACT_MS } from './levelMutator';
 
 const TILE = 16;
 
@@ -300,11 +301,29 @@ export class Renderer {
     const { ctx } = this;
     const sx  = px(obsX(obs) - cameraX);
     const w = obsW(obs);
-    const h = obsH(obs);
     const baseY = px(groundY + 2);
     const tipX  = px(obsX(obs) - cameraX + w / 2);
-    const tipY  = px(groundY - h);
 
+    // AI modifier: draw warning indicator, then use animated height
+    if (obs.aiModifier === 'risingSpike' || obs.aiModifier === 'pulsingSpike') {
+      this.drawSpikeModifierWarning(obs, sx, w, baseY);
+      const h = obs.aiModVisualHeight ?? 0;
+      if (h < 2) return;
+      const tipY = px(groundY - h);
+      this.drawSpikeShape(ctx, tipX, tipY, sx, w, baseY);
+      return;
+    }
+
+    const h = obsH(obs);
+    const tipY = px(groundY - h);
+    this.drawSpikeShape(ctx, tipX, tipY, sx, w, baseY);
+  }
+
+  private drawSpikeShape(
+    ctx: CanvasRenderingContext2D,
+    tipX: number, tipY: number,
+    sx: number, w: number, baseY: number,
+  ) {
     ctx.fillStyle = P_SPIKE_DK;
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
@@ -321,7 +340,6 @@ export class Renderer {
     ctx.closePath();
     ctx.fill();
 
-    // Left-face highlight
     ctx.fillStyle = 'rgba(255,150,150,0.45)';
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
@@ -331,11 +349,47 @@ export class Renderer {
     ctx.fill();
   }
 
+  private drawSpikeModifierWarning(
+    obs: Obstacle,
+    sx: number, w: number, baseY: number,
+  ) {
+    const ctx = this.ctx;
+    const state = obs.aiModState;
+    const timer = obs.aiModTimer ?? 0;
+
+    if (state === 'warning' || state === 'inactive') {
+      // Pulsing red stub at base — "spike incoming"
+      const pulse = 0.4 + 0.6 * Math.abs(Math.sin(timer / 120));
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = '#FF4D4D';
+      ctx.fillRect(px(sx + w * 0.3), baseY - 5, px(w * 0.4), 5);
+      ctx.restore();
+    } else if (state === 'retracting') {
+      // Fading warning as spike retracts
+      ctx.save();
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#FF4D4D';
+      ctx.fillRect(px(sx + w * 0.3), baseY - 3, px(w * 0.4), 3);
+      ctx.restore();
+    }
+  }
+
   private drawDoubleSpike(obs: Obstacle, groundY: number, cameraX: number) {
     const spikeW = (obsW(obs) - DOUBLE_SPIKE_GAP) / 2;
     const baseY  = px(groundY + 2);
-    const h = obsH(obs);
     const x = obsX(obs);
+
+    // AI modifier: warning stub + animated height
+    if (obs.aiModifier === 'risingSpike' || obs.aiModifier === 'pulsingSpike') {
+      const sx = px(x - cameraX);
+      const w = obsW(obs);
+      this.drawSpikeModifierWarning(obs, sx, w, baseY);
+    }
+    const h = (obs.aiModifier === 'risingSpike' || obs.aiModifier === 'pulsingSpike')
+      ? (obs.aiModVisualHeight ?? 0)
+      : obsH(obs);
+    if (h < 2 && obs.aiModifier) return;
 
     for (let i = 0; i < 2; i++) {
       const left = px(x - cameraX + i * (spikeW + DOUBLE_SPIKE_GAP));
@@ -372,6 +426,26 @@ export class Renderer {
     const disappearState = obs.disappearState;
     if (disappearState === 'invisible') return;
 
+    // Dropping platform: invisible during drop + invisible states
+    if (obs.aiModifier === 'droppingPlatform' && (obs.aiModState === 'invisible')) return;
+
+    // Temp blocker platform: invisible when active (player falls through)
+    let blockerSaved = false;
+    if (obs.aiModifier === 'temporaryBlocker') {
+      if (obs.aiModState === 'active') return;
+      const { ctx: ctxB } = this;
+      if (obs.aiModState === 'warning') {
+        ctxB.save();
+        blockerSaved = true;
+        ctxB.globalAlpha *= 0.55;
+      } else if (obs.aiModState === 'retracting') {
+        const fadeIn = Math.min(1, (obs.aiModTimer ?? 0) / BLOCKER_RETRACT_MS);
+        ctxB.save();
+        blockerSaved = true;
+        ctxB.globalAlpha *= fadeIn;
+      }
+    }
+
     const { ctx } = this;
     const h = obsH(obs);
     if (h <= 0.5) return;
@@ -384,53 +458,92 @@ export class Renderer {
       ctx.globalAlpha *= computeDisappearAlpha(obs);
     }
 
+    // Dropping platform: shift y by drop offset; use alpha fade during dropping/spawning
+    const dropOffset = (obs.aiModifier === 'droppingPlatform') ? (obs.aiModDropOffset ?? 0) : 0;
+    const isDroppingActive = obs.aiModifier === 'droppingPlatform' &&
+      (obs.aiModState === 'dropping' || obs.aiModState === 'spawning');
+    if (isDroppingActive && !useAlpha) ctx.save();
+    if (isDroppingActive) ctx.globalAlpha *= obs.aiModState === 'dropping' ? 0.7 : 0.85;
+
     const sx       = px(obsX(obs) - cameraX);
-    const surfaceY = px(groundY - h);
+    const surfaceY = px(groundY - h + dropOffset);
     const w = px(obsW(obs));
+
+    // Shake: collapsing trap warning OR droppingPlatform warning state
+    const isDropWarning = obs.aiModifier === 'droppingPlatform' && obs.aiModState === 'warning';
     const shakeX = (obs.trapType === 'collapsingPlatform' && (obs.trapState === 'warning' || obs.trapState === 'triggered'))
       ? Math.sin((obs.animationProgress ?? 0) * 24) * 2
-      : 0;
+      : isDropWarning
+        ? Math.sin((obs.aiModTimer ?? 0) / 40) * 3
+        : 0;
+    const shakeY = isDropWarning ? Math.sin((obs.aiModTimer ?? 0) / 30 + 1) * 1 : 0;
     const thick    = TILE; // 16px = 1 tile
 
+    const sy = surfaceY + shakeY;
+
     // Brick body (below grass strip)
-    this.drawBricks(px(sx + shakeX), surfaceY + 4, w, thick - 4, obsX(obs), cameraX, P_PLAT, P_PLAT_DK, 20, 10);
+    this.drawBricks(px(sx + shakeX), sy + 4, w, thick - 4, obsX(obs), cameraX, P_PLAT, P_PLAT_DK, 20, 10);
 
     // Grass top
     ctx.fillStyle = P_GRASS;
-    ctx.fillRect(px(sx + shakeX), surfaceY, w, 4);
+    ctx.fillRect(px(sx + shakeX), sy, w, 4);
     ctx.fillStyle = P_GRASS_LT;
-    ctx.fillRect(px(sx + shakeX), surfaceY, w, 2);
+    ctx.fillRect(px(sx + shakeX), sy, w, 2);
 
     // Edge caps (left/right dark pixels)
     ctx.fillStyle = P_PLAT_DK;
-    ctx.fillRect(px(sx + shakeX), surfaceY + 4, 2, thick - 4);
-    ctx.fillRect(px(sx + shakeX) + w - 2, surfaceY + 4, 2, thick - 4);
+    ctx.fillRect(px(sx + shakeX), sy + 4, 2, thick - 4);
+    ctx.fillRect(px(sx + shakeX) + w - 2, sy + 4, 2, thick - 4);
 
     const routeAccent = routeAccentColor(obs);
     if (routeAccent) {
       ctx.fillStyle = routeAccent;
-      ctx.fillRect(px(sx + shakeX), surfaceY + 1, w, 4);
+      ctx.fillRect(px(sx + shakeX), sy + 1, w, 4);
     }
 
     // Trap mutation: spikes can grow out of tile tops.
     const spikeExt = obs.trapType === 'platformNeedle' ? (obs.currentSpikeExt ?? 0) : 0;
     if (spikeExt > 1) {
-      this.drawJumpBlockerSpikes(sx + shakeX, surfaceY, w, obsX(obs), cameraX, spikeExt);
+      this.drawJumpBlockerSpikes(sx + shakeX, sy, w, obsX(obs), cameraX, spikeExt);
     }
 
-    if (useAlpha) {
+    if (useAlpha || isDroppingActive) {
+      ctx.restore();
+    }
+    if (blockerSaved) {
       ctx.restore();
     }
 
     // Orange warning strip on disappear-mode platforms when still solid
     if (obs.disappearMode && disappearState === 'visible') {
       ctx.fillStyle = 'rgba(255,140,0,0.55)';
+      ctx.fillRect(px(sx), surfaceY - shakeY, w, 3);
+    }
+    // Pulsing orange warning strip when temp blocker is about to vanish
+    if (obs.aiModifier === 'temporaryBlocker' && obs.aiModState === 'warning') {
+      const pulse = 0.5 + 0.4 * Math.abs(Math.sin((obs.aiModTimer ?? 0) / 90));
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = '#FF8800';
       ctx.fillRect(px(sx), surfaceY, w, 3);
+      ctx.restore();
+    }
+    // Red crack overlay on droppingPlatform during warning
+    if (isDropWarning) {
+      const crack = Math.min(1, (obs.aiModTimer ?? 0) / 700);
+      ctx.save();
+      ctx.globalAlpha = crack * 0.55;
+      ctx.fillStyle = '#FF2200';
+      ctx.fillRect(px(sx + shakeX) + 2, surfaceY + shakeY + 2, w - 4, 2);
+      ctx.fillRect(px(sx + shakeX) + w * 0.3, surfaceY + shakeY, 2, 6);
+      ctx.fillRect(px(sx + shakeX) + w * 0.6, surfaceY + shakeY, 2, 5);
+      ctx.restore();
     }
   }
 
   private drawLowCeiling(obs: Obstacle, groundY: number, cameraX: number) {
     const { ctx } = this;
+
     const sx   = px(obsX(obs) - cameraX);
     const h = obsH(obs);
     const topY = px(groundY - h - CEIL_THICKNESS);
