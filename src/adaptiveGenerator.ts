@@ -934,7 +934,9 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
   obstacles.sort((a, b) => a.x - b.x);
   applyPlatformOrganization(obstacles);
   enforceReachablePlatforms(obstacles);
+  enforceGapJumpHeadroom(obstacles);
   enforceSpikeJumpHeadroom(obstacles);
+  enforcePlatformChainReachability(obstacles);
   enforceMinGroundGap(obstacles);
   enforceForcedActionRecovery(obstacles);
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
@@ -1062,6 +1064,51 @@ function enforceSpikeJumpHeadroom(obstacles: Obstacle[]): void {
     });
     if (!overlapsJumpHazard) continue;
     p.height = Math.max(p.height, SPIKE_OVERHEAD_MIN_HEIGHT);
+  }
+}
+
+// Keep platforms above gap lanes high enough that lower-route jump arcs cannot
+// bonk into their underside while clearing the gap.
+function enforceGapJumpHeadroom(obstacles: Obstacle[]): void {
+  const platforms = obstacles.filter((o) => o.kind === 'platform');
+  const gaps = obstacles.filter((o) => o.kind === 'gap');
+  if (platforms.length === 0 || gaps.length === 0) return;
+
+  for (const p of platforms) {
+    const px0 = p.x;
+    const px1 = p.x + p.width;
+    const overlapsGap = gaps.some((g) => {
+      const gx0 = g.x + 10;
+      const gx1 = g.x + g.width - 10;
+      return px1 > gx0 && px0 < gx1;
+    });
+    if (!overlapsGap) continue;
+    p.height = Math.max(p.height, SPIKE_OVERHEAD_MIN_HEIGHT);
+  }
+}
+
+// Keep platform chains jumpable after geometry safety passes. Without this,
+// headroom lifts can create one impossible long jump between otherwise valid tiles.
+function enforcePlatformChainReachability(obstacles: Obstacle[]): void {
+  const maxJump = calculateMaxJumpDistance();
+  const layers: Array<'mid' | 'upper'> = ['mid', 'upper'];
+
+  for (const layer of layers) {
+    const chain = obstacles
+      .filter((o) => o.kind === 'platform' && o.routeLayer === layer)
+      .sort((a, b) => a.x - b.x);
+    if (chain.length < 2) continue;
+
+    for (let i = 1; i < chain.length; i++) {
+      const prev = chain[i - 1];
+      const curr = chain[i];
+      const rise = Math.max(0, curr.height - prev.height);
+      const minGap = 72;
+      const maxGap = clampInt(Math.round(maxJump * 0.78 - rise * 0.45), 96, 154);
+      const currentGap = curr.x - (prev.x + prev.width);
+      const constrainedGap = clampInt(currentGap, minGap, maxGap);
+      curr.x = prev.x + prev.width + constrainedGap;
+    }
   }
 }
 
@@ -1579,7 +1626,9 @@ function buildPersistentAdaptiveLayout(
   obs.sort((a, b) => a.x - b.x);
   applyPlatformOrganization(obs);
   enforceReachablePlatforms(obs);
+  enforceGapJumpHeadroom(obs);
   enforceSpikeJumpHeadroom(obs);
+  enforcePlatformChainReachability(obs);
   enforceMinGroundGap(obs);
   enforceForcedActionRecovery(obs);
   const lastEnd = obs.reduce((max, o) => Math.max(max, o.x + o.width), 0);
@@ -1736,7 +1785,6 @@ function buildStaircaseClimb(startX: number, ctx: SegmentContext, seed: number):
 // across the corridor. The AI can arm collapsingPlatform traps on these surfaces.
 function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: number): SegmentBuild {
   const platformCount = clampInt(2 + (seed % 2), 2, 3);
-  const platformH = 112; // must stay below MAX_JUMP_FROM_GROUND (130px apex safety margin)
   const platformW = clampInt(90 + (seed % 3) * 10, 88, 112);
   const betweenGap = clampInt(96 + (seed % 4) * 10, 92, 132); // wider, cleaner spacing
 
@@ -1745,7 +1793,8 @@ function buildUpperCorridorBridge(startX: number, _ctx: SegmentContext, seed: nu
   let px = startX + 176;
 
   for (let i = 0; i < platformCount; i++) {
-    obstacles.push({ kind: 'platform', x: px, width: platformW, height: platformH });
+    const platformH = 104 + i * 18 + (seed % 2 === 0 ? 0 : 6);
+    obstacles.push({ kind: 'platform', x: px, width: platformW, height: clampInt(platformH, 98, 156) });
     if (i < platformCount - 1) {
       px += platformW + betweenGap;
     } else {
@@ -1850,11 +1899,12 @@ function buildRouteTriad(startX: number, ctx: SegmentContext, seed: number): Seg
   const upperGap = clampInt(102 + (seed % 3) * 10, 98, 136);
   const upperWidth = 96;
   for (let i = 0; i < upperCount; i++) {
+    const upperH = 184 + i * 14 + ((seed + i) % 2) * 6;
     obstacles.push({
       kind: 'platform',
       x: upperStart + i * (upperWidth + upperGap),
       width: upperWidth,
-      height: 202,
+      height: clampInt(upperH, 178, 220),
       solid: true,
       routeLayer: 'upper',
       routeId: `${routeKey}_upper_lane`,
@@ -2613,6 +2663,9 @@ function rebuildBuildResultFromSegments(
 ): BuildResult {
   const obstacles  = segmentBuilds.flatMap((s) => s.obstacles).sort((a, b) => a.x - b.x);
   enforceReachablePlatforms(obstacles);
+  enforceGapJumpHeadroom(obstacles);
+  enforceSpikeJumpHeadroom(obstacles);
+  enforcePlatformChainReachability(obstacles);
   const maxEnd     = obstacles.length > 0 ? Math.max(...obstacles.map((o) => o.x + o.width)) : canvasWidth;
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(maxEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX      = worldWidth - FLAG_OFFSET;
