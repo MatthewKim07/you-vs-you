@@ -26,6 +26,14 @@ const P_CHOICE_DK  = '#7C3AED';
 const P_PLYR_HAT   = '#F2C94C';
 const P_PLYR       = '#4A90E2';
 const P_PLYR_DK    = '#2A6AB0';
+// New hazard colors
+const P_ELEC_POST  = '#1A2A3A';  // electric field post
+const P_ELEC_BEAM  = '#00FFFF';  // active electric beam
+const P_ELEC_WARN  = '#FFE040';  // warning sparks
+const P_CRUSH      = '#7B1A1A';  // crusher ceiling body
+const P_CRUSH_DK   = '#4A0A0A';  // crusher ceiling dark
+const P_CRUSH_WARN = '#FF7800';  // crusher warning stripe
+const P_WARN_MKR   = '#FFD700';  // warning marker base
 
 const DOUBLE_SPIKE_GAP = 16; // keep in sync with original
 const CEIL_THICKNESS   = 16; // keep in sync with game.ts LOW_CEILING_THICKNESS
@@ -236,6 +244,9 @@ export class Renderer {
       else if (obs.kind === 'lowCeiling')     this.drawLowCeiling(obs, groundY, cameraX);
       else if (obs.kind === 'choiceObstacle') this.drawChoiceObstacle(obs, groundY, cameraX);
       else if (obs.kind === 'platform')       this.drawPlatform(obs, groundY, cameraX);
+      else if (obs.kind === 'electricField')  this.drawElectricField(obs, groundY, cameraX);
+      else if (obs.kind === 'crusherCeiling') this.drawCrusherCeiling(obs, groundY, cameraX);
+      else if (obs.kind === 'warningMarker')  this.drawWarningMarker(obs, groundY, cameraX);
       else if (obs.kind === 'gap' && obs.trapHost && obs.trapType === 'shiftingGap') {
         this.drawShiftingGapMarker(obs, groundY, cameraX);
       }
@@ -1159,6 +1170,272 @@ export class Renderer {
     ctx.restore();
   }
 
+  private drawElectricField(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = px(obs.x - cameraX);
+    const w = px(obs.width);
+    const h = px(obs.height);
+    const topY = px(groundY - h);
+    const state = obs.aiModState;
+    const t = obs.aiModTimer ?? 0;
+
+    // Two posts
+    const postW = 6;
+    const postH = h;
+    ctx.fillStyle = P_ELEC_POST;
+    ctx.fillRect(sx, topY, postW, postH);
+    ctx.fillRect(sx + w - postW, topY, postW, postH);
+    // Post highlights
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(sx + 1, topY + 2, 2, postH - 4);
+    ctx.fillRect(sx + w - postW + 1, topY + 2, 2, postH - 4);
+
+    if (!state || state === 'inactive') {
+      // Dark, dormant — just posts + faint dashed line
+      ctx.save();
+      ctx.globalAlpha = 0.25;
+      ctx.strokeStyle = '#406080';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.moveTo(sx + postW, px(groundY - h * 0.5));
+      ctx.lineTo(sx + w - postW, px(groundY - h * 0.5));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    } else if (state === 'warning') {
+      // Yellow sparks jumping between posts
+      const sparkCount = 5;
+      ctx.save();
+      ctx.strokeStyle = P_ELEC_WARN;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.6 + 0.4 * Math.abs(Math.sin(t / 80));
+      ctx.beginPath();
+      const y0 = px(groundY - h * 0.5);
+      ctx.moveTo(sx + postW, y0);
+      for (let i = 1; i <= sparkCount; i++) {
+        const bx = sx + postW + ((w - postW * 2) * i) / sparkCount;
+        const jitter = (Math.sin(t / 60 + i * 1.7) * h * 0.35);
+        ctx.lineTo(px(bx), px(y0 + jitter));
+      }
+      ctx.lineTo(sx + w - postW, y0);
+      ctx.stroke();
+      ctx.restore();
+      // Warn glow on floor
+      ctx.save();
+      ctx.globalAlpha = 0.15;
+      ctx.fillStyle = P_ELEC_WARN;
+      ctx.fillRect(sx + postW, topY, w - postW * 2, h);
+      ctx.restore();
+    } else if (state === 'active') {
+      // Bright cyan beam + floor glow
+      ctx.save();
+      ctx.globalAlpha = 0.85 + 0.15 * Math.abs(Math.sin(t / 50));
+      // Glow (wide, low alpha)
+      ctx.globalAlpha *= 0.3;
+      ctx.fillStyle = P_ELEC_BEAM;
+      ctx.fillRect(sx + postW, topY, w - postW * 2, h);
+      ctx.globalAlpha /= 0.3;
+      ctx.globalAlpha *= 0.85;
+      // Main beam
+      const beamY = px(groundY - h * 0.48);
+      const beamH = Math.max(4, px(h * 0.12));
+      ctx.fillStyle = P_ELEC_BEAM;
+      ctx.fillRect(sx + postW, beamY, w - postW * 2, beamH);
+      // Zigzag overlay
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const segCount = 8;
+      ctx.moveTo(sx + postW, beamY + beamH / 2);
+      for (let i = 1; i <= segCount; i++) {
+        const bx = sx + postW + ((w - postW * 2) * i) / segCount;
+        const by = beamY + (i % 2 === 0 ? 0 : beamH);
+        ctx.lineTo(px(bx), by);
+      }
+      ctx.stroke();
+      ctx.restore();
+      // Danger ticks on top
+      ctx.fillStyle = '#FF4040';
+      for (let xi = sx + postW + 4; xi < sx + w - postW - 4; xi += 18) {
+        ctx.fillRect(px(xi), topY, 2, 5);
+      }
+    }
+  }
+
+  private drawCrusherCeiling(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = px(obs.x - cameraX);
+    const w = px(obs.width);
+    const state = obs.aiModState;
+    const t = obs.aiModTimer ?? 0;
+
+    // Current clearance from ground (animated)
+    const clearance = obs.aiModVisualHeight ?? CRUSHER_RAISED_H;
+    const slabH = 20;
+    const slabTop = px(groundY - clearance - slabH);
+    const slabBot = slabTop + slabH;
+
+    // Slab body
+    const isActive = state === 'active' || state === 'crushing';
+    ctx.fillStyle = isActive ? P_CRUSH : P_CRUSH_DK;
+    ctx.fillRect(sx, slabTop, w, slabH);
+    // Brick detail
+    this.drawBricks(sx, slabTop + 2, w, slabH - 4, obs.x, cameraX, isActive ? '#9B2A2A' : '#5A3050', isActive ? P_CRUSH_DK : '#3A1A3A', 24, 10);
+    // Bottom edge highlight
+    ctx.fillStyle = isActive ? '#FF6060' : '#8A5A8A';
+    ctx.fillRect(sx, slabBot - 3, w, 3);
+    // Top edge dark
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(sx, slabTop, w, 3);
+
+    // Warning stripes when approaching
+    if (state === 'warning') {
+      const pulse = 0.5 + 0.5 * Math.abs(Math.sin(t / 100));
+      ctx.save();
+      ctx.globalAlpha = pulse * 0.7;
+      const stripeW = 12;
+      let xi = sx;
+      let alt = 0;
+      while (xi < sx + w) {
+        if (alt % 2 === 0) {
+          ctx.fillStyle = P_CRUSH_WARN;
+          ctx.fillRect(px(xi), slabTop, Math.min(stripeW, sx + w - px(xi)), slabH);
+        }
+        xi += stripeW;
+        alt++;
+      }
+      ctx.restore();
+    }
+
+    // Downward danger spikes on underside when active/crushing
+    if (isActive) {
+      const spikeW = 10;
+      const spikeH = 12;
+      const pitch = 18;
+      const edgePad = 6;
+      const count = Math.max(1, Math.floor((w - edgePad * 2) / pitch));
+      const totalW = (count - 1) * pitch + spikeW;
+      const startX = sx + (w - totalW) / 2;
+      ctx.fillStyle = P_SPIKE;
+      for (let i = 0; i < count; i++) {
+        const left = px(startX + i * pitch);
+        const tipX = px(startX + i * pitch + spikeW / 2);
+        const tipY = slabBot + spikeH;
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(left + spikeW, slabBot);
+        ctx.lineTo(left, slabBot);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Chain / cable from top
+    const chainTopY = 0;
+    ctx.save();
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(sx + w / 2, chainTopY);
+    ctx.lineTo(sx + w / 2, slabTop);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Floor danger zone indicator (shows where danger is)
+    if (state === 'active' || state === 'warning' || state === 'crushing') {
+      ctx.save();
+      ctx.globalAlpha = state === 'active' ? 0.22 : 0.1;
+      ctx.fillStyle = P_CRUSH_WARN;
+      ctx.fillRect(sx, groundY - clearance, w, clearance);
+      ctx.restore();
+    }
+  }
+
+  private drawWarningMarker(obs: Obstacle, groundY: number, cameraX: number) {
+    const { ctx } = this;
+    const sx = px(obs.x - cameraX);
+    const w = px(obs.width);
+    const markerY = px(groundY - 12);
+    const wt = obs.warningType ?? 'moving';
+
+    ctx.save();
+    ctx.globalAlpha = 0.75;
+
+    if (wt === 'electric') {
+      // Cyan lightning bolt on floor
+      ctx.fillStyle = P_ELEC_BEAM;
+      const cx = sx + w / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 3, markerY - 10);
+      ctx.lineTo(cx + 5, markerY - 10);
+      ctx.lineTo(cx,     markerY - 4);
+      ctx.lineTo(cx + 4, markerY - 4);
+      ctx.lineTo(cx - 5, markerY + 2);
+      ctx.lineTo(cx,     markerY + 2);
+      ctx.lineTo(cx - 3, markerY - 4);
+      ctx.closePath();
+      ctx.fill();
+      // Floor ticks
+      ctx.fillStyle = P_ELEC_BEAM;
+      for (let xi = sx + 4; xi < sx + w - 4; xi += 16) {
+        ctx.fillRect(px(xi), markerY, 2, 4);
+      }
+    } else if (wt === 'crusher') {
+      // Orange down-arrow
+      ctx.fillStyle = P_CRUSH_WARN;
+      const cx = sx + w / 2;
+      // Shaft
+      ctx.fillRect(cx - 3, markerY - 10, 6, 8);
+      // Arrow head
+      ctx.beginPath();
+      ctx.moveTo(cx, markerY + 2);
+      ctx.lineTo(cx - 8, markerY - 6);
+      ctx.lineTo(cx + 8, markerY - 6);
+      ctx.closePath();
+      ctx.fill();
+    } else if (wt === 'crumble') {
+      // Red zig-zag crack
+      ctx.strokeStyle = '#FF6600';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const crackStep = Math.max(8, w / 5);
+      ctx.moveTo(sx, markerY - 2);
+      let xi = sx;
+      let dir = 1;
+      while (xi < sx + w) {
+        xi = Math.min(xi + crackStep, sx + w);
+        ctx.lineTo(px(xi), markerY - 2 + dir * 5);
+        dir = -dir;
+      }
+      ctx.stroke();
+    } else {
+      // 'moving' — yellow double chevron arrows
+      ctx.fillStyle = P_WARN_MKR;
+      const arrowW = 10;
+      const arrowH = 8;
+      const midY = markerY - 4;
+      const centerX = sx + w / 2;
+      // Left-pointing arrow
+      ctx.beginPath();
+      ctx.moveTo(centerX - 4,           midY);
+      ctx.lineTo(centerX - 4 + arrowW,  midY - arrowH / 2);
+      ctx.lineTo(centerX - 4 + arrowW,  midY + arrowH / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(centerX - 4 + arrowW + 4,           midY);
+      ctx.lineTo(centerX - 4 + arrowW + 4 + arrowW,  midY - arrowH / 2);
+      ctx.lineTo(centerX - 4 + arrowW + 4 + arrowW,  midY + arrowH / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
   private drawShiftingGapMarker(obs: Obstacle, groundY: number, cameraX: number) {
     const { ctx } = this;
     const x = px(obsX(obs) - cameraX);
@@ -1246,6 +1523,16 @@ export class Renderer {
         ctx.setLineDash([4, 4]);
         ctx.strokeRect(sx, px(groundY) - 4, sw, 8);
         ctx.setLineDash([]);
+      } else if (o.kind === 'electricField' && o.aiModState === 'active') {
+        ctx.strokeStyle = '#00ffff';
+        ctx.strokeRect(sx, px(groundY) - sh, sw, sh);
+      } else if (o.kind === 'crusherCeiling') {
+        const clearance = o.aiModVisualHeight ?? CRUSHER_RAISED_H;
+        const slabH = 20;
+        const slabTop = px(groundY) - clearance - slabH;
+        const isActive = o.aiModState === 'active' || o.aiModState === 'crushing';
+        ctx.strokeStyle = isActive ? '#ff4444' : '#ff880044';
+        ctx.strokeRect(sx, slabTop, sw, slabH);
       }
     }
 
