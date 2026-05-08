@@ -947,10 +947,32 @@ export class Renderer {
   drawAIGameMasterMessage(message: string, alpha: number) {
     if (!message) return;
     const { ctx, canvas } = this;
-    const boxW = Math.min(canvas.width - 28, 500);
-    const boxH = 56;
-    const x    = px((canvas.width - boxW) / 2);
-    const y    = 48;
+    const boxW    = Math.min(canvas.width - 28, 500);
+    const padH    = 10; // horizontal text padding inside box
+    const maxLineW = boxW - padH * 2;
+    const x       = px((canvas.width - boxW) / 2);
+    const y       = 48;
+
+    // Word-wrap: build lines that fit within maxLineW
+    const fontSize = Math.min(12, px(canvas.width / 28));
+    ctx.font = `bold ${fontSize}px monospace`;
+    const words = message.split(' ');
+    const lines: string[] = [];
+    let current = '';
+    for (const word of words) {
+      const test = current ? `${current} ${word}` : word;
+      if (ctx.measureText(test).width <= maxLineW) {
+        current = test;
+      } else {
+        if (current) lines.push(current);
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+
+    const lineH   = fontSize + 4;
+    const textAreaH = lines.length * lineH;
+    const boxH    = 26 + textAreaH + 8; // 26 = label area, 8 = bottom pad
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -974,11 +996,14 @@ export class Renderer {
     ctx.fillStyle = P_PLYR_HAT;
     ctx.fillText('AI', x + 8, y + 16);
 
-    // Message text (use monospace for readability at small size)
+    // Wrapped message text
+    ctx.font = `bold ${fontSize}px monospace`;
     ctx.textAlign = 'center';
-    ctx.font = `bold ${Math.min(12, px(canvas.width / 28))}px monospace`;
     ctx.fillStyle = '#fff';
-    ctx.fillText(message, px(canvas.width / 2), y + 37);
+    const textStartY = y + 26;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], px(canvas.width / 2), textStartY + i * lineH);
+    }
 
     ctx.restore();
   }
