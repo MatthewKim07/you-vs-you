@@ -934,6 +934,7 @@ function buildSegments(specs: SegmentSpec[], ctx: SegmentContext, canvasWidth: n
   applyPlatformOrganization(obstacles);
   enforceReachablePlatforms(obstacles);
   enforceSpikeJumpHeadroom(obstacles);
+  enforceMinGroundGap(obstacles);
   enforceForcedActionRecovery(obstacles);
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(cursor + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX = worldWidth - FLAG_OFFSET;
@@ -1012,6 +1013,34 @@ function spreadPlatformChains(platforms: Obstacle[]): void {
 // Prevent accidental ceiling-blocks above and before jump-critical spike lanes.
 // 208px puts the platform underside above a full jump's head apex:
 // jump apex (~137) + player height (48) + platform thickness (16) + margin.
+// Minimum ground-level gap between any two adjacent hazards on the same surface.
+// Ensures the player (width 32px) always has a comfortable landing window (≥2.5× their width).
+const MIN_GROUND_GAP = PLAYER_WIDTH * 2 + 16; // 80px
+
+function enforceMinGroundGap(obstacles: Obstacle[]): void {
+  const groundHazards = obstacles.filter(
+    (o) => o.kind === 'spike' || o.kind === 'doubleSpike' || o.kind === 'choiceObstacle',
+  ).sort((a, b) => a.x - b.x);
+
+  for (let i = 0; i < groundHazards.length - 1; i++) {
+    const left  = groundHazards[i];
+    const right = groundHazards[i + 1];
+    const leftRight  = (left.currentX ?? left.x) + (left.currentWidth ?? left.width);
+    const rightLeft  = right.currentX ?? right.x;
+    const gap = rightLeft - leftRight;
+    if (gap >= MIN_GROUND_GAP) continue;
+    // Push the right obstacle rightward until there's enough room
+    const shift = MIN_GROUND_GAP - gap;
+    right.x += shift;
+    if (right.currentX !== undefined) right.currentX += shift;
+    if (right.targetX   !== undefined) right.targetX  += shift;
+    if (right.trapInitialX !== undefined) right.trapInitialX += shift;
+    // Re-sort the slice so subsequent pairs use updated positions
+    groundHazards.sort((a, b) => a.x - b.x);
+  }
+  obstacles.sort((a, b) => a.x - b.x);
+}
+
 function enforceSpikeJumpHeadroom(obstacles: Obstacle[]): void {
   const platforms = obstacles.filter((o) => o.kind === 'platform');
   if (platforms.length === 0) return;
@@ -1542,6 +1571,7 @@ function buildPersistentAdaptiveLayout(
   applyPlatformOrganization(obs);
   enforceReachablePlatforms(obs);
   enforceSpikeJumpHeadroom(obs);
+  enforceMinGroundGap(obs);
   enforceForcedActionRecovery(obs);
   const lastEnd = obs.reduce((max, o) => Math.max(max, o.x + o.width), 0);
   const worldWidth = Math.max(
