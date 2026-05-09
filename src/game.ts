@@ -307,6 +307,10 @@ export class Game {
   }
 
   private loadLocalShopState() {
+    if (!this.authUserId) {
+      this.applyShopState(this.baseShopState());
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(this.shopStorageKey());
       if (!raw) {
@@ -321,6 +325,7 @@ export class Game {
   }
 
   private saveLocalShopState() {
+    if (!this.authUserId) return;
     try {
       window.localStorage.setItem(this.shopStorageKey(), JSON.stringify(this.currentShopState()));
     } catch {
