@@ -59,6 +59,7 @@ const ROUTE_SWITCH_MIN_X_DELTA = 88;
 const ROUTE_LOWER_MAX_HEIGHT = 22;
 const ROUTE_MID_MAX_HEIGHT = 86;
 const COIN_STORAGE_KEY_BASE = 'you-vs-you-shop-v1';
+const AUDIO_SETTINGS_STORAGE_KEY = 'you-vs-you-audio-v1';
 
 type SkinId = 'classic' | 'ember' | 'forest' | 'void';
 type PowerUpId = 'secondWind' | 'speedBoost';
@@ -82,6 +83,7 @@ const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; descr
 ];
 
 type ShopSection = 'hub' | 'looks' | 'boosts' | 'inventory';
+type MenuStackScreen = 'main' | 'auth' | 'settings' | 'shop';
 
 function skinDisplayMeta(id: SkinId): { label: string; preview: string; subtitle: string } {
   if (id === 'classic') {
@@ -139,6 +141,7 @@ export class Game {
   private countdownSec = 0;
   private previewLastJumpObstacleX = Number.NEGATIVE_INFINITY;
   private menuOverlay!: HTMLDivElement;
+  private menuMainStack!: HTMLDivElement;
   private playButton!: HTMLButtonElement;
   private authToggleButton!: HTMLButtonElement;
   private settingsToggleButton!: HTMLButtonElement;
@@ -195,9 +198,7 @@ export class Game {
   private authClient = new AuthProgressClient();
   private authUserId: string | null = null;
   private highestLevelUnlocked = 1;
-  private authPanelOpen = false;
-  private settingsPanelOpen = false;
-  private shopPanelOpen = false;
+  private menuStackScreen: MenuStackScreen = 'main';
   private shopSection: ShopSection = 'hub';
   private shopBackButton!: HTMLButtonElement;
   private shopHeadingEl!: HTMLHeadingElement;
@@ -221,6 +222,7 @@ export class Game {
     this.debugPanel = new DebugPanel(this.tracker);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.loadLocalShopState();
+    this.loadAudioSettings();
     this.setupResize();
     this.setupUi();
     this.armAudioOnFirstGesture();
@@ -328,6 +330,45 @@ export class Game {
 
   private shopStorageKey(): string {
     return `${COIN_STORAGE_KEY_BASE}:${this.authUserId ?? 'guest'}`;
+  }
+
+  private loadAudioSettings() {
+    try {
+      const raw = window.localStorage.getItem(AUDIO_SETTINGS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        muted?: unknown;
+        sfx?: unknown;
+        music?: unknown;
+      };
+      if (typeof parsed.muted === 'boolean') {
+        this.audioMuted = parsed.muted;
+        this.audio.setEnabled(!this.audioMuted);
+      }
+      if (typeof parsed.sfx === 'number' && Number.isFinite(parsed.sfx)) {
+        this.audio.setSfxVolume(parsed.sfx);
+      }
+      if (typeof parsed.music === 'number' && Number.isFinite(parsed.music)) {
+        this.audio.setMusicVolume(parsed.music);
+      }
+    } catch {
+      // Ignore corrupt or missing storage.
+    }
+  }
+
+  private persistAudioSettings() {
+    try {
+      window.localStorage.setItem(
+        AUDIO_SETTINGS_STORAGE_KEY,
+        JSON.stringify({
+          muted: this.audioMuted,
+          sfx: this.audio.getSfxVolume(),
+          music: this.audio.getMusicVolume(),
+        }),
+      );
+    } catch {
+      // Private mode / quota: ignore.
+    }
   }
 
   private updatePlayerSpeedFromPowerUps() {
@@ -503,12 +544,18 @@ export class Game {
 
     this.menuOverlay = document.createElement('div');
     this.menuOverlay.id = 'start-menu';
-    this.menuOverlay.innerHTML = `
-      <div class="menu-card">
-        <h1>You vs You</h1>
-        <p>The level learns you.</p>
-      </div>
+
+    this.menuMainStack = document.createElement('div');
+    this.menuMainStack.id = 'menu-main-stack';
+    this.menuMainStack.className = 'menu-main-stack';
+
+    const menuCard = document.createElement('div');
+    menuCard.className = 'menu-card';
+    menuCard.innerHTML = `
+      <h1>You vs You</h1>
+      <p>The level learns you.</p>
     `;
+    this.menuMainStack.appendChild(menuCard);
 
     this.playButton = document.createElement('button');
     this.playButton.id = 'play-btn';
@@ -523,17 +570,9 @@ export class Game {
     this.authToggleButton.id = 'auth-toggle-btn';
     this.authToggleButton.className = 'menu-secondary-btn';
     this.authToggleButton.textContent = 'Log In';
-    this.authToggleButton.addEventListener('click', async (e) => {
+    this.authToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (this.authUserId) {
-        await this.signOutAccount();
-        return;
-      }
-      this.authPanelOpen = !this.authPanelOpen;
-      if (this.authPanelOpen) {
-        this.settingsPanelOpen = false;
-        this.shopPanelOpen = false;
-      }
+      this.menuStackScreen = 'auth';
       this.refreshAuthUi();
     });
     this.authToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -544,11 +583,7 @@ export class Game {
     this.settingsToggleButton.textContent = 'Settings';
     this.settingsToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.settingsPanelOpen = !this.settingsPanelOpen;
-      if (this.settingsPanelOpen) {
-        this.authPanelOpen = false;
-        this.shopPanelOpen = false;
-      }
+      this.menuStackScreen = 'settings';
       this.refreshAuthUi();
     });
     this.settingsToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -559,13 +594,8 @@ export class Game {
     this.shopToggleButton.textContent = 'Shop';
     this.shopToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      const opening = !this.shopPanelOpen;
-      this.shopPanelOpen = opening;
-      if (opening) {
-        this.shopSection = 'hub';
-        this.authPanelOpen = false;
-        this.settingsPanelOpen = false;
-      }
+      this.menuStackScreen = 'shop';
+      this.shopSection = 'hub';
       this.refreshAuthUi();
     });
     this.shopToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -576,7 +606,8 @@ export class Game {
     menuActions.appendChild(this.authToggleButton);
     menuActions.appendChild(this.settingsToggleButton);
     menuActions.appendChild(this.shopToggleButton);
-    this.menuOverlay.appendChild(menuActions);
+    this.menuMainStack.appendChild(menuActions);
+    this.menuOverlay.appendChild(this.menuMainStack);
 
     this.authPanel = document.createElement('div');
     this.authPanel.id = 'auth-panel';
@@ -595,7 +626,14 @@ export class Game {
 
     document.body.appendChild(this.menuOverlay);
     this.updateCoinHudBadge();
+    this.refreshAuthUi();
     this.syncUiVisibility();
+  }
+
+  private goMenuMain() {
+    this.menuStackScreen = 'main';
+    this.shopSection = 'hub';
+    this.refreshAuthUi();
   }
 
   private setupPauseMenuUi() {
@@ -649,16 +687,34 @@ export class Game {
     });
     this.pauseSfxSlider.addEventListener('input', () => {
       this.audio.setSfxVolume(Number(this.pauseSfxSlider.value) / 100);
+      this.persistAudioSettings();
     });
     this.pauseMusicSlider.addEventListener('input', () => {
       this.audio.setMusicVolume(Number(this.pauseMusicSlider.value) / 100);
+      this.persistAudioSettings();
     });
     this.refreshPauseAudioUi();
   }
 
   private setupAuthUi() {
     const authBox = this.authPanel;
-    authBox.className = 'auth-box';
+    authBox.className = 'auth-box menu-sub-panel';
+
+    const authBack = document.createElement('button');
+    authBack.type = 'button';
+    authBack.className = 'menu-sub-back-btn';
+    authBack.textContent = '← Main menu';
+    authBack.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.goMenuMain();
+    });
+    authBack.addEventListener('pointerdown', (e) => e.stopPropagation());
+    authBox.appendChild(authBack);
+
+    const authTitle = document.createElement('h3');
+    authTitle.className = 'menu-sub-page-title';
+    authTitle.textContent = 'Account';
+    authBox.appendChild(authTitle);
 
     this.authStatusLabel = document.createElement('p');
     this.authStatusLabel.className = 'auth-status';
@@ -719,9 +775,10 @@ export class Game {
 
   private setupMenuSettingsUi() {
     const panel = this.settingsPanel;
-    panel.className = 'auth-box';
+    panel.className = 'auth-box menu-sub-panel';
     panel.innerHTML = `
-      <p class="auth-status">Settings</p>
+      <button type="button" id="settings-menu-back" class="menu-sub-back-btn">← Main menu</button>
+      <h3 class="menu-sub-page-title">Settings</h3>
       <div class="pause-audio-row">
         <div class="pause-sound-row">
           <button id="menu-sound-toggle" class="pause-icon-btn" aria-label="Toggle sound">🔊</button>
@@ -742,11 +799,20 @@ export class Game {
     this.menuSfxSlider = panel.querySelector('#menu-sfx-slider') as HTMLInputElement;
     this.menuMusicSlider = panel.querySelector('#menu-music-slider') as HTMLInputElement;
 
+    const settingsBack = panel.querySelector('#settings-menu-back') as HTMLButtonElement;
+    settingsBack.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.goMenuMain();
+    });
+    settingsBack.addEventListener('pointerdown', (e) => e.stopPropagation());
+
     this.menuSfxSlider.addEventListener('input', () => {
       this.audio.setSfxVolume(Number(this.menuSfxSlider.value) / 100);
+      this.persistAudioSettings();
     });
     this.menuMusicSlider.addEventListener('input', () => {
       this.audio.setMusicVolume(Number(this.menuMusicSlider.value) / 100);
+      this.persistAudioSettings();
     });
     this.menuSoundToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -756,8 +822,9 @@ export class Game {
   }
 
   private setupShopUi() {
-    this.shopPanel.className = 'shop-panel-root';
+    this.shopPanel.className = 'shop-panel-root menu-sub-panel';
     this.shopPanel.innerHTML = `
+      <button type="button" id="shop-exit-to-main" class="menu-sub-back-btn">← Main menu</button>
       <div class="shop-storefront">
         <div class="shop-roof-block">
           <div class="shop-wood-sign">
@@ -788,6 +855,12 @@ export class Game {
       this.refreshShopUi();
     });
     this.shopBackButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+    const shopExitMain = this.shopPanel.querySelector('#shop-exit-to-main') as HTMLButtonElement;
+    shopExitMain.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.goMenuMain();
+    });
+    shopExitMain.addEventListener('pointerdown', (e) => e.stopPropagation());
     this.shopStatusLabel = document.createElement('p');
     this.shopStatusLabel.className = 'auth-status';
     this.shopStatusLabel.style.textAlign = 'center';
@@ -809,7 +882,7 @@ export class Game {
       this.shopStatusLabel.textContent = '';
       this.shopStatusLabel.style.display = 'none';
     }
-    this.shopPanel.style.display = this.shopPanelOpen ? 'flex' : 'none';
+    this.shopPanel.style.display = this.menuStackScreen === 'shop' ? 'flex' : 'none';
 
     const isHub = this.shopSection === 'hub';
     this.shopBackButton.style.display = isHub ? 'none' : 'inline-flex';
@@ -1144,16 +1217,12 @@ export class Game {
     if (!userId) {
       this.highestLevelUnlocked = 1;
       this.playButton.textContent = 'Play';
-      this.authToggleButton.textContent = 'Log In';
-      this.authToggleButton.classList.remove('danger');
       this.setAuthStatus('Guest mode: progress is not saved after you leave.');
       this.refreshAuthUi();
       return;
     }
 
     this.playButton.textContent = 'Play';
-    this.authToggleButton.textContent = 'Log Out';
-    this.authToggleButton.classList.add('danger');
     this.setAuthStatus(`Signed in as ${email ?? 'player'}. Loading progress...`);
     this.refreshAuthUi();
 
@@ -1162,8 +1231,8 @@ export class Game {
       this.applyLoadedProgress(progress);
       this.setAuthStatus(`Signed in as ${email ?? 'player'}. Progress loaded.`);
       // Successful login should return user to the clean main menu surface.
-      this.authPanelOpen = false;
-      this.settingsPanelOpen = false;
+      this.menuStackScreen = 'main';
+      this.shopSection = 'hub';
       this.authPasswordInput.value = '';
       this.refreshAuthUi();
     } catch (err) {
@@ -1236,8 +1305,6 @@ export class Game {
       this.debugPanel.setPlayerModel(this.playerModel);
       this.highestLevelUnlocked = 1;
       this.setAuthStatus('Signed out. Guest mode active.');
-      this.authToggleButton.textContent = 'Log In';
-      this.authToggleButton.classList.remove('danger');
       this.refreshAuthUi();
       this.enterMenu();
     } catch (err) {
@@ -1256,8 +1323,13 @@ export class Game {
     this.authSignInButton.style.display = signedIn ? 'none' : 'block';
     this.authSignUpButton.style.display = signedIn ? 'none' : 'block';
     this.authSignOutButton.style.display = signedIn ? 'block' : 'none';
-    this.authPanel.style.display = this.authPanelOpen ? 'flex' : 'none';
-    this.settingsPanel.style.display = this.settingsPanelOpen ? 'flex' : 'none';
+    this.authToggleButton.textContent = signedIn ? 'Account' : 'Log In';
+    this.authToggleButton.classList.remove('danger');
+
+    const onMain = this.menuStackScreen === 'main';
+    this.menuMainStack.style.display = onMain ? 'flex' : 'none';
+    this.authPanel.style.display = this.menuStackScreen === 'auth' ? 'flex' : 'none';
+    this.settingsPanel.style.display = this.menuStackScreen === 'settings' ? 'flex' : 'none';
     this.refreshShopUi();
   }
 
@@ -1316,6 +1388,9 @@ export class Game {
     this.hasSpawnedPlayer = true;
     this.state = 'menu';
     this.debugPanel.setAdaptiveSnapshot(this.level);
+    this.menuStackScreen = 'main';
+    this.shopSection = 'hub';
+    this.refreshAuthUi();
     this.syncUiVisibility();
     this.audio.startMenuMusic();
   }
@@ -1326,9 +1401,7 @@ export class Game {
     this.audio.playMenuStart();
     this.audio.stopMusic();
     this.attempts = 1;
-    this.authPanelOpen = false;
-    this.settingsPanelOpen = false;
-    this.shopPanelOpen = false;
+    this.menuStackScreen = 'main';
     this.shopSection = 'hub';
     this.refreshAuthUi();
     const startAt = Math.max(0, this.highestLevelUnlocked - 1);
@@ -1383,6 +1456,7 @@ export class Game {
       }
     }
     this.refreshPauseAudioUi();
+    this.persistAudioSettings();
   }
 
   private refreshPauseAudioUi() {

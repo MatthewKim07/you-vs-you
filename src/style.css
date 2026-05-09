@@ -72,6 +72,17 @@ html, body {
   padding: 12px;
 }
 
+/* Matches .shop-wood-sign .shop-title font scale; menu colors (shop keeps wood + awning). */
+.menu-sub-page-title {
+  margin: 0 0 10px;
+  text-align: center;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(16px, 4vw, 22px);
+  letter-spacing: 0.06em;
+  color: #f2c94c;
+  text-shadow: 3px 3px 0 #8b6800;
+}
+
 .auth-status {
   font-family: monospace;
   font-size: 11px;
@@ -156,6 +167,49 @@ html, body {
   border-bottom: 10px solid transparent;
   border-left: 16px solid #063524;
   margin-left: 4px;
+}
+
+.menu-main-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.menu-sub-panel {
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.menu-sub-back-btn {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(9px, 2.4vw, 11px);
+  padding: 10px 14px;
+  margin: 0 0 10px;
+  border: 0;
+  border-bottom: 3px solid rgba(0, 0, 0, 0.4);
+  background: #355072;
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+  align-self: flex-start;
+}
+
+.menu-sub-back-btn:hover:not(:disabled),
+.menu-sub-back-btn:focus-visible:not(:disabled) {
+  background: #5e84ad;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+}
+
+.menu-sub-back-btn:active {
+  border-bottom-width: 1px;
+  transform: translateY(2px);
+}
+
+/* Sub-pages replace the main stack; no gap under title card. */
+.auth-box.menu-sub-panel {
+  margin-top: 0;
 }
 
 .menu-actions {
@@ -625,18 +679,42 @@ html, body {
   top: 10px;
   right: 10px;
   z-index: 190;
-  width: 62px;
-  height: 54px;
+  /* Tight frame around the ≡ glyph; icon size stays at font-size below. */
+  width: 46px;
+  height: 46px;
+  min-width: 46px;
+  min-height: 46px;
   display: none;
   align-items: center;
   justify-content: center;
   padding: 0;
+  /* Bottom edge as ::after so flex centers the glyph in the full square (border-bottom was stealing height). */
+  border-bottom: none;
   font-size: 30px;
   line-height: 1;
   letter-spacing: 0;
   color: #f2f2f2;
   text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.45);
   image-rendering: pixelated;
+}
+
+#menu-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.game-control-btn#menu-btn:active {
+  border-bottom: none;
+}
+
+.game-control-btn#menu-btn:active::after {
+  height: 1px;
 }
 
 #pause-menu {
