@@ -735,34 +735,39 @@ html, body {
   top: 10px;
   right: 10px;
   z-index: 190;
-  /* Tight frame around the ≡ glyph; icon size stays at font-size below. */
-  width: 46px;
-  height: 46px;
-  min-width: 46px;
-  min-height: 46px;
+  width: 44px;
+  height: 44px;
+  min-width: 0;
+  min-height: 0;
   display: none;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
   padding: 0;
-  /* Bottom edge as ::after so flex centers the glyph in the full square (border-bottom was stealing height). */
+  border: none;
   border-bottom: none;
-  font-size: 30px;
+  outline: none;
+  font-size: 20px;
   line-height: 1;
   letter-spacing: 0;
   color: #f2f2f2;
-  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.45);
+  text-align: center;
+  text-shadow: none;
   image-rendering: pixelated;
+  background: rgba(0, 0, 0, 0.72);
 }
 
 #menu-btn::after {
+  display: none;
+}
+
+#menu-btn::before {
   content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: rgba(0, 0, 0, 0.5);
-  pointer-events: none;
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: #f2f2f2;
+  box-shadow: 0 6px 0 #f2f2f2, 0 -6px 0 #f2f2f2;
 }
 
 .game-control-btn#menu-btn:active {
