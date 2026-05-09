@@ -155,6 +155,8 @@ export class Game {
   private authSignUpButton!: HTMLButtonElement;
   private authSignOutButton!: HTMLButtonElement;
   private menuButton!: HTMLButtonElement;
+  private mobileControls: HTMLDivElement | null = null;
+  private deathTapZone: HTMLDivElement | null = null;
   private pauseMenu!: HTMLDivElement;
   private pauseSoundToggleButton!: HTMLButtonElement;
   private pauseResumeButton!: HTMLButtonElement;
@@ -249,8 +251,27 @@ export class Game {
   }
 
   private resizeCanvas() {
-    this.canvas.width = window.innerWidth;
-    this.canvas.height = window.innerHeight;
+    const isMobile = navigator.maxTouchPoints > 0;
+    // Use visualViewport so dimensions exclude browser chrome (toolbar, etc).
+    const vw = window.visualViewport?.width ?? window.innerWidth;
+    const vh = window.visualViewport?.height ?? window.innerHeight;
+    const isLandscape = vw > vh;
+
+    if (isMobile && isLandscape) {
+      const GAME_H = 600;
+      const scale = vh / GAME_H;
+      this.canvas.height = GAME_H;
+      this.canvas.width = Math.round(vw / scale);
+      this.canvas.style.width = vw + 'px';
+      this.canvas.style.height = vh + 'px';
+      this.canvas.style.transform = '';
+    } else {
+      this.canvas.style.width = '';
+      this.canvas.style.height = '';
+      this.canvas.style.transform = '';
+      this.canvas.width = vw;
+      this.canvas.height = vh;
+    }
   }
 
   private baseShopState(): ShopState {
@@ -520,26 +541,102 @@ export class Game {
   }
 
   private setupResize() {
-    window.addEventListener('resize', () => {
+    const onResize = () => {
       this.resizeCanvas();
+      this.updatePortraitOverlay();
       this.level.groundY = this.canvas.height - 80;
       if ((this.state === 'playing' || this.state === 'paused') && this.hasSpawnedPlayer) {
         this.player.pos.y = Math.min(this.player.pos.y, this.level.groundY - this.player.height);
       }
-    });
+    };
+    window.addEventListener('resize', onResize);
+    // visualViewport fires when browser toolbar shows/hides (window resize doesn't).
+    window.visualViewport?.addEventListener('resize', onResize);
+  }
+
+  private portraitOverlay: HTMLDivElement | null = null;
+
+  private updatePortraitOverlay() {
+    if (!this.portraitOverlay) return;
+    const isMobile = navigator.maxTouchPoints > 0;
+    const isPortrait = window.innerHeight > window.innerWidth;
+    this.portraitOverlay.style.display = (isMobile && isPortrait) ? 'flex' : 'none';
   }
 
   private setupUi() {
+    if (navigator.maxTouchPoints > 0) {
+      this.portraitOverlay = document.createElement('div');
+      this.portraitOverlay.id = 'portrait-overlay';
+      this.portraitOverlay.innerHTML = '<div class="portrait-msg"><div class="portrait-icon">⟳</div><div>Rotate your device</div><div class="portrait-sub">This game plays best in landscape</div></div>';
+      document.body.appendChild(this.portraitOverlay);
+      this.updatePortraitOverlay();
+
+      // Show "Add to Home Screen" prompt once if not already running as standalone PWA.
+      const isStandalone = (navigator as Navigator & { standalone?: boolean }).standalone === true
+        || window.matchMedia('(display-mode: standalone)').matches;
+      const dismissed = localStorage.getItem('a2hs-dismissed');
+      if (!isStandalone && !dismissed) {
+        const banner = document.createElement('div');
+        banner.id = 'a2hs-banner';
+        banner.innerHTML = `
+          <span>Add to Home Screen for fullscreen</span>
+          <button id="a2hs-dismiss">✕</button>
+        `;
+        document.body.appendChild(banner);
+        document.getElementById('a2hs-dismiss')!.addEventListener('click', () => {
+          banner.remove();
+          localStorage.setItem('a2hs-dismissed', '1');
+        });
+      }
+    }
+
+    this.deathTapZone = document.createElement('div');
+    this.deathTapZone.id = 'death-tap-zone';
+    this.deathTapZone.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      this.input.pressJump();
+    });
+    document.body.appendChild(this.deathTapZone);
+
     this.menuButton = document.createElement('button');
     this.menuButton.id = 'menu-btn';
     this.menuButton.className = 'game-control-btn menu-fab';
-    this.menuButton.textContent = '≡';
+    this.menuButton.textContent = '';
     this.menuButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.togglePauseMenu();
     });
     this.menuButton.addEventListener('pointerdown', (e) => e.stopPropagation());
     document.body.appendChild(this.menuButton);
+
+    if (navigator.maxTouchPoints > 0) {
+      this.mobileControls = document.createElement('div');
+      this.mobileControls.id = 'mobile-controls';
+
+      const crouchBtn = document.createElement('button');
+      crouchBtn.id = 'mobile-crouch-btn';
+      crouchBtn.className = 'mobile-action-btn';
+      crouchBtn.textContent = '▼';
+
+      const jumpBtn = document.createElement('button');
+      jumpBtn.id = 'mobile-jump-btn';
+      jumpBtn.className = 'mobile-action-btn';
+      jumpBtn.textContent = '▲';
+
+      const bindBtn = (btn: HTMLButtonElement, onDown: () => void, onUp: () => void) => {
+        btn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); onDown(); });
+        btn.addEventListener('pointerup', (e) => { e.preventDefault(); e.stopPropagation(); onUp(); });
+        btn.addEventListener('pointercancel', (e) => { e.preventDefault(); e.stopPropagation(); onUp(); });
+        btn.addEventListener('pointerleave', (e) => { e.preventDefault(); e.stopPropagation(); onUp(); });
+      };
+
+      bindBtn(crouchBtn, () => this.input.pressCrouch(), () => this.input.releaseCrouch());
+      bindBtn(jumpBtn, () => this.input.pressJump(), () => this.input.releaseJump());
+
+      this.mobileControls.appendChild(crouchBtn);
+      this.mobileControls.appendChild(jumpBtn);
+      document.body.appendChild(this.mobileControls);
+    }
 
     this.coinHudBadge = document.createElement('div');
     this.coinHudBadge.id = 'coin-hud-badge';
@@ -1442,9 +1539,15 @@ export class Game {
   private syncUiVisibility() {
     const inMenu = this.state === 'menu';
     this.menuOverlay.style.display = inMenu ? 'flex' : 'none';
-    const inGameplay = this.state === 'playing' || this.state === 'paused';
+    const inGameplay = this.state === 'playing' || this.state === 'paused' || this.state === 'countdown' || this.state === 'dead' || this.state === 'levelComplete';
     this.menuButton.style.display = inGameplay ? 'inline-flex' : 'none';
     this.pauseMenu.style.display = this.state === 'paused' ? 'flex' : 'none';
+    const isActivePlay = this.state === 'playing' || this.state === 'paused' || this.state === 'countdown';
+    this.mobileControls?.classList.toggle('is-playing', isActivePlay);
+    this.mobileControls?.classList.toggle('is-dead', this.state === 'dead');
+    if (this.deathTapZone) {
+      this.deathTapZone.style.display = (this.state === 'dead' || this.state === 'levelComplete') ? 'block' : 'none';
+    }
   }
 
   private toggleAudioMute() {
@@ -1941,6 +2044,7 @@ export class Game {
       this.audio.playLevelComplete();
       this.audio.stopMusic();
       this.state = 'levelComplete';
+      this.syncUiVisibility();
     }
   }
 
@@ -2556,6 +2660,7 @@ export class Game {
     this.audio.stopMusic();
     this.state = 'dead';
     this.deathTimer = 0;
+    this.syncUiVisibility();
   }
 
   private trackObstacleInteractions(): void {

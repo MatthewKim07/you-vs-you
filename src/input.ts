@@ -3,12 +3,7 @@ export class InputHandler {
   private jumpReleased = false;
   private crouchHeld = false;
 
-  private pointerDown = false;
-  private holdActivated = false;
-  private holdTimer: number | null = null;
-  private readonly holdMs = 180;
-
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(_canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
       if (isTypingTarget(document.activeElement)) return;
       if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
@@ -35,43 +30,23 @@ export class InputHandler {
       this.jumpPressed = false;
       this.jumpReleased = false;
       this.crouchHeld = false;
-      this.pointerDown = false;
-      this.holdActivated = false;
-      this.clearHoldTimer();
     });
+  }
 
-    // Mobile + mouse pointer control:
-    // quick tap => jump, hold => crouch while held.
-    canvas.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      if (this.pointerDown) return;
-      this.pointerDown = true;
-      this.holdActivated = false;
-      this.clearHoldTimer();
-      this.holdTimer = window.setTimeout(() => {
-        if (this.pointerDown) {
-          this.holdActivated = true;
-          this.crouchHeld = true;
-        }
-      }, this.holdMs);
-    });
+  pressJump(): void {
+    this.jumpPressed = true;
+  }
 
-    const finishPointer = () => {
-      if (!this.pointerDown) return;
-      this.pointerDown = false;
-      this.clearHoldTimer();
+  releaseJump(): void {
+    this.jumpReleased = true;
+  }
 
-      if (this.holdActivated) {
-        this.crouchHeld = false;
-        this.holdActivated = false;
-      } else {
-        this.jumpPressed = true;
-      }
-    };
+  pressCrouch(): void {
+    this.crouchHeld = true;
+  }
 
-    canvas.addEventListener('pointerup', finishPointer);
-    canvas.addEventListener('pointercancel', finishPointer);
-    canvas.addEventListener('pointerleave', finishPointer);
+  releaseCrouch(): void {
+    this.crouchHeld = false;
   }
 
   consumeJump(): boolean {
@@ -92,13 +67,6 @@ export class InputHandler {
       return true;
     }
     return false;
-  }
-
-  private clearHoldTimer() {
-    if (this.holdTimer !== null) {
-      window.clearTimeout(this.holdTimer);
-      this.holdTimer = null;
-    }
   }
 }
 
