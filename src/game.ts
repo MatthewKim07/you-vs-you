@@ -126,6 +126,7 @@ export class Game {
   private tracker: RunTracker;
   private debugPanel: DebugPanel;
   private state: GameState = 'menu';
+  private preMenuState: GameState | null = null;
   private cameraX = 0;
   private lastTime = 0;
   private levelIndex = 0;
@@ -1511,17 +1512,17 @@ export class Game {
   }
 
   private togglePauseMenu() {
-    if (this.state === 'playing') {
-      this.openPauseMenu();
-      return;
-    }
     if (this.state === 'paused') {
       this.closePauseMenu();
+      return;
+    }
+    if (this.state === 'playing' || this.state === 'dead' || this.state === 'levelComplete') {
+      this.openPauseMenu();
     }
   }
 
   private openPauseMenu() {
-    if (this.state !== 'playing') return;
+    this.preMenuState = this.state;
     this.state = 'paused';
     this.audio.setPaused(true);
     this.audio.playUiClick();
@@ -1530,8 +1531,9 @@ export class Game {
 
   private closePauseMenu() {
     if (this.state !== 'paused') return;
-    this.state = 'playing';
-    this.audio.setPaused(false);
+    this.state = this.preMenuState ?? 'playing';
+    this.preMenuState = null;
+    this.audio.setPaused(this.state !== 'playing');
     this.audio.playUiClick();
     this.syncUiVisibility();
   }
