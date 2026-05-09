@@ -14,6 +14,8 @@ export class Player {
   private speedMultiplier = 1;
   onGround = false;
   isCrouching = false;
+  hasDoubleJump = false;
+  private doubleJumpUsed = false;
 
   get height() {
     return this.currentHeight;
@@ -25,13 +27,21 @@ export class Player {
   }
 
   jump(): boolean {
-    if (!this.onGround) return false;
-    if (this.isCrouching) {
-      this.setCrouch(false);
+    if (this.onGround) {
+      if (this.isCrouching) {
+        this.setCrouch(false);
+      }
+      this.vel.y = JUMP_FORCE;
+      this.onGround = false;
+      this.doubleJumpUsed = false;
+      return true;
     }
-    this.vel.y = JUMP_FORCE;
-    this.onGround = false;
-    return true;
+    if (this.hasDoubleJump && !this.doubleJumpUsed) {
+      this.vel.y = JUMP_FORCE;
+      this.doubleJumpUsed = true;
+      return true;
+    }
+    return false;
   }
 
   cutJump(factor: number) {
@@ -74,6 +84,7 @@ export class Player {
         this.pos.y = floorLine;
         this.vel.y = 0;
         this.onGround = true;
+        this.doubleJumpUsed = false;
       } else {
         this.onGround = false;
       }
@@ -88,6 +99,7 @@ export class Player {
     this.onGround = false;
     this.isCrouching = false;
     this.currentHeight = this.normalHeight;
+    this.doubleJumpUsed = false;
   }
 
   setSpeedMultiplier(multiplier: number) {

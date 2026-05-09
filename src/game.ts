@@ -62,13 +62,14 @@ const COIN_STORAGE_KEY_BASE = 'you-vs-you-shop-v1';
 const AUDIO_SETTINGS_STORAGE_KEY = 'you-vs-you-audio-v1';
 
 type SkinId = 'classic' | 'ember' | 'forest' | 'void';
-type PowerUpId = 'secondWind' | 'speedBoost';
+type PowerUpId = 'speedBoost' | 'doubleJump' | 'shield';
 
 interface ShopState {
   coins: number;
   ownedSkins: SkinId[];
   equippedSkin: SkinId;
   ownedPowerUps: PowerUpId[];
+  activeBoosts: PowerUpId[];
 }
 
 const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: string }> = [
@@ -78,8 +79,9 @@ const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: st
 ];
 
 const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; description: string; preview: string }> = [
-  { id: 'secondWind', label: 'Second Wind', cost: 120, description: 'Auto revive once each level.', preview: '🛡️' },
   { id: 'speedBoost', label: 'Speed Core', cost: 180, description: 'Permanent +8% run speed.', preview: '⚡' },
+  { id: 'doubleJump', label: 'Double Jump', cost: 200, description: 'Press jump again while airborne for a second leap.', preview: '🦅' },
+  { id: 'shield', label: 'Shield', cost: 100, description: 'Absorb one spike hit per level. Does not protect from falls.', preview: '🛡' },
 ];
 
 type ShopSection = 'hub' | 'looks' | 'boosts' | 'inventory';
@@ -216,7 +218,9 @@ export class Game {
   private ownedSkins = new Set<SkinId>(['classic']);
   private equippedSkin: SkinId = 'classic';
   private ownedPowerUps = new Set<PowerUpId>();
-  private consumedSecondWind = false;
+  private activeBoosts = new Set<PowerUpId>();
+  private consumedShield = false;
+  private invincibleUntilMs: number | null = null;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -277,10 +281,11 @@ export class Game {
 
   private baseShopState(): ShopState {
     return {
-      coins: 0,
+      coins: 10000,
       ownedSkins: ['classic'],
       equippedSkin: 'classic',
       ownedPowerUps: [],
+      activeBoosts: [],
     };
   }
 
@@ -298,6 +303,16 @@ export class Game {
         ownedPowerUps.add(power);
       }
     }
+    // activeBoosts defaults to all owned if not saved yet
+    const savedActive = input?.activeBoosts;
+    const activeBoosts = new Set<PowerUpId>();
+    if (savedActive !== undefined) {
+      for (const power of savedActive) {
+        if (ownedPowerUps.has(power)) activeBoosts.add(power);
+      }
+    } else {
+      ownedPowerUps.forEach((p) => activeBoosts.add(p));
+    }
     const equippedSkin =
       input?.equippedSkin && ownedSkins.has(input.equippedSkin)
         ? input.equippedSkin
@@ -307,6 +322,7 @@ export class Game {
       ownedSkins: Array.from(ownedSkins),
       equippedSkin,
       ownedPowerUps: Array.from(ownedPowerUps),
+      activeBoosts: Array.from(activeBoosts),
     };
   }
 
@@ -315,6 +331,7 @@ export class Game {
     this.ownedSkins = new Set(state.ownedSkins);
     this.equippedSkin = state.equippedSkin;
     this.ownedPowerUps = new Set(state.ownedPowerUps);
+    this.activeBoosts = new Set(state.activeBoosts);
     this.updatePlayerSpeedFromPowerUps();
     this.updateCoinHudBadge();
   }
@@ -325,6 +342,7 @@ export class Game {
       ownedSkins: Array.from(this.ownedSkins),
       equippedSkin: this.equippedSkin,
       ownedPowerUps: Array.from(this.ownedPowerUps),
+      activeBoosts: Array.from(this.activeBoosts),
     });
   }
 
@@ -399,10 +417,10 @@ export class Game {
   }
 
   private updatePlayerSpeedFromPowerUps() {
-    const multiplier = this.ownedPowerUps.has('speedBoost') ? 1.08 : 1;
-    if (this.player) {
-      this.player.setSpeedMultiplier(multiplier);
-    }
+    if (!this.player) return;
+    const multiplier = this.activeBoosts.has('speedBoost') ? 1.08 : 1;
+    this.player.setSpeedMultiplier(multiplier);
+    this.player.hasDoubleJump = this.activeBoosts.has('doubleJump');
   }
 
   private updateCoinHudBadge() {
@@ -432,7 +450,8 @@ export class Game {
     this.debugPanel.setAdaptiveSnapshot(this.level);
     this.debugPanel.setPlayerModel(this.playerModel);
     this.levelAgeSec = 0;
-    this.consumedSecondWind = false;
+    this.consumedShield = false;
+    this.invincibleUntilMs = null;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
     this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
@@ -466,7 +485,7 @@ export class Game {
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
-    this.consumedSecondWind = false;
+    this.invincibleUntilMs = null;
     this.hasSpawnedPlayer = true;
     this.resetFrameTracking();
     this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
@@ -1141,7 +1160,7 @@ export class Game {
 
     const boostsTitle = document.createElement('h4');
     boostsTitle.className = 'shop-inventory-section-title';
-    boostsTitle.textContent = 'Boosts (all active when owned)';
+    boostsTitle.textContent = 'Boosts';
     wrap.appendChild(boostsTitle);
 
     const boostGrid = document.createElement('div');
@@ -1150,13 +1169,24 @@ export class Game {
     for (const power of POWERUP_CATALOG) {
       if (!this.ownedPowerUps.has(power.id)) continue;
       anyBoost = true;
+      const isOn = this.activeBoosts.has(power.id);
       const card = this.createShopCard({
         title: power.label,
         subtitle: power.description,
         preview: power.preview,
-        actionLabel: 'Active',
-        buttonKind: 'active',
-        onAffordableClick: () => undefined,
+        actionLabel: isOn ? 'Active' : 'Off',
+        buttonKind: isOn ? 'boost-on' : 'boost-off',
+        onAffordableClick: () => {
+          if (this.activeBoosts.has(power.id)) {
+            this.activeBoosts.delete(power.id);
+          } else {
+            this.activeBoosts.add(power.id);
+          }
+          this.updatePlayerSpeedFromPowerUps();
+          this.saveLocalShopState();
+          this.persistProgressIfSignedIn();
+          this.refreshShopUi();
+        },
       });
       boostGrid.appendChild(card);
     }
@@ -1178,14 +1208,14 @@ export class Game {
     preview: string;
     actionLabel: string;
     buyPrice?: number;
-    buttonKind: 'buy-ready' | 'buy-locked' | 'equip' | 'equipped' | 'owned' | 'active';
+    buttonKind: 'buy-ready' | 'buy-locked' | 'equip' | 'equipped' | 'owned' | 'active' | 'boost-on' | 'boost-off';
     onAffordableClick: () => void;
     onInsufficientFundsTap?: () => void;
   }): HTMLDivElement {
     const card = document.createElement('div');
     card.className = 'shop-card';
     const isLocked = opts.buttonKind === 'buy-locked';
-    const isActive = opts.buttonKind === 'buy-ready' || opts.buttonKind === 'equip';
+    const isActive = opts.buttonKind === 'buy-ready' || opts.buttonKind === 'equip' || opts.buttonKind === 'boost-on' || opts.buttonKind === 'boost-off';
     if (isLocked) {
       card.classList.add('shop-card--locked');
       card.style.cursor = 'pointer';
@@ -1218,7 +1248,11 @@ export class Game {
       button.textContent = opts.actionLabel;
     }
     if (isActive) {
-      button.classList.add('shop-buy-btn--active');
+      if (opts.buttonKind === 'boost-off') {
+        button.classList.add('shop-buy-btn--muted');
+      } else {
+        button.classList.add('shop-buy-btn--active');
+      }
       button.disabled = false;
       button.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1279,6 +1313,7 @@ export class Game {
     }
     this.coins -= item.cost;
     this.ownedPowerUps.add(powerId);
+    this.activeBoosts.add(powerId);
     this.shopFeedbackMessage = `${item.label} purchased!`;
     this.shopFeedbackKind = 'info';
     this.updatePlayerSpeedFromPowerUps();
@@ -2001,29 +2036,36 @@ export class Game {
     this.cameraX = Math.max(0, Math.min(targetX, level.worldWidth - this.canvas.width));
 
     // --- Death checks ---
+    const nowMs = performance.now();
+    const isInvincible = this.invincibleUntilMs !== null && nowMs < this.invincibleUntilMs;
+    if (!isInvincible && this.invincibleUntilMs !== null && nowMs >= this.invincibleUntilMs) {
+      this.invincibleUntilMs = null;
+    }
     if (player.pos.y > level.groundY + 60) {
       this.triggerDeath('gap', player.pos.x);
       return;
     }
-    if (this.hitSpike() || this.hitPlatformNeedle()) {
-      this.triggerDeath('spike', player.pos.x);
-      return;
-    }
-    if (this.hitLowCeiling()) {
-      this.triggerDeath('spike', player.pos.x);
-      return;
-    }
-    if (this.hitChoiceObstacle()) {
-      this.triggerDeath('spike', player.pos.x);
-      return;
-    }
-    if (this.hitElectricField()) {
-      this.triggerDeath('spike', player.pos.x);
-      return;
-    }
-    if (this.hitCrusherCeiling()) {
-      this.triggerDeath('spike', player.pos.x);
-      return;
+    if (!isInvincible) {
+      if (this.hitSpike() || this.hitPlatformNeedle()) {
+        this.triggerDeath('spike', player.pos.x);
+        return;
+      }
+      if (this.hitLowCeiling()) {
+        this.triggerDeath('spike', player.pos.x);
+        return;
+      }
+      if (this.hitChoiceObstacle()) {
+        this.triggerDeath('spike', player.pos.x);
+        return;
+      }
+      if (this.hitElectricField()) {
+        this.triggerDeath('spike', player.pos.x);
+        return;
+      }
+      if (this.hitCrusherCeiling()) {
+        this.triggerDeath('spike', player.pos.x);
+        return;
+      }
     }
 
     // --- Win check ---
@@ -2637,12 +2679,10 @@ export class Game {
   }
 
   private triggerDeath(reason: 'spike' | 'gap', deathX: number) {
-    if (this.ownedPowerUps.has('secondWind') && !this.consumedSecondWind) {
-      this.consumedSecondWind = true;
-      this.showAIMessage('Second Wind activated!');
-      this.audio.playRetry();
-      this.spawnPlayer();
-      this.cameraX = Math.max(0, this.player.pos.x - this.canvas.width * 0.25);
+    if (reason === 'spike' && this.activeBoosts.has('shield') && !this.consumedShield) {
+      this.consumedShield = true;
+      this.invincibleUntilMs = performance.now() + 1000;
+      this.showAIMessage('Shield!');
       return;
     }
     this.recordDeathObstacleInteraction(deathX);
@@ -2855,7 +2895,8 @@ export class Game {
     const showFlag = this.state !== 'menu' && this.state !== 'countdown';
     this.renderer.drawLevel(this.level, this.cameraX, obstaclePulse, showFlag);
     if (this.hasSpawnedPlayer) {
-      this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead', this.equippedSkin);
+      const isInvincible = this.invincibleUntilMs !== null && performance.now() < this.invincibleUntilMs;
+      this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead', this.equippedSkin, isInvincible);
     }
     if (this.state !== 'menu' && this.hasSpawnedPlayer) {
       this.renderer.drawHUD(

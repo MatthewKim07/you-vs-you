@@ -746,7 +746,7 @@ export class Renderer {
     ctx.fillRect(sx - 1, px(groundY - poleH) - 5, 6, 5);
   }
 
-  drawPlayer(player: Player, cameraX: number, isDead: boolean, skinId: PlayerSkinId = 'classic') {
+  drawPlayer(player: Player, cameraX: number, isDead: boolean, skinId: PlayerSkinId = 'classic', isInvincible = false) {
     const { ctx } = this;
     const sx = px(player.pos.x - cameraX);
     const sy = px(player.pos.y);
@@ -755,10 +755,12 @@ export class Renderer {
 
     if (isDead) ctx.globalAlpha = 0.4;
 
+    // Flash grey every 100ms during invincibility
+    const flashGrey = isInvincible && Math.floor(performance.now() / 100) % 2 === 0;
     const skin = PLAYER_SKINS[skinId] ?? PLAYER_SKINS.classic;
-    const hatColor = skin.hat;
-    const bodyColor = skin.body;
-    const darkColor = skin.dark;
+    const hatColor  = flashGrey ? '#aaa' : skin.hat;
+    const bodyColor = flashGrey ? '#bbb' : skin.body;
+    const darkColor = flashGrey ? '#888' : skin.dark;
 
     if (player.isCrouching) {
       // Dark outline
