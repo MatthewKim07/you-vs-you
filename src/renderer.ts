@@ -843,23 +843,26 @@ export class Renderer {
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(0, barBgH, canvasW, 1);
 
-    const fs = Math.min(10, px(canvasW / 32));
-    ctx.font = `${fs}px ${PIXEL_FONT}`;
-
-    ctx.textAlign = 'left';
-    ctx.fillStyle = P_PLYR_HAT;
-    ctx.fillText(`LVL ${levelNum}`, 10, barBgH - 10);
-
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#FF9999';
-    ctx.fillText(`x${attempts}`, canvasW - 10, barBgH - 10);
-
     // Progress bar — pixel style
     const pct  = Math.min(playerX / flagX, 1);
     const bW   = px(canvasW * 0.36);
     const bX   = px((canvasW - bW) / 2);
     const bY   = 10;
     const bH   = 12;
+
+    const fs = Math.min(10, px(canvasW / 32));
+    ctx.font = `${fs}px ${PIXEL_FONT}`;
+
+    const textY = bY + bH / 2 + fs / 2 - 1;
+    const gap = 14;
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = P_PLYR_HAT;
+    ctx.fillText(`LVL ${levelNum}`, bX - gap, textY);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#FF9999';
+    ctx.fillText(`x${attempts}`, bX + bW + gap, textY);
 
     ctx.fillStyle = '#111133';
     ctx.fillRect(bX - 1, bY - 1, bW + 2, bH + 2);
@@ -882,7 +885,7 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.font = `${Math.min(8, px(canvasW / 44))}px ${PIXEL_FONT}`;
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
-      ctx.fillText('TAP JUMP   HOLD CROUCH', px(canvasW / 2), canvasH - 14);
+      ctx.fillText('↑ JUMP     ↓ CROUCH', px(canvasW / 2), canvasH - 14);
     }
   }
 
