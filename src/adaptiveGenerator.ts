@@ -1017,8 +1017,10 @@ function spreadPlatformChains(platforms: Obstacle[]): void {
 // 208px puts the platform underside above a full jump's head apex:
 // jump apex (~137) + player height (48) + platform thickness (16) + margin.
 // Minimum ground-level gap between any two adjacent hazards on the same surface.
-// Ensures the player (width 32px) always has a comfortable landing window (≥2.5× their width).
-const MIN_GROUND_GAP = PLAYER_WIDTH * 2 + 16; // 80px
+// spike|spike: 100px landing window. spike|doubleSpike (or vice versa): 160px so the
+// player clearly sees them as separate challenges and has time to react and jump again.
+const MIN_GROUND_GAP         = PLAYER_WIDTH * 2 + 36;  // 100px — spike adjacent to spike
+const MIN_GROUND_GAP_WIDE    = 160;                     // spike adjacent to doubleSpike
 
 function enforceMinGroundGap(obstacles: Obstacle[]): void {
   const groundHazards = obstacles.filter(
@@ -1031,9 +1033,15 @@ function enforceMinGroundGap(obstacles: Obstacle[]): void {
     const leftRight  = (left.currentX ?? left.x) + (left.currentWidth ?? left.width);
     const rightLeft  = right.currentX ?? right.x;
     const gap = rightLeft - leftRight;
-    if (gap >= MIN_GROUND_GAP) continue;
+
+    // Use wider gap when either side is a doubleSpike so the player can read and
+    // react to each challenge separately rather than seeing an unjumpable wall.
+    const needsWideGap = left.kind === 'doubleSpike' || right.kind === 'doubleSpike';
+    const minGap = needsWideGap ? MIN_GROUND_GAP_WIDE : MIN_GROUND_GAP;
+
+    if (gap >= minGap) continue;
     // Push the right obstacle rightward until there's enough room
-    const shift = MIN_GROUND_GAP - gap;
+    const shift = minGap - gap;
     right.x += shift;
     if (right.currentX !== undefined) right.currentX += shift;
     if (right.targetX   !== undefined) right.targetX  += shift;
@@ -1543,9 +1551,9 @@ function buildPersistentAdaptiveLayout(
   //   1 => Level 2 (first adaptive level)
   // We use "stage" so Level 2 starts from the Level 1 baseline and then
   // gets small additive tweaks each level.
-  // Cap geometry drift so higher levels don't reconstruct the arena silhouette.
-  // Extra difficulty beyond this comes from traps/mutations, not hard layout pivots.
-  const stage = clampInt(Math.max(1, levelIndex), 1, 6);
+  // Stage drives base obstacle scaling. Raised cap lets the arena keep evolving.
+  // Per-value clampInt calls prevent any individual dimension from going out of range.
+  const stage = clampInt(Math.max(1, levelIndex), 1, 12);
   const jumpBias = playerModel.prefersJump ? 1 : 0;
   const crouchBias = playerModel.prefersCrouch ? 1 : 0;
   const routeUpperBias = playerModel.preferredRoute === 'upper' ? 1 : 0;
@@ -1622,6 +1630,51 @@ function buildPersistentAdaptiveLayout(
     obs.push({ kind: 'spike', x: 2280 + stage * 10, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower', routeId: 'persistent_lower' });
   }
 
+  // ── Extension blocks: appear at higher levels, extending the arena ──────
+  // Each block anchors to spike2X so it flows naturally from the base layout.
+
+  // Level 7+: second upper corridor — 3 more floating tiles + mid spike
+  if (levelIndex >= 7) {
+    const aOff = (levelIndex - 7) * 28;
+    const aBase = spike2X + 220 + aOff;
+    obs.push({ kind: 'platform', x: aBase, width: 96, height: clampInt(174 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_a' });
+    obs.push({ kind: 'spike', x: aBase + 116, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower', routeId: 'ext_lower_a' });
+    obs.push({ kind: 'platform', x: aBase + 200, width: 92, height: clampInt(182 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_b' });
+    obs.push({ kind: 'platform', x: aBase + 408, width: 88, height: clampInt(190 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_c' });
+  }
+
+  // Level 9+: second gap + double spike, bridged by an upper platform
+  if (levelIndex >= 9) {
+    const bOff = (levelIndex - 9) * 36;
+    const bBase = spike2X + 720 + bOff;
+    const gap2W = clampInt(90 + (levelIndex - 9) * 6, 90, 148);
+    obs.push({ kind: 'gap', x: bBase, width: gap2W, height: 0, routeLayer: 'lower', routeId: 'ext_gap2' });
+    obs.push({ kind: 'platform', x: bBase - 30, width: 104, height: clampInt(188 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_d' });
+    obs.push({ kind: 'doubleSpike', x: bBase + gap2W + 140, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H, routeLayer: 'lower', routeId: 'ext_lower_b' });
+    obs.push({
+      kind: 'choiceObstacle',
+      x: bBase + gap2W + 360,
+      width: CHOICE_OBS_W,
+      height: CHOICE_OBS_H,
+      trapGroupId: `persistent_gate3_l${levelIndex}`,
+      trapType: 'adaptiveChoiceGate',
+      routeLayer: 'mid',
+      routeId: 'ext_mid_b',
+    });
+    obs.push({ kind: 'platform', x: bBase + gap2W + 240, width: 90, height: clampInt(196 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_e' });
+  }
+
+  // Level 11+: late-game spike gauntlet + two more upper platforms
+  if (levelIndex >= 11) {
+    const cOff = (levelIndex - 11) * 44;
+    const cBase = spike2X + 1280 + cOff;
+    obs.push({ kind: 'spike', x: cBase, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower', routeId: 'ext_lower_c' });
+    obs.push({ kind: 'platform', x: cBase + 60, width: 88, height: clampInt(200 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_f' });
+    obs.push({ kind: 'doubleSpike', x: cBase + 260, width: DOUBLE_SPIKE_W, height: DOUBLE_SPIKE_H, routeLayer: 'lower', routeId: 'ext_lower_d' });
+    obs.push({ kind: 'platform', x: cBase + 340, width: 84, height: clampInt(208 + stage, 84, 228), solid: true, routeLayer: 'upper', routeId: 'ext_upper_g' });
+    obs.push({ kind: 'spike', x: cBase + 490, width: SPIKE_W, height: SPIKE_H, routeLayer: 'lower', routeId: 'ext_lower_e' });
+  }
+
   // ── World geometry ─────────────────────────────────────────────────
   obs.sort((a, b) => a.x - b.x);
   applyPlatformOrganization(obs);
@@ -1634,8 +1687,8 @@ function buildPersistentAdaptiveLayout(
   const lastEnd = obs.reduce((max, o) => Math.max(max, o.x + o.width), 0);
   const worldWidth = Math.max(
     Math.round(canvasWidth * 2),
-    2580 + stage * 180,
-    Math.round(lastEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 200),
+    2580 + Math.min(levelIndex, 16) * 200,
+    Math.round(lastEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 280),
   );
   const flagX = worldWidth - 240;
 
