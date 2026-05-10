@@ -240,7 +240,9 @@ export class Renderer {
   ) {
     for (let i = 0; i < obstacles.length; i++) {
       const obs = obstacles[i];
-      if (pulse > 0.02) {
+      // Only pulse obstacles the AI actually modified — not every base layout obstacle.
+      const isAiModified = !!(obs.aiModifier || obs.disappearMode || obs.trapHost);
+      if (pulse > 0.02 && isAiModified) {
         this.drawObstaclePulse(obs, groundY, cameraX, pulse);
         if (i === 0 && showAiLabel) this.drawAiPlacedLabel(obs, groundY, cameraX, pulse);
       }
@@ -283,7 +285,8 @@ export class Renderer {
     } else if (obs.kind === 'choiceObstacle') {
       ctx.strokeRect(sx - 6, groundY - h - CHOICE_THICKNESS - 6, w + 12, CHOICE_THICKNESS + 12);
     } else if (obs.kind === 'platform') {
-      ctx.strokeRect(sx - 5, groundY - h - 5, w + 10, TILE + 10);
+      // Box the full platform body (bricks + grass cap) so it's visually clear
+      ctx.strokeRect(sx - 5, groundY - h - 5, w + 10, h + 10);
     } else {
       ctx.strokeRect(sx - 5, groundY - 70, w + 10, 78);
     }
