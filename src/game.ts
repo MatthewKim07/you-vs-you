@@ -831,7 +831,7 @@ export class Game {
     this.authToggleButton = document.createElement('button');
     this.authToggleButton.id = 'auth-toggle-btn';
     this.authToggleButton.className = 'menu-secondary-btn';
-    this.authToggleButton.textContent = 'Log In';
+    this.authToggleButton.innerHTML = '<span class="menu-btn-icon">👤</span><span class="menu-btn-label">Log In</span>';
     this.authToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.menuStackScreen = 'auth';
@@ -842,7 +842,7 @@ export class Game {
     this.settingsToggleButton = document.createElement('button');
     this.settingsToggleButton.id = 'settings-toggle-btn';
     this.settingsToggleButton.className = 'menu-secondary-btn';
-    this.settingsToggleButton.textContent = 'Settings';
+    this.settingsToggleButton.innerHTML = '<span class="menu-btn-icon">⚙️</span><span class="menu-btn-label">Settings</span>';
     this.settingsToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.menuStackScreen = 'settings';
@@ -853,7 +853,7 @@ export class Game {
     this.shopToggleButton = document.createElement('button');
     this.shopToggleButton.id = 'shop-toggle-btn';
     this.shopToggleButton.className = 'menu-secondary-btn';
-    this.shopToggleButton.textContent = 'Shop';
+    this.shopToggleButton.innerHTML = '<span class="menu-btn-icon">🛍️</span><span class="menu-btn-label">Shop</span>';
     this.shopToggleButton.addEventListener('click', (e) => {
       e.stopPropagation();
       this.menuStackScreen = 'shop';
