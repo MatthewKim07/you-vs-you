@@ -985,14 +985,18 @@ function hostVanishingUpperPlatform(
 
 function activateVanishingPlatform(platform: Obstacle, routeConfidence: number): void {
   if (platform.kind !== 'platform') return;
+  // High confidence: player always touches → crumble on touch (350ms warning)
+  // Lower confidence: player heads there but not guaranteed → pre-vanish as they approach
   const usesBreakOnTouch = routeConfidence >= 0.7;
-  platform.disappearMode = usesBreakOnTouch ? 'onTouch' : 'afterDelay';
-  platform.disappearDelayMs = usesBreakOnTouch ? 350 : 520;
+  platform.disappearMode = usesBreakOnTouch ? 'onTouch' : 'onApproach';
+  platform.disappearDelayMs = usesBreakOnTouch ? 350 : undefined;
+  platform.approachTriggerPx = usesBreakOnTouch ? undefined : 260;
   platform.reappearDelayMs = 1200;
   platform.maxDisappearCount = null;
   platform.disappearState = 'visible';
   platform.disappearTimer = 0;
   platform.disappearCount = 0;
+  platform.approachWarning = false;
 }
 
 function hasSafeDropBelow(platform: Obstacle, obstacles: Obstacle[]): boolean {

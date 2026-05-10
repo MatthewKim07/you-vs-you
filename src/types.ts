@@ -64,14 +64,16 @@ export interface Obstacle {
   routeLayer?: RouteLayer;
   routeId?: string;
   // Disappearing platform configuration
-  disappearMode?: 'onTouch' | 'timed' | 'afterDelay';
+  disappearMode?: 'onTouch' | 'timed' | 'afterDelay' | 'onApproach';
   disappearDelayMs?: number;
   reappearDelayMs?: number;
   maxDisappearCount?: number | null;
+  approachTriggerPx?: number;   // onApproach: horizontal px distance that triggers disappear
   // Disappearing platform runtime state
   disappearState?: 'visible' | 'disappearing' | 'invisible' | 'reappearing';
   disappearTimer?: number;
   disappearCount?: number;
+  approachWarning?: boolean;    // true when player is near but not yet triggering disappear
   // AI modifier — layered behavior on existing obstacles
   aiModifier?: AiModifierType;
   aiModState?: AiModState;

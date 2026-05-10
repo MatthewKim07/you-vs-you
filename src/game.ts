@@ -2741,6 +2741,23 @@ export class Game {
             p.disappearTimer = 0;
             p.disappearCount = (p.disappearCount ?? 0) + 1;
           }
+        } else if (p.disappearMode === 'onApproach') {
+          const triggerDist = p.approachTriggerPx ?? 300;
+          const warnDist = triggerDist + 180;
+          const platCenterX = (p.currentX ?? p.x) + p.width / 2;
+          const playerX = player.pos.x + player.width / 2;
+          const dist = platCenterX - playerX; // positive = platform is ahead of player
+          if (dist > 0 && dist <= warnDist) {
+            p.approachWarning = true;
+          } else {
+            p.approachWarning = false;
+          }
+          if (dist > 0 && dist <= triggerDist) {
+            p.disappearState = 'disappearing';
+            p.disappearTimer = 0;
+            p.approachWarning = false;
+            p.disappearCount = (p.disappearCount ?? 0) + 1;
+          }
         }
       } else if (state === 'disappearing') {
         p.disappearTimer = (p.disappearTimer ?? 0) + dt * 1000;

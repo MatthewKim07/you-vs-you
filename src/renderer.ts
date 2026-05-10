@@ -541,6 +541,15 @@ export class Renderer {
       ctx.fillStyle = 'rgba(255,140,0,0.55)';
       ctx.fillRect(px(sx), surfaceY - shakeY, w, 3);
     }
+    // Pulsing red strip on onApproach platforms when player is in warning zone
+    if (obs.disappearMode === 'onApproach' && obs.approachWarning && disappearState === 'visible') {
+      const pulse = 0.5 + 0.5 * Math.abs(Math.sin(Date.now() / 120));
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = '#FF2200';
+      ctx.fillRect(px(sx), surfaceY, w, 4);
+      ctx.restore();
+    }
     // Pulsing orange warning strip when temp blocker is about to vanish
     if (obs.aiModifier === 'temporaryBlocker' && obs.aiModState === 'warning') {
       const pulse = 0.5 + 0.4 * Math.abs(Math.sin((obs.aiModTimer ?? 0) / 90));
