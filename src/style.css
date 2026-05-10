@@ -96,6 +96,10 @@ html, body {
   gap: 8px;
 }
 
+.auth-mode-row {
+  margin-bottom: 2px;
+}
+
 .auth-input {
   flex: 1;
   min-width: 0;
@@ -123,15 +127,31 @@ html, body {
   cursor: pointer;
 }
 
+.auth-btn--active {
+  background: #6f95bf;
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.42);
+}
+
 .auth-btn:hover:not(:disabled),
 .auth-btn:focus-visible:not(:disabled) {
   background: #5e84ad;
   box-shadow: inset 0 0 0 2px rgba(255,255,255,0.34);
 }
 
+.auth-btn--active:hover:not(:disabled),
+.auth-btn--active:focus-visible:not(:disabled) {
+  background: #6f95bf;
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.42);
+}
+
 .auth-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.auth-btn-continue {
+  background: #3f5f86;
+  border-bottom-color: rgba(0,0,0,0.56);
 }
 
 .auth-signed-in-view .auth-btn:last-child {

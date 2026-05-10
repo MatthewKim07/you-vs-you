@@ -32,6 +32,8 @@ create table if not exists public.player_progress (
   user_id uuid primary key references auth.users(id) on delete cascade,
   highest_level_unlocked integer not null default 1,
   runs_json jsonb not null default '[]'::jsonb,
+  shop_state_json jsonb not null default '{}'::jsonb,
+  infinite_best_score integer not null default 0,
   updated_at timestamptz not null default now()
 );
 
@@ -52,6 +54,14 @@ create policy "Users can update own progress"
   for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+```
+
+If your table already exists, run this patch:
+
+```sql
+alter table public.player_progress
+  add column if not exists shop_state_json jsonb not null default '{}'::jsonb,
+  add column if not exists infinite_best_score integer not null default 0;
 ```
 
 ## 4) Auth provider settings

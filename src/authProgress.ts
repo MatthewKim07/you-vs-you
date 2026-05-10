@@ -8,11 +8,15 @@ const PROGRESS_TABLE = 'player_progress';
 export interface StoredProgress {
   highestLevelUnlocked: number;
   runs: RunData[];
+  shopState: unknown | null;
+  infiniteBestScore: number;
 }
 
 interface ProgressRow {
   highest_level_unlocked: number | null;
   runs_json: RunData[] | null;
+  shop_state_json: unknown | null;
+  infinite_best_score: number | null;
 }
 
 export class AuthProgressClient {
@@ -107,7 +111,7 @@ export class AuthProgressClient {
     if (!this.client) return null;
     const { data, error } = await this.client
       .from(PROGRESS_TABLE)
-      .select('highest_level_unlocked, runs_json')
+      .select('highest_level_unlocked, runs_json, shop_state_json, infinite_best_score')
       .eq('user_id', userId)
       .maybeSingle<ProgressRow>();
     if (error) throw error;
@@ -115,6 +119,8 @@ export class AuthProgressClient {
     return {
       highestLevelUnlocked: Math.max(1, data.highest_level_unlocked ?? 1),
       runs: Array.isArray(data.runs_json) ? data.runs_json : [],
+      shopState: data.shop_state_json ?? null,
+      infiniteBestScore: Math.max(0, data.infinite_best_score ?? 0),
     };
   }
 
@@ -124,6 +130,8 @@ export class AuthProgressClient {
       user_id: userId,
       highest_level_unlocked: Math.max(1, progress.highestLevelUnlocked),
       runs_json: progress.runs,
+      shop_state_json: progress.shopState ?? null,
+      infinite_best_score: Math.max(0, Math.floor(progress.infiniteBestScore)),
       updated_at: new Date().toISOString(),
     };
     const { error } = await this.client.from(PROGRESS_TABLE).upsert(payload, {

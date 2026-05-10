@@ -71,7 +71,6 @@ const GROUND_RECOVERY_TOLERANCE = 10;
 const ROUTE_SWITCH_MIN_X_DELTA = 88;
 const ROUTE_LOWER_MAX_HEIGHT = 22;
 const ROUTE_MID_MAX_HEIGHT = 86;
-const COIN_STORAGE_KEY_BASE = 'you-vs-you-shop-v1';
 const AUDIO_SETTINGS_STORAGE_KEY = 'you-vs-you-audio-v1';
 
 type SkinId = 'classic' | 'ember' | 'forest' | 'void' | 'rainbow';
@@ -195,6 +194,7 @@ export class Game {
   private authCurrentEmail: string | null = null;
   private authSignInButton!: HTMLButtonElement;
   private authSignUpButton!: HTMLButtonElement;
+  private authContinueButton!: HTMLButtonElement;
   private authSignOutButton!: HTMLButtonElement;
   private menuButton!: HTMLButtonElement;
   private mobileControls: HTMLDivElement | null = null;
@@ -253,8 +253,6 @@ export class Game {
   private menuLeaderboardRowsEl!: HTMLDivElement;
   private menuLeaderboardGuestEl!: HTMLParagraphElement;
   private modeSelectPanel!: HTMLDivElement;
-  private static readonly INFINITE_BEST_KEY = 'you-vs-you-infinite-best-v1';
-  private static readonly LAST_USER_KEY = 'you-vs-you-last-user-v1';
   // Throttle playerModel refreshes during infinite runs so the AI adapts to recent behavior.
   private infiniteModelRefreshTimer = 0;
   private static readonly INFINITE_MODEL_REFRESH_INTERVAL = 6; // seconds
@@ -279,6 +277,7 @@ export class Game {
   private activeBoosts = new Set<PowerUpId>();
   private ownedAbilities = new Set<AbilityId>();
   private equippedAbility: AbilityId | null = null;
+  private guestAuthMode: 'signIn' | 'signUp' = 'signIn';
   private abilityHudBadge!: HTMLDivElement;
   private consumedShield = false;
   private invincibleUntilMs: number | null = null;
@@ -298,9 +297,8 @@ export class Game {
     this.tracker = new RunTracker();
     this.debugPanel = new DebugPanel(this.tracker);
     this.debugPanel.setPlayerModel(this.playerModel);
-    this.loadLocalShopState();
+    this.applyShopState(this.baseShopState());
     this.loadAudioSettings();
-    this.loadInfiniteBest();
     this.setupResize();
     this.setupUi();
     this.armAudioOnFirstGesture();
@@ -352,7 +350,7 @@ export class Game {
 
   private baseShopState(): ShopState {
     return {
-      coins: 10000,
+      coins: 0,
       ownedSkins: ['classic'],
       equippedSkin: 'classic',
       ownedPowerUps: [],
@@ -435,35 +433,12 @@ export class Game {
     });
   }
 
-  private loadLocalShopState() {
-    if (!this.authUserId) {
-      this.applyShopState(this.baseShopState());
-      return;
+  private extractShopState(progress: StoredProgress | null): ShopState {
+    const raw = progress?.shopState;
+    if (!raw || typeof raw !== 'object') {
+      return this.baseShopState();
     }
-    try {
-      const raw = window.localStorage.getItem(this.shopStorageKey());
-      if (!raw) {
-        this.applyShopState(this.baseShopState());
-        return;
-      }
-      const parsed = JSON.parse(raw) as Partial<ShopState>;
-      this.applyShopState(this.normalizeShopState(parsed));
-    } catch {
-      this.applyShopState(this.baseShopState());
-    }
-  }
-
-  private saveLocalShopState() {
-    if (!this.authUserId) return;
-    try {
-      window.localStorage.setItem(this.shopStorageKey(), JSON.stringify(this.currentShopState()));
-    } catch {
-      // Ignore storage failures (private mode/storage quota).
-    }
-  }
-
-  private shopStorageKey(): string {
-    return `${COIN_STORAGE_KEY_BASE}:${this.authUserId ?? 'guest'}`;
+    return this.normalizeShopState(raw as Partial<ShopState>);
   }
 
   private loadAudioSettings() {
@@ -1097,6 +1072,31 @@ export class Game {
     this.authGuestView = document.createElement('div');
     this.authGuestView.className = 'auth-guest-view';
 
+    const modeRow = document.createElement('div');
+    modeRow.className = 'auth-button-row auth-mode-row';
+
+    this.authSignInButton = document.createElement('button');
+    this.authSignInButton.className = 'auth-btn';
+    this.authSignInButton.type = 'button';
+    this.authSignInButton.textContent = 'Sign In';
+    this.authSignInButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setGuestAuthMode('signIn');
+    });
+
+    this.authSignUpButton = document.createElement('button');
+    this.authSignUpButton.className = 'auth-btn';
+    this.authSignUpButton.type = 'button';
+    this.authSignUpButton.textContent = 'Sign Up';
+    this.authSignUpButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setGuestAuthMode('signUp');
+    });
+
+    modeRow.appendChild(this.authSignInButton);
+    modeRow.appendChild(this.authSignUpButton);
+    this.authGuestView.appendChild(modeRow);
+
     const formRow = document.createElement('div');
     formRow.className = 'auth-input-row';
 
@@ -1105,12 +1105,22 @@ export class Game {
     this.authEmailInput.placeholder = 'Email or Username';
     this.authEmailInput.autocomplete = 'email';
     this.authEmailInput.className = 'auth-input';
+    this.authEmailInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      void this.submitGuestAuth();
+    });
 
     this.authPasswordInput = document.createElement('input');
     this.authPasswordInput.type = 'password';
     this.authPasswordInput.placeholder = 'Password';
     this.authPasswordInput.autocomplete = 'current-password';
     this.authPasswordInput.className = 'auth-input';
+    this.authPasswordInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      void this.submitGuestAuth();
+    });
 
     formRow.appendChild(this.authEmailInput);
     formRow.appendChild(this.authPasswordInput);
@@ -1126,38 +1136,28 @@ export class Game {
     this.authUsernameInput.autocomplete = 'username';
     this.authUsernameInput.className = 'auth-input';
     this.authUsernameInput.maxLength = 20;
+    this.authUsernameInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      void this.submitGuestAuth();
+    });
 
     this.authUsernameRow.appendChild(this.authUsernameInput);
     this.authGuestView.appendChild(this.authUsernameRow);
 
-    const buttonRow = document.createElement('div');
-    buttonRow.className = 'auth-button-row';
-
-    this.authSignInButton = document.createElement('button');
-    this.authSignInButton.className = 'auth-btn';
-    this.authSignInButton.textContent = 'Sign In';
-    this.authSignInButton.addEventListener('click', async (e) => {
+    const continueRow = document.createElement('div');
+    continueRow.className = 'auth-button-row';
+    this.authContinueButton = document.createElement('button');
+    this.authContinueButton.className = 'auth-btn auth-btn-continue';
+    this.authContinueButton.type = 'button';
+    this.authContinueButton.textContent = 'Continue';
+    this.authContinueButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.authUsernameRow.style.display = 'none';
-      await this.signInWithForm();
+      void this.submitGuestAuth();
     });
-
-    this.authSignUpButton = document.createElement('button');
-    this.authSignUpButton.className = 'auth-btn';
-    this.authSignUpButton.textContent = 'Sign Up';
-    this.authSignUpButton.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (this.authUsernameRow.style.display === 'none') {
-        this.authUsernameRow.style.display = 'flex';
-        this.authUsernameInput.focus();
-        return;
-      }
-      await this.signUpWithForm();
-    });
-
-    buttonRow.appendChild(this.authSignInButton);
-    buttonRow.appendChild(this.authSignUpButton);
-    this.authGuestView.appendChild(buttonRow);
+    continueRow.appendChild(this.authContinueButton);
+    this.authGuestView.appendChild(continueRow);
+    this.setGuestAuthMode('signIn');
     authBox.appendChild(this.authGuestView);
 
     // ── Signed-in view ────────────────────────────────────────────────────────
@@ -1645,7 +1645,6 @@ export class Game {
           this.equippedSkin = skinId;
           this.shopFeedbackMessage = `${meta.label} equipped.`;
           this.shopFeedbackKind = 'info';
-          this.saveLocalShopState();
           this.persistProgressIfSignedIn();
           this.refreshShopUi();
         },
@@ -1679,7 +1678,6 @@ export class Game {
             this.activeBoosts.add(power.id);
           }
           this.updatePlayerSpeedFromPowerUps();
-          this.saveLocalShopState();
           this.persistProgressIfSignedIn();
           this.refreshShopUi();
         },
@@ -1830,7 +1828,6 @@ export class Game {
     this.equippedSkin = skinId;
     this.shopFeedbackMessage = `${item.label} purchased and equipped!`;
     this.shopFeedbackKind = 'info';
-    this.saveLocalShopState();
     this.persistProgressIfSignedIn();
     this.refreshShopUi();
   }
@@ -1851,7 +1848,6 @@ export class Game {
     this.shopFeedbackMessage = `${item.label} purchased!`;
     this.shopFeedbackKind = 'info';
     this.updatePlayerSpeedFromPowerUps();
-    this.saveLocalShopState();
     this.persistProgressIfSignedIn();
     this.refreshShopUi();
   }
@@ -1871,7 +1867,6 @@ export class Game {
     this.equippedAbility = abilityId;
     this.shopFeedbackMessage = `${item.label} purchased and equipped! Press [${ABILITY_KEYBIND}] to use it in Level Mode.`;
     this.shopFeedbackKind = 'info';
-    this.saveLocalShopState();
     this.persistProgressIfSignedIn();
     this.updateAbilityHudBadge();
     this.refreshShopUi();
@@ -1888,7 +1883,6 @@ export class Game {
       this.shopFeedbackMessage = `${item?.label ?? abilityId} equipped. Press [${ABILITY_KEYBIND}] in Level Mode to activate.`;
     }
     this.shopFeedbackKind = 'info';
-    this.saveLocalShopState();
     this.persistProgressIfSignedIn();
     this.updateAbilityHudBadge();
     this.refreshShopUi();
@@ -1899,7 +1893,7 @@ export class Game {
     const boosted = this.gameMode === 'levels' && this.activeBoosts.has('coinBooster');
     const total = boosted ? base * 2 : base;
     this.coins += total;
-    this.saveLocalShopState();
+    this.persistProgressIfSignedIn();
     this.refreshShopUi();
     return { base, total, boosted };
   }
@@ -1926,17 +1920,10 @@ export class Game {
   private async handleAuthUserChanged(userId: string | null, email: string | null) {
     this.authUserId = userId;
     this.authCurrentEmail = email;
-    this.loadLocalShopState();
-    if (userId) {
-      const lastUser = localStorage.getItem(Game.LAST_USER_KEY);
-      if (lastUser && lastUser !== userId) {
-        this.infiniteBestScore = 0;
-        this.saveInfiniteBest();
-      }
-      localStorage.setItem(Game.LAST_USER_KEY, userId);
-    }
     if (!userId) {
       this.highestLevelUnlocked = 1;
+      this.infiniteBestScore = 0;
+      this.applyShopState(this.baseShopState());
       this.playButton.textContent = 'Play';
       this.setAuthStatus('Guest mode: progress is not saved after you leave.');
       this.refreshAuthUi();
@@ -1963,8 +1950,15 @@ export class Game {
   }
 
   private applyLoadedProgress(progress: StoredProgress | null) {
-    const safeProgress = progress ?? { highestLevelUnlocked: 1, runs: [] };
+    const safeProgress: StoredProgress = progress ?? {
+      highestLevelUnlocked: 1,
+      runs: [],
+      shopState: null,
+      infiniteBestScore: 0,
+    };
     this.highestLevelUnlocked = Math.max(1, safeProgress.highestLevelUnlocked);
+    this.infiniteBestScore = Math.max(0, safeProgress.infiniteBestScore);
+    this.applyShopState(this.extractShopState(safeProgress));
     this.tracker.replaceRuns(safeProgress.runs);
     this.refreshPlayerModel();
     this.debugPanel.setPlayerModel(this.playerModel);
@@ -2047,13 +2041,13 @@ export class Game {
         this.setAuthStatus(`Account created but username save failed: ${this.errorMessage(err)}`);
         this.authPasswordInput.value = '';
         this.authUsernameInput.value = '';
-        this.authUsernameRow.style.display = 'none';
+        this.setGuestAuthMode('signIn');
         return;
       }
 
       this.authPasswordInput.value = '';
       this.authUsernameInput.value = '';
-      this.authUsernameRow.style.display = 'none';
+      this.setGuestAuthMode('signIn');
     } catch (err) {
       this.setAuthStatus(`Sign up failed: ${this.errorMessage(err)}`);
     }
@@ -2130,6 +2124,7 @@ export class Game {
       this.authPasswordInput.disabled = !configured;
       this.authSignInButton.disabled = !configured;
       this.authSignUpButton.disabled = !configured;
+      this.authContinueButton.disabled = !configured;
       if (!this.authStatusLabel.textContent) {
         this.authStatusLabel.textContent = 'Guest mode: progress not saved after you leave.';
       }
@@ -2158,11 +2153,33 @@ export class Game {
     this.authStatusLabel.textContent = message;
   }
 
+  private setGuestAuthMode(mode: 'signIn' | 'signUp') {
+    this.guestAuthMode = mode;
+    const isSignUp = mode === 'signUp';
+    this.authUsernameRow.style.display = isSignUp ? 'flex' : 'none';
+    this.authEmailInput.placeholder = isSignUp ? 'Email' : 'Email or Username';
+    this.authPasswordInput.autocomplete = isSignUp ? 'new-password' : 'current-password';
+    this.authSignInButton.classList.toggle('auth-btn--active', !isSignUp);
+    this.authSignUpButton.classList.toggle('auth-btn--active', isSignUp);
+    this.authSignInButton.setAttribute('aria-pressed', isSignUp ? 'false' : 'true');
+    this.authSignUpButton.setAttribute('aria-pressed', isSignUp ? 'true' : 'false');
+  }
+
+  private async submitGuestAuth() {
+    if (this.guestAuthMode === 'signUp') {
+      await this.signUpWithForm();
+      return;
+    }
+    await this.signInWithForm();
+  }
+
   private persistProgressIfSignedIn() {
     if (!this.authUserId) return;
     const progress: StoredProgress = {
       highestLevelUnlocked: this.highestLevelUnlocked,
       runs: this.tracker.getAllRuns().slice(-80),
+      shopState: this.currentShopState(),
+      infiniteBestScore: this.infiniteBestScore,
     };
     void this.authClient
       .saveProgress(this.authUserId, progress)
@@ -2317,20 +2334,6 @@ export class Game {
       this.infiniteModelRefreshTimer = 0;
       this.refreshPlayerModel();
     }
-  }
-
-  // ── Infinite Mode persistent best score ────────────────────────────────────
-  private loadInfiniteBest() {
-    try {
-      const raw = window.localStorage.getItem(Game.INFINITE_BEST_KEY);
-      if (raw) this.infiniteBestScore = Math.max(0, parseInt(raw, 10) || 0);
-    } catch { /* ignore private mode / quota */ }
-  }
-
-  private saveInfiniteBest() {
-    try {
-      window.localStorage.setItem(Game.INFINITE_BEST_KEY, String(this.infiniteBestScore));
-    } catch { /* ignore */ }
   }
 
   private async submitAndRefreshLeaderboard(score: number) {
@@ -3695,7 +3698,7 @@ export class Game {
 
     if (this.gameMode === 'infinite') {
       this.infiniteBestScore = Math.max(this.infiniteBestScore, this.infiniteRunScore);
-      this.saveInfiniteBest();
+      this.persistProgressIfSignedIn();
       this.tracker.finishRun(false, reason, deathX);
       this.refreshPlayerModel();
       this.audio.playDeath();
