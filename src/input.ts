@@ -2,6 +2,7 @@ export class InputHandler {
   private jumpPressed = false;
   private jumpReleased = false;
   private crouchHeld = false;
+  private abilityPressed = false;
 
   constructor(_canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
@@ -14,6 +15,11 @@ export class InputHandler {
       } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
         e.preventDefault();
         this.crouchHeld = true;
+      } else if (e.code === 'KeyE') {
+        e.preventDefault();
+        if (!e.repeat) {
+          this.abilityPressed = true;
+        }
       }
     });
 
@@ -30,6 +36,7 @@ export class InputHandler {
       this.jumpPressed = false;
       this.jumpReleased = false;
       this.crouchHeld = false;
+      this.abilityPressed = false;
     });
   }
 
@@ -64,6 +71,18 @@ export class InputHandler {
   consumeJumpRelease(): boolean {
     if (this.jumpReleased) {
       this.jumpReleased = false;
+      return true;
+    }
+    return false;
+  }
+
+  pressAbility(): void {
+    this.abilityPressed = true;
+  }
+
+  consumeAbility(): boolean {
+    if (this.abilityPressed) {
+      this.abilityPressed = false;
       return true;
     }
     return false;

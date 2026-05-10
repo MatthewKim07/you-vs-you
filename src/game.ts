@@ -64,6 +64,7 @@ const AUDIO_SETTINGS_STORAGE_KEY = 'you-vs-you-audio-v1';
 
 type SkinId = 'classic' | 'ember' | 'forest' | 'void';
 type PowerUpId = 'speedBoost' | 'doubleJump' | 'shield';
+type AbilityId = 'fireball' | 'phase' | 'timeWarp';
 
 interface ShopState {
   coins: number;
@@ -71,6 +72,8 @@ interface ShopState {
   equippedSkin: SkinId;
   ownedPowerUps: PowerUpId[];
   activeBoosts: PowerUpId[];
+  ownedAbilities: AbilityId[];
+  equippedAbility: AbilityId | null;
 }
 
 const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: string }> = [
@@ -85,7 +88,15 @@ const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; descr
   { id: 'doubleJump', label: 'Double Jump', cost: 200, description: 'Press jump again while airborne for a second leap.', preview: '🦅' },
 ];
 
-type ShopSection = 'hub' | 'looks' | 'boosts' | 'inventory';
+const ABILITY_CATALOG: Array<{ id: AbilityId; label: string; cost: number; description: string; preview: string }> = [
+  { id: 'fireball', label: 'Fire Ball', cost: 250, description: 'Shoot one fireball per life that destroys the first obstacle it hits.', preview: '🔥' },
+  { id: 'phase', label: 'Phase', cost: 300, description: 'Teleport forward past the nearest obstacle directly in your path.', preview: '💨' },
+  { id: 'timeWarp', label: 'Time Warp', cost: 350, description: 'Temporarily slow down movement for easier control.', preview: '⏳' },
+];
+
+const ABILITY_KEYBIND = 'E';
+
+type ShopSection = 'hub' | 'looks' | 'boosts' | 'abilities' | 'inventory';
 type MenuStackScreen = 'main' | 'auth' | 'settings' | 'shop' | 'modeSelect';
 type GameMode = 'levels' | 'infinite';
 
@@ -235,6 +246,9 @@ export class Game {
   private equippedSkin: SkinId = 'classic';
   private ownedPowerUps = new Set<PowerUpId>();
   private activeBoosts = new Set<PowerUpId>();
+  private ownedAbilities = new Set<AbilityId>();
+  private equippedAbility: AbilityId | null = null;
+  private abilityHudBadge!: HTMLDivElement;
   private consumedShield = false;
   private invincibleUntilMs: number | null = null;
 
@@ -303,6 +317,8 @@ export class Game {
       equippedSkin: 'classic',
       ownedPowerUps: [],
       activeBoosts: [],
+      ownedAbilities: [],
+      equippedAbility: null,
     };
   }
 
@@ -334,12 +350,23 @@ export class Game {
       input?.equippedSkin && ownedSkins.has(input.equippedSkin)
         ? input.equippedSkin
         : 'classic';
+    const ownedAbilities = new Set<AbilityId>();
+    for (const ab of input?.ownedAbilities ?? []) {
+      if (ABILITY_CATALOG.some((entry) => entry.id === ab)) {
+        ownedAbilities.add(ab);
+      }
+    }
+    const rawEquipped = input?.equippedAbility ?? null;
+    const equippedAbility: AbilityId | null =
+      rawEquipped !== null && ownedAbilities.has(rawEquipped) ? rawEquipped : null;
     return {
       coins: Math.max(0, Math.floor(input?.coins ?? base.coins)),
       ownedSkins: Array.from(ownedSkins),
       equippedSkin,
       ownedPowerUps: Array.from(ownedPowerUps),
       activeBoosts: Array.from(activeBoosts),
+      ownedAbilities: Array.from(ownedAbilities),
+      equippedAbility,
     };
   }
 
@@ -349,8 +376,11 @@ export class Game {
     this.equippedSkin = state.equippedSkin;
     this.ownedPowerUps = new Set(state.ownedPowerUps);
     this.activeBoosts = new Set(state.activeBoosts);
+    this.ownedAbilities = new Set(state.ownedAbilities);
+    this.equippedAbility = state.equippedAbility;
     this.updatePlayerSpeedFromPowerUps();
     this.updateCoinHudBadge();
+    this.updateAbilityHudBadge();
   }
 
   private currentShopState(): ShopState {
@@ -360,6 +390,8 @@ export class Game {
       equippedSkin: this.equippedSkin,
       ownedPowerUps: Array.from(this.ownedPowerUps),
       activeBoosts: Array.from(this.activeBoosts),
+      ownedAbilities: Array.from(this.ownedAbilities),
+      equippedAbility: this.equippedAbility,
     });
   }
 
@@ -444,6 +476,20 @@ export class Game {
     if (!this.coinHudBadge) return;
     this.coinHudBadge.innerHTML = `<span class="coin-hud-inner">${pixelCoinSvg('pixel-coin pixel-coin--hud')}<span class="coin-hud-value">${this.coins}</span></span>`;
     this.coinHudBadge.setAttribute('aria-label', `Balance ${this.coins}`);
+  }
+
+  private updateAbilityHudBadge() {
+    if (!this.abilityHudBadge) return;
+    const isLevels = this.gameMode === 'levels';
+    const inGame = this.state === 'playing' || this.state === 'countdown' || this.state === 'dead' || this.state === 'levelComplete';
+    if (this.equippedAbility && isLevels && inGame) {
+      const meta = ABILITY_CATALOG.find((a) => a.id === this.equippedAbility);
+      const label = meta?.label ?? '';
+      this.abilityHudBadge.innerHTML = `<span class="ability-hud-inner"><span class="ability-hud-key">[${ABILITY_KEYBIND}]</span><span class="ability-hud-name">${label}</span></span>`;
+      this.abilityHudBadge.style.display = 'flex';
+    } else {
+      this.abilityHudBadge.style.display = 'none';
+    }
   }
 
   private startLevel(index: number, startMode: 'immediate' | 'countdown' = 'immediate') {
@@ -667,9 +713,16 @@ export class Game {
         btn.addEventListener('pointerleave', (e) => { e.preventDefault(); e.stopPropagation(); onUp(); });
       };
 
+      const abilityBtn = document.createElement('button');
+      abilityBtn.id = 'mobile-ability-btn';
+      abilityBtn.className = 'mobile-action-btn mobile-ability-btn';
+      abilityBtn.textContent = '★';
+      abilityBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); this.input.pressAbility(); });
+
       bindBtn(crouchBtn, () => this.input.pressCrouch(), () => this.input.releaseCrouch());
       bindBtn(jumpBtn, () => this.input.pressJump(), () => this.input.releaseJump());
 
+      this.mobileControls.appendChild(abilityBtn);
       this.mobileControls.appendChild(crouchBtn);
       this.mobileControls.appendChild(jumpBtn);
       document.body.appendChild(this.mobileControls);
@@ -678,6 +731,11 @@ export class Game {
     this.coinHudBadge = document.createElement('div');
     this.coinHudBadge.id = 'coin-hud-badge';
     document.body.appendChild(this.coinHudBadge);
+
+    this.abilityHudBadge = document.createElement('div');
+    this.abilityHudBadge.id = 'ability-hud-badge';
+    this.abilityHudBadge.style.display = 'none';
+    document.body.appendChild(this.abilityHudBadge);
 
     this.setupPauseMenuUi();
 
@@ -1142,6 +1200,7 @@ export class Game {
       hub: 'Shop',
       looks: 'Skins',
       boosts: 'Boosts',
+      abilities: 'Special Abilities',
       inventory: 'Inventory',
     };
     this.shopHeadingEl.textContent = headings[this.shopSection];
@@ -1153,6 +1212,8 @@ export class Game {
       this.renderShopLooksStore(this.shopBodyEl);
     } else if (this.shopSection === 'boosts') {
       this.renderShopBoostsStore(this.shopBodyEl);
+    } else if (this.shopSection === 'abilities') {
+      this.renderShopAbilitiesStore(this.shopBodyEl);
     } else {
       this.renderShopInventory(this.shopBodyEl);
     }
@@ -1169,6 +1230,7 @@ export class Game {
     }> = [
       { section: 'looks', title: 'Skins', icon: '👤' },
       { section: 'boosts', title: 'Boosts', icon: '⚡' },
+      { section: 'abilities', title: 'Abilities', icon: '✨' },
       { section: 'inventory', title: 'Inventory', icon: '🎒' },
     ];
     for (const cat of categories) {
@@ -1221,6 +1283,14 @@ export class Game {
   }
 
   private renderShopBoostsStore(container: HTMLDivElement) {
+    const wrap = document.createElement('div');
+    wrap.className = 'shop-abilities-store';
+
+    const notice = document.createElement('p');
+    notice.className = 'shop-abilities-notice';
+    notice.textContent = 'Boosts only work in Level Mode. They have no effect in Infinite Mode.';
+    wrap.appendChild(notice);
+
     const grid = document.createElement('div');
     grid.className = 'shop-grid';
     for (const power of POWERUP_CATALOG) {
@@ -1246,7 +1316,63 @@ export class Game {
       });
       grid.appendChild(card);
     }
-    container.appendChild(grid);
+    wrap.appendChild(grid);
+    container.appendChild(wrap);
+  }
+
+  private renderShopAbilitiesStore(container: HTMLDivElement) {
+    const wrap = document.createElement('div');
+    wrap.className = 'shop-abilities-store';
+
+    const notice = document.createElement('p');
+    notice.className = 'shop-abilities-notice';
+    notice.textContent = `Abilities only work in Level Mode. Only one ability can be equipped at a time. Press [${ABILITY_KEYBIND}] to activate your equipped ability during a run.`;
+    wrap.appendChild(notice);
+
+    const grid = document.createElement('div');
+    grid.className = 'shop-grid';
+    for (const ability of ABILITY_CATALOG) {
+      const owned = this.ownedAbilities.has(ability.id);
+      const equipped = this.equippedAbility === ability.id;
+      const canAfford = this.coins >= ability.cost;
+      let actionLabel: string;
+      let buttonKind: Parameters<typeof this.createShopCard>[0]['buttonKind'];
+      if (!owned) {
+        actionLabel = '';
+        buttonKind = canAfford ? 'buy-ready' : 'buy-locked';
+      } else if (equipped) {
+        actionLabel = 'Equipped';
+        buttonKind = 'equipped';
+      } else {
+        actionLabel = 'Equip';
+        buttonKind = 'equip';
+      }
+      const card = this.createShopCard({
+        title: ability.label,
+        subtitle: ability.description,
+        preview: ability.preview,
+        actionLabel,
+        buyPrice: owned ? undefined : ability.cost,
+        buttonKind,
+        onAffordableClick: () => {
+          if (!owned) {
+            this.buyAbility(ability.id);
+          } else {
+            this.equipAbility(ability.id);
+          }
+        },
+        onInsufficientFundsTap: () => {
+          if (owned || canAfford) return;
+          const missing = ability.cost - this.coins;
+          this.shopFeedbackMessage = `Need ${missing} more for ${ability.label}.`;
+          this.shopFeedbackKind = 'error';
+          this.refreshShopUi();
+        },
+      });
+      grid.appendChild(card);
+    }
+    wrap.appendChild(grid);
+    container.appendChild(wrap);
   }
 
   private renderShopInventory(container: HTMLDivElement) {
@@ -1325,6 +1451,42 @@ export class Game {
       wrap.appendChild(empty);
     } else {
       wrap.appendChild(boostGrid);
+    }
+
+    const abilitiesTitle = document.createElement('h4');
+    abilitiesTitle.className = 'shop-inventory-section-title';
+    abilitiesTitle.textContent = 'Special Abilities';
+    wrap.appendChild(abilitiesTitle);
+
+    const abilityNotice = document.createElement('p');
+    abilityNotice.className = 'shop-abilities-notice shop-abilities-notice--inventory';
+    abilityNotice.textContent = `Only one ability can be equipped at a time. Abilities only work in Level Mode. Press [${ABILITY_KEYBIND}] to activate.`;
+    wrap.appendChild(abilityNotice);
+
+    const abilityGrid = document.createElement('div');
+    abilityGrid.className = 'shop-grid';
+    let anyAbility = false;
+    for (const ability of ABILITY_CATALOG) {
+      if (!this.ownedAbilities.has(ability.id)) continue;
+      anyAbility = true;
+      const equipped = this.equippedAbility === ability.id;
+      const card = this.createShopCard({
+        title: ability.label,
+        subtitle: ability.description,
+        preview: ability.preview,
+        actionLabel: equipped ? 'Equipped' : 'Equip',
+        buttonKind: equipped ? 'equipped' : 'equip',
+        onAffordableClick: () => this.equipAbility(ability.id),
+      });
+      abilityGrid.appendChild(card);
+    }
+    if (!anyAbility) {
+      const empty = document.createElement('p');
+      empty.className = 'auth-status shop-inventory-empty';
+      empty.textContent = 'No abilities yet. Open Abilities to purchase.';
+      wrap.appendChild(empty);
+    } else {
+      wrap.appendChild(abilityGrid);
     }
 
     container.appendChild(wrap);
@@ -1447,6 +1609,44 @@ export class Game {
     this.updatePlayerSpeedFromPowerUps();
     this.saveLocalShopState();
     this.persistProgressIfSignedIn();
+    this.refreshShopUi();
+  }
+
+  private buyAbility(abilityId: AbilityId) {
+    const item = ABILITY_CATALOG.find((entry) => entry.id === abilityId);
+    if (!item || this.ownedAbilities.has(abilityId)) return;
+    if (this.coins < item.cost) {
+      const missing = item.cost - this.coins;
+      this.shopFeedbackMessage = `Need ${missing} more for ${item.label}.`;
+      this.shopFeedbackKind = 'error';
+      this.refreshShopUi();
+      return;
+    }
+    this.coins -= item.cost;
+    this.ownedAbilities.add(abilityId);
+    this.equippedAbility = abilityId;
+    this.shopFeedbackMessage = `${item.label} purchased and equipped! Press [${ABILITY_KEYBIND}] to use it in Level Mode.`;
+    this.shopFeedbackKind = 'info';
+    this.saveLocalShopState();
+    this.persistProgressIfSignedIn();
+    this.updateAbilityHudBadge();
+    this.refreshShopUi();
+  }
+
+  private equipAbility(abilityId: AbilityId) {
+    if (!this.ownedAbilities.has(abilityId)) return;
+    const item = ABILITY_CATALOG.find((entry) => entry.id === abilityId);
+    if (this.equippedAbility === abilityId) {
+      this.equippedAbility = null;
+      this.shopFeedbackMessage = `${item?.label ?? abilityId} unequipped.`;
+    } else {
+      this.equippedAbility = abilityId;
+      this.shopFeedbackMessage = `${item?.label ?? abilityId} equipped. Press [${ABILITY_KEYBIND}] in Level Mode to activate.`;
+    }
+    this.shopFeedbackKind = 'info';
+    this.saveLocalShopState();
+    this.persistProgressIfSignedIn();
+    this.updateAbilityHudBadge();
     this.refreshShopUi();
   }
 
@@ -1820,6 +2020,7 @@ export class Game {
     const isActivePlay = this.state === 'playing' || this.state === 'paused' || this.state === 'countdown';
     this.mobileControls?.classList.toggle('is-playing', isActivePlay);
     this.mobileControls?.classList.toggle('is-dead', this.state === 'dead');
+    this.updateAbilityHudBadge();
     if (this.deathTapZone) {
       // In infinite mode dead state, buttons are on the overlay — don't show the tap zone
       const showTap = (this.state === 'dead' && this.gameMode === 'levels') || this.state === 'levelComplete';
@@ -2022,11 +2223,13 @@ export class Game {
         this.updateMenuPreview(dt);
         this.input.consumeJump();
         this.input.consumeJumpRelease();
+        this.input.consumeAbility();
         break;
 
       case 'countdown':
         this.input.consumeJump();
         this.input.consumeJumpRelease();
+        this.input.consumeAbility();
         {
           const count = Math.max(1, Math.ceil(this.countdownSec));
           if (this.lastCountdownAnnounced !== count) {
@@ -2047,10 +2250,12 @@ export class Game {
         // Drain jump input while paused so resume does not trigger a jump.
         this.input.consumeJump();
         this.input.consumeJumpRelease();
+        this.input.consumeAbility();
         break;
 
       case 'dead':
         this.deathTimer += dt;
+        this.input.consumeAbility();
         // Infinite mode: retry is handled by the HTML game-over overlay buttons
         if (this.gameMode === 'levels' && this.deathTimer >= DEATH_INPUT_DELAY && this.input.consumeJump()) {
           this.audio.playRetry();
@@ -2059,6 +2264,7 @@ export class Game {
         break;
 
       case 'levelComplete':
+        this.input.consumeAbility();
         if (this.input.consumeJump()) {
           const next = this.levelIndex + 1;
           this.attempts = 1;
@@ -2106,6 +2312,11 @@ export class Game {
     if (this.input.consumeJumpRelease() && this.canCutCurrentJump) {
       player.cutJump(JUMP_CUT_FACTOR);
       this.canCutCurrentJump = false;
+    }
+
+    // Ability activation — Level Mode only; Infinite Mode ignores it entirely
+    if (this.input.consumeAbility() && this.gameMode === 'levels' && this.equippedAbility) {
+      // Placeholder: ability effects not yet implemented
     }
 
     // Read previous frame's ground state before any mutation this frame
@@ -3230,6 +3441,9 @@ export class Game {
           this.canvas.height,
         );
       } else {
+        const abilityMeta = this.equippedAbility
+          ? ABILITY_CATALOG.find((a) => a.id === this.equippedAbility)
+          : undefined;
         this.renderer.drawHUD(
           this.player.pos.x,
           this.level.flagX,
@@ -3237,6 +3451,7 @@ export class Game {
           this.canvas.height,
           this.levelIndex + 1,
           this.attempts,
+          abilityMeta?.label,
         );
       }
     }

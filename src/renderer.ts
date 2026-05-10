@@ -847,6 +847,7 @@ export class Renderer {
     canvasH: number,
     levelNum: number,
     attempts: number,
+    equippedAbilityLabel?: string,
   ) {
     const { ctx } = this;
 
@@ -899,7 +900,16 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.font = `${Math.min(8, px(canvasW / 44))}px ${PIXEL_FONT}`;
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
-      ctx.fillText('↑ JUMP     ↓ CROUCH', px(canvasW / 2), canvasH - 14);
+      const controlsHint = equippedAbilityLabel
+        ? `↑ JUMP  ↓ CROUCH  [E] ${equippedAbilityLabel.toUpperCase()}`
+        : '↑ JUMP     ↓ CROUCH';
+      ctx.fillText(controlsHint, px(canvasW / 2), canvasH - 14);
+    } else if (equippedAbilityLabel) {
+      // Show ability hint on all levels when ability is equipped
+      ctx.textAlign = 'right';
+      ctx.font = `${Math.min(8, px(canvasW / 44))}px ${PIXEL_FONT}`;
+      ctx.fillStyle = 'rgba(255,220,100,0.7)';
+      ctx.fillText(`[E] ${equippedAbilityLabel.toUpperCase()}`, canvasW - 8, canvasH - 14);
     }
   }
 
