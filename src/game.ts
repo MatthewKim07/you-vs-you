@@ -46,6 +46,7 @@ import {
 import { calculateKnowledge } from './aiKnowledge';
 import { GameAudio } from './gameAudio';
 import { AuthProgressClient, StoredProgress } from './authProgress';
+import { fetchLeaderboard, submitScoreIfBetter, LeaderboardEntry } from './leaderboard';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
@@ -110,7 +111,7 @@ const ABILITY_CATALOG: Array<{ id: AbilityId; label: string; cost: number; descr
 const ABILITY_KEYBIND = 'E';
 
 type ShopSection = 'hub' | 'looks' | 'boosts' | 'abilities' | 'inventory';
-type MenuStackScreen = 'main' | 'auth' | 'settings' | 'shop' | 'modeSelect';
+type MenuStackScreen = 'main' | 'auth' | 'settings' | 'shop' | 'modeSelect' | 'leaderboard';
 type GameMode = 'levels' | 'infinite';
 
 function skinDisplayMeta(id: SkinId): { label: string; preview: string; subtitle: string } {
@@ -183,6 +184,15 @@ export class Game {
   private authStatusLabel!: HTMLParagraphElement;
   private authEmailInput!: HTMLInputElement;
   private authPasswordInput!: HTMLInputElement;
+  private authUsernameInput!: HTMLInputElement;
+  private authUsernameRow!: HTMLDivElement;
+  private authGuestView!: HTMLDivElement;
+  private authSignedInView!: HTMLDivElement;
+  private authDisplayEmail!: HTMLParagraphElement;
+  private authDisplayUsername!: HTMLParagraphElement;
+  private authNewUsernameInput!: HTMLInputElement;
+  private authChangeUsernameBtn!: HTMLButtonElement;
+  private authCurrentEmail: string | null = null;
   private authSignInButton!: HTMLButtonElement;
   private authSignUpButton!: HTMLButtonElement;
   private authSignOutButton!: HTMLButtonElement;
@@ -237,8 +247,14 @@ export class Game {
   private infiniteGameOverEl!: HTMLDivElement;
   private infiniteScoreEl!: HTMLSpanElement;
   private infiniteBestEl!: HTMLSpanElement;
+  private infiniteLeaderboardEl!: HTMLDivElement;
+  private infiniteGuestMsgEl!: HTMLParagraphElement;
+  private menuLeaderboardPanel!: HTMLDivElement;
+  private menuLeaderboardRowsEl!: HTMLDivElement;
+  private menuLeaderboardGuestEl!: HTMLParagraphElement;
   private modeSelectPanel!: HTMLDivElement;
   private static readonly INFINITE_BEST_KEY = 'you-vs-you-infinite-best-v1';
+  private static readonly LAST_USER_KEY = 'you-vs-you-last-user-v1';
   // Throttle playerModel refreshes during infinite runs so the AI adapts to recent behavior.
   private infiniteModelRefreshTimer = 0;
   private static readonly INFINITE_MODEL_REFRESH_INTERVAL = 6; // seconds
@@ -862,12 +878,28 @@ export class Game {
     });
     this.shopToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
 
+    const leaderboardToggleButton = document.createElement('button');
+    leaderboardToggleButton.className = 'menu-secondary-btn';
+    leaderboardToggleButton.innerHTML = '<span class="menu-btn-icon">🏆</span><span class="menu-btn-label">Leaderboard</span>';
+    leaderboardToggleButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.menuStackScreen = 'leaderboard';
+      this.refreshAuthUi();
+      void this.refreshMenuLeaderboard();
+    });
+    leaderboardToggleButton.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+    const accountSettingsRow = document.createElement('div');
+    accountSettingsRow.className = 'menu-actions-split-row';
+    accountSettingsRow.appendChild(this.authToggleButton);
+    accountSettingsRow.appendChild(this.settingsToggleButton);
+
     const menuActions = document.createElement('div');
     menuActions.className = 'menu-actions';
     menuActions.appendChild(this.playButton);
-    menuActions.appendChild(this.authToggleButton);
-    menuActions.appendChild(this.settingsToggleButton);
     menuActions.appendChild(this.shopToggleButton);
+    menuActions.appendChild(leaderboardToggleButton);
+    menuActions.appendChild(accountSettingsRow);
     this.menuMainStack.appendChild(menuActions);
     this.menuOverlay.appendChild(this.menuMainStack);
 
@@ -891,6 +923,11 @@ export class Game {
     this.menuOverlay.appendChild(this.modeSelectPanel);
     this.setupModeSelectUi();
 
+    this.menuLeaderboardPanel = document.createElement('div');
+    this.menuLeaderboardPanel.id = 'leaderboard-panel';
+    this.menuOverlay.appendChild(this.menuLeaderboardPanel);
+    this.setupMenuLeaderboardUi();
+
     document.body.appendChild(this.menuOverlay);
 
     this.setupInfiniteGameOverUi();
@@ -903,6 +940,73 @@ export class Game {
     this.menuStackScreen = 'main';
     this.shopSection = 'hub';
     this.refreshAuthUi();
+  }
+
+  private setupMenuLeaderboardUi() {
+    const box = this.menuLeaderboardPanel;
+    box.className = 'auth-box menu-sub-panel';
+
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'menu-sub-back-btn';
+    back.textContent = '← Main menu';
+    back.addEventListener('click', (e) => { e.stopPropagation(); this.goMenuMain(); });
+    back.addEventListener('pointerdown', (e) => e.stopPropagation());
+    box.appendChild(back);
+
+    const title = document.createElement('h3');
+    title.className = 'menu-sub-page-title';
+    title.textContent = '🏆 Leaderboard';
+    box.appendChild(title);
+
+    const subtitle = document.createElement('p');
+    subtitle.className = 'infinite-lb-header';
+    subtitle.style.marginBottom = '8px';
+    subtitle.textContent = 'INFINITE MODE — TOP 10';
+    box.appendChild(subtitle);
+
+    this.menuLeaderboardRowsEl = document.createElement('div');
+    this.menuLeaderboardRowsEl.className = 'infinite-lb-rows menu-lb-rows';
+    box.appendChild(this.menuLeaderboardRowsEl);
+
+    this.menuLeaderboardGuestEl = document.createElement('p');
+    this.menuLeaderboardGuestEl.className = 'infinite-lb-guest';
+    this.menuLeaderboardGuestEl.style.marginTop = '8px';
+    this.menuLeaderboardGuestEl.textContent = 'Sign in to submit your score.';
+    box.appendChild(this.menuLeaderboardGuestEl);
+  }
+
+  private async refreshMenuLeaderboard() {
+    const client = this.authClient.getClient();
+    this.menuLeaderboardGuestEl.style.display = (!client || !this.authUserId) ? 'block' : 'none';
+    if (!client) {
+      this.menuLeaderboardRowsEl.innerHTML = '<p class="infinite-lb-loading">Sign in to view leaderboard.</p>';
+      return;
+    }
+    this.menuLeaderboardRowsEl.innerHTML = '<p class="infinite-lb-loading">Loading...</p>';
+    try {
+      const { top, myEntry } = await fetchLeaderboard(client, this.authUserId ?? null);
+      this.menuLeaderboardRowsEl.innerHTML = '';
+      if (top.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'infinite-lb-loading';
+        empty.textContent = 'No scores yet. Be first!';
+        this.menuLeaderboardRowsEl.appendChild(empty);
+        return;
+      }
+      for (const entry of top) {
+        this.menuLeaderboardRowsEl.appendChild(this.makeLbRow(entry));
+      }
+      if (myEntry && !top.find((e) => e.isMe)) {
+        const sep = document.createElement('div');
+        sep.className = 'infinite-lb-sep';
+        sep.textContent = '···';
+        this.menuLeaderboardRowsEl.appendChild(sep);
+        this.menuLeaderboardRowsEl.appendChild(this.makeLbRow(myEntry));
+      }
+    } catch {
+      this.menuLeaderboardRowsEl.innerHTML = '<p class="infinite-lb-loading">Could not load.</p>';
+    }
   }
 
   private setupPauseMenuUi() {
@@ -987,15 +1091,18 @@ export class Game {
 
     this.authStatusLabel = document.createElement('p');
     this.authStatusLabel.className = 'auth-status';
-    this.authStatusLabel.textContent = 'Guest mode: progress is not saved after you leave.';
     authBox.appendChild(this.authStatusLabel);
+
+    // ── Guest view ────────────────────────────────────────────────────────────
+    this.authGuestView = document.createElement('div');
+    this.authGuestView.className = 'auth-guest-view';
 
     const formRow = document.createElement('div');
     formRow.className = 'auth-input-row';
 
     this.authEmailInput = document.createElement('input');
-    this.authEmailInput.type = 'email';
-    this.authEmailInput.placeholder = 'Email';
+    this.authEmailInput.type = 'text';
+    this.authEmailInput.placeholder = 'Email or Username';
     this.authEmailInput.autocomplete = 'email';
     this.authEmailInput.className = 'auth-input';
 
@@ -1007,7 +1114,21 @@ export class Game {
 
     formRow.appendChild(this.authEmailInput);
     formRow.appendChild(this.authPasswordInput);
-    authBox.appendChild(formRow);
+    this.authGuestView.appendChild(formRow);
+
+    this.authUsernameRow = document.createElement('div');
+    this.authUsernameRow.className = 'auth-input-row auth-username-row';
+    this.authUsernameRow.style.display = 'none';
+
+    this.authUsernameInput = document.createElement('input');
+    this.authUsernameInput.type = 'text';
+    this.authUsernameInput.placeholder = 'Username (for leaderboard)';
+    this.authUsernameInput.autocomplete = 'username';
+    this.authUsernameInput.className = 'auth-input';
+    this.authUsernameInput.maxLength = 20;
+
+    this.authUsernameRow.appendChild(this.authUsernameInput);
+    this.authGuestView.appendChild(this.authUsernameRow);
 
     const buttonRow = document.createElement('div');
     buttonRow.className = 'auth-button-row';
@@ -1017,6 +1138,7 @@ export class Game {
     this.authSignInButton.textContent = 'Sign In';
     this.authSignInButton.addEventListener('click', async (e) => {
       e.stopPropagation();
+      this.authUsernameRow.style.display = 'none';
       await this.signInWithForm();
     });
 
@@ -1025,8 +1147,51 @@ export class Game {
     this.authSignUpButton.textContent = 'Sign Up';
     this.authSignUpButton.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (this.authUsernameRow.style.display === 'none') {
+        this.authUsernameRow.style.display = 'flex';
+        this.authUsernameInput.focus();
+        return;
+      }
       await this.signUpWithForm();
     });
+
+    buttonRow.appendChild(this.authSignInButton);
+    buttonRow.appendChild(this.authSignUpButton);
+    this.authGuestView.appendChild(buttonRow);
+    authBox.appendChild(this.authGuestView);
+
+    // ── Signed-in view ────────────────────────────────────────────────────────
+    this.authSignedInView = document.createElement('div');
+    this.authSignedInView.className = 'auth-signed-in-view';
+
+    this.authDisplayEmail = document.createElement('p');
+    this.authDisplayEmail.className = 'auth-account-field';
+    this.authSignedInView.appendChild(this.authDisplayEmail);
+
+    this.authDisplayUsername = document.createElement('p');
+    this.authDisplayUsername.className = 'auth-account-field';
+    this.authSignedInView.appendChild(this.authDisplayUsername);
+
+    const changeUsernameRow = document.createElement('div');
+    changeUsernameRow.className = 'auth-input-row auth-change-username-row';
+
+    this.authNewUsernameInput = document.createElement('input');
+    this.authNewUsernameInput.type = 'text';
+    this.authNewUsernameInput.placeholder = 'New username';
+    this.authNewUsernameInput.className = 'auth-input';
+    this.authNewUsernameInput.maxLength = 20;
+
+    this.authChangeUsernameBtn = document.createElement('button');
+    this.authChangeUsernameBtn.className = 'auth-btn auth-btn-inline';
+    this.authChangeUsernameBtn.textContent = 'Change';
+    this.authChangeUsernameBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await this.changeUsernameWithForm();
+    });
+
+    changeUsernameRow.appendChild(this.authNewUsernameInput);
+    changeUsernameRow.appendChild(this.authChangeUsernameBtn);
+    this.authSignedInView.appendChild(changeUsernameRow);
 
     this.authSignOutButton = document.createElement('button');
     this.authSignOutButton.className = 'auth-btn';
@@ -1035,11 +1200,9 @@ export class Game {
       e.stopPropagation();
       await this.signOutAccount();
     });
+    this.authSignedInView.appendChild(this.authSignOutButton);
 
-    buttonRow.appendChild(this.authSignInButton);
-    buttonRow.appendChild(this.authSignUpButton);
-    buttonRow.appendChild(this.authSignOutButton);
-    authBox.appendChild(buttonRow);
+    authBox.appendChild(this.authSignedInView);
   }
 
   private setupMenuSettingsUi() {
@@ -1204,6 +1367,26 @@ export class Game {
     this.infiniteBestEl = document.createElement('p');
     this.infiniteBestEl.className = 'infinite-over-best';
     card.appendChild(this.infiniteBestEl);
+
+    const lbSection = document.createElement('div');
+    lbSection.className = 'infinite-lb-section';
+
+    const lbHeader = document.createElement('p');
+    lbHeader.className = 'infinite-lb-header';
+    lbHeader.textContent = '🏆 LEADERBOARD';
+    lbSection.appendChild(lbHeader);
+
+    this.infiniteLeaderboardEl = document.createElement('div');
+    this.infiniteLeaderboardEl.className = 'infinite-lb-rows';
+    lbSection.appendChild(this.infiniteLeaderboardEl);
+
+    this.infiniteGuestMsgEl = document.createElement('p');
+    this.infiniteGuestMsgEl.className = 'infinite-lb-guest';
+    this.infiniteGuestMsgEl.textContent = 'Sign in to submit your score.';
+    this.infiniteGuestMsgEl.style.display = 'none';
+    lbSection.appendChild(this.infiniteGuestMsgEl);
+
+    card.appendChild(lbSection);
 
     const actions = document.createElement('div');
     actions.className = 'infinite-over-actions';
@@ -1742,7 +1925,16 @@ export class Game {
 
   private async handleAuthUserChanged(userId: string | null, email: string | null) {
     this.authUserId = userId;
+    this.authCurrentEmail = email;
     this.loadLocalShopState();
+    if (userId) {
+      const lastUser = localStorage.getItem(Game.LAST_USER_KEY);
+      if (lastUser && lastUser !== userId) {
+        this.infiniteBestScore = 0;
+        this.saveInfiniteBest();
+      }
+      localStorage.setItem(Game.LAST_USER_KEY, userId);
+    }
     if (!userId) {
       this.highestLevelUnlocked = 1;
       this.playButton.textContent = 'Play';
@@ -1780,12 +1972,24 @@ export class Game {
 
   private async signInWithForm() {
     if (!this.authClient.isConfigured()) return;
-    const email = this.authEmailInput.value.trim();
+    const raw = this.authEmailInput.value.trim();
     const password = this.authPasswordInput.value;
-    if (!email || !password) {
-      this.setAuthStatus('Enter email and password.');
+    if (!raw || !password) {
+      this.setAuthStatus('Enter email/username and password.');
       return;
     }
+
+    let email = raw;
+    if (!raw.includes('@')) {
+      this.setAuthStatus('Looking up username...');
+      const found = await this.authClient.getEmailByUsername(raw);
+      if (!found) {
+        this.setAuthStatus('Username not found.');
+        return;
+      }
+      email = found;
+    }
+
     this.setAuthStatus('Signing in...');
     try {
       await this.authClient.signIn(email, password);
@@ -1799,6 +2003,7 @@ export class Game {
     if (!this.authClient.isConfigured()) return;
     const email = this.authEmailInput.value.trim();
     const password = this.authPasswordInput.value;
+    const username = this.authUsernameInput.value.trim();
     if (!email || !password) {
       this.setAuthStatus('Enter email and password.');
       return;
@@ -1807,20 +2012,48 @@ export class Game {
       this.setAuthStatus('Password must be at least 6 characters.');
       return;
     }
+    if (!username) {
+      this.setAuthStatus('Enter a username for the leaderboard.');
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]{2,20}$/.test(username)) {
+      this.setAuthStatus('Username: 2-20 chars, letters/numbers/underscore.');
+      return;
+    }
+    const available = await this.authClient.checkUsernameAvailable(username);
+    if (!available) {
+      this.setAuthStatus('Username taken. Try another.');
+      return;
+    }
     this.setAuthStatus('Creating account...');
     try {
-      await this.authClient.signUp(email, password);
-      try {
-        await this.authClient.signIn(email, password);
-      } catch (err) {
-        const msg = this.errorMessage(err);
-        if (msg.toLowerCase().includes('email not confirmed')) {
-          this.setAuthStatus('Account created. Check your email to confirm, then sign in.');
-          return;
-        }
-        throw err;
+      const { emailAlreadyExists } = await this.authClient.signUp(email, password);
+      if (emailAlreadyExists) {
+        this.setAuthStatus('Email already registered. Use Sign In instead.');
+        return;
       }
+
+      await this.authClient.signIn(email, password);
+
+      const user = await this.authClient.getCurrentUser();
+      if (!user) {
+        this.setAuthStatus('Sign up failed: could not get user.');
+        return;
+      }
+
+      try {
+        await this.authClient.createProfile(user.id, username);
+      } catch (err) {
+        this.setAuthStatus(`Account created but username save failed: ${this.errorMessage(err)}`);
+        this.authPasswordInput.value = '';
+        this.authUsernameInput.value = '';
+        this.authUsernameRow.style.display = 'none';
+        return;
+      }
+
       this.authPasswordInput.value = '';
+      this.authUsernameInput.value = '';
+      this.authUsernameRow.style.display = 'none';
     } catch (err) {
       this.setAuthStatus(`Sign up failed: ${this.errorMessage(err)}`);
     }
@@ -1841,18 +2074,70 @@ export class Game {
     }
   }
 
+  private async changeUsernameWithForm() {
+    if (!this.authUserId) return;
+    const username = this.authNewUsernameInput.value.trim();
+    if (!username) {
+      this.setAuthStatus('Enter a new username.');
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]{2,20}$/.test(username)) {
+      this.setAuthStatus('2-20 chars, letters/numbers/underscore only.');
+      return;
+    }
+    const available = await this.authClient.checkUsernameAvailable(username);
+    if (!available) {
+      this.setAuthStatus('Username taken. Try another.');
+      return;
+    }
+    this.setAuthStatus('Updating...');
+    try {
+      const client = this.authClient.getClient();
+      if (!client) throw new Error('Not configured');
+      const { error } = await client
+        .from('profiles')
+        .update({ username })
+        .eq('id', this.authUserId);
+      if (error) throw error;
+      this.authNewUsernameInput.value = '';
+      this.authDisplayUsername.textContent = `👤 ${username}`;
+      this.setAuthStatus('Username updated.');
+    } catch (err) {
+      this.setAuthStatus(`Failed: ${this.errorMessage(err)}`);
+    }
+  }
+
   private refreshAuthUi() {
     const configured = this.authClient.isConfigured();
     const signedIn = !!this.authUserId;
-    this.authEmailInput.disabled = !configured || signedIn;
-    this.authPasswordInput.disabled = !configured || signedIn;
-    this.authSignInButton.disabled = !configured || signedIn;
-    this.authSignUpButton.disabled = !configured || signedIn;
-    this.authSignOutButton.disabled = !configured || !signedIn;
-    this.authSignInButton.style.display = signedIn ? 'none' : 'block';
-    this.authSignUpButton.style.display = signedIn ? 'none' : 'block';
-    this.authSignOutButton.style.display = signedIn ? 'block' : 'none';
-    this.authToggleButton.textContent = signedIn ? 'Account' : 'Log In';
+
+    // Toggle views
+    this.authGuestView.style.display = signedIn ? 'none' : 'flex';
+    this.authSignedInView.style.display = signedIn ? 'flex' : 'none';
+
+    if (signedIn) {
+      this.authDisplayEmail.textContent = `📧 ${this.authCurrentEmail ?? ''}`;
+      this.authDisplayUsername.textContent = `👤 Loading...`;
+      if (this.authUserId) {
+        void this.authClient.getUsername(this.authUserId).then((name) => {
+          this.authDisplayUsername.textContent = `👤 ${name ?? '(no username)'}`;
+        });
+      }
+      this.authStatusLabel.textContent = '';
+      this.authSignOutButton.disabled = !configured;
+    } else {
+      this.authEmailInput.disabled = !configured;
+      this.authPasswordInput.disabled = !configured;
+      this.authSignInButton.disabled = !configured;
+      this.authSignUpButton.disabled = !configured;
+      if (!this.authStatusLabel.textContent) {
+        this.authStatusLabel.textContent = 'Guest mode: progress not saved after you leave.';
+      }
+    }
+
+    this.authToggleButton.innerHTML = signedIn
+      ? '<span class="menu-btn-icon">👤</span><span class="menu-btn-label">Account</span>'
+      : '<span class="menu-btn-icon">👤</span><span class="menu-btn-label">Log In</span>';
     this.authToggleButton.classList.remove('danger');
 
     const onMain = this.menuStackScreen === 'main';
@@ -1861,6 +2146,9 @@ export class Game {
     this.settingsPanel.style.display = this.menuStackScreen === 'settings' ? 'flex' : 'none';
     if (this.modeSelectPanel) {
       this.modeSelectPanel.style.display = this.menuStackScreen === 'modeSelect' ? 'flex' : 'none';
+    }
+    if (this.menuLeaderboardPanel) {
+      this.menuLeaderboardPanel.style.display = this.menuStackScreen === 'leaderboard' ? 'flex' : 'none';
     }
     this.refreshShopUi();
   }
@@ -2043,6 +2331,105 @@ export class Game {
     try {
       window.localStorage.setItem(Game.INFINITE_BEST_KEY, String(this.infiniteBestScore));
     } catch { /* ignore */ }
+  }
+
+  private async submitAndRefreshLeaderboard(score: number) {
+    const client = this.authClient.getClient();
+    if (client && this.authUserId) {
+      try {
+        // Ensure a profile row exists — required by the infinite_scores FK.
+        const existing = await this.authClient.getUsername(this.authUserId);
+        if (!existing) {
+          const fallback = this.generateFallbackUsername();
+          await this.authClient.createProfile(this.authUserId, fallback);
+        }
+        await submitScoreIfBetter(client, this.authUserId, score);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error('[Leaderboard] submit failed:', msg);
+        this.showInfiniteLeaderboardMessage(`Submit error: ${msg}`);
+      }
+    }
+    await this.refreshInfiniteLeaderboard();
+  }
+
+  private generateFallbackUsername(): string {
+    const prefix = (this.authCurrentEmail ?? '')
+      .split('@')[0]
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .slice(0, 16) || 'player';
+    return `${prefix}${Math.floor(Math.random() * 9000) + 1000}`;
+  }
+
+  private async refreshInfiniteLeaderboard() {
+    const client = this.authClient.getClient();
+    if (!client) {
+      this.infiniteLeaderboardEl.innerHTML = '';
+      this.infiniteGuestMsgEl.style.display = 'block';
+      return;
+    }
+    this.infiniteGuestMsgEl.style.display = this.authUserId ? 'none' : 'block';
+    this.infiniteLeaderboardEl.innerHTML = '<p class="infinite-lb-loading">Loading...</p>';
+    try {
+      const { top, myEntry } = await fetchLeaderboard(client, this.authUserId ?? null);
+      this.renderLeaderboardRows(top, myEntry);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[Leaderboard] fetch failed:', msg);
+      this.showInfiniteLeaderboardMessage(`Error: ${msg}`);
+    }
+  }
+
+  private showInfiniteLeaderboardMessage(message: string) {
+    this.infiniteLeaderboardEl.innerHTML = '';
+    const row = document.createElement('p');
+    row.className = 'infinite-lb-loading';
+    row.textContent = message;
+    this.infiniteLeaderboardEl.appendChild(row);
+  }
+
+  private renderLeaderboardRows(top: LeaderboardEntry[], myEntry: LeaderboardEntry | null) {
+    this.infiniteLeaderboardEl.innerHTML = '';
+    if (top.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'infinite-lb-loading';
+      empty.textContent = 'No scores yet. Be first!';
+      this.infiniteLeaderboardEl.appendChild(empty);
+      return;
+    }
+    const showSeparator = myEntry && !top.some((entry) => entry.isMe);
+    for (const entry of top) {
+      this.infiniteLeaderboardEl.appendChild(this.makeLbRow(entry));
+    }
+    if (showSeparator) {
+      const sep = document.createElement('div');
+      sep.className = 'infinite-lb-sep';
+      sep.textContent = '···';
+      this.infiniteLeaderboardEl.appendChild(sep);
+      this.infiniteLeaderboardEl.appendChild(this.makeLbRow(myEntry!));
+    }
+  }
+
+  private makeLbRow(entry: LeaderboardEntry): HTMLDivElement {
+    const row = document.createElement('div');
+    row.className = `infinite-lb-row${entry.isMe ? ' infinite-lb-row--me' : ''}`;
+
+    const rank = document.createElement('span');
+    rank.className = 'infinite-lb-rank';
+    rank.textContent = entry.rank <= 3 ? ['🥇', '🥈', '🥉'][entry.rank - 1] : `#${entry.rank}`;
+
+    const name = document.createElement('span');
+    name.className = 'infinite-lb-name';
+    name.textContent = entry.username;
+
+    const score = document.createElement('span');
+    score.className = 'infinite-lb-score';
+    score.textContent = String(entry.score);
+
+    row.appendChild(rank);
+    row.appendChild(name);
+    row.appendChild(score);
+    return row;
   }
 
   private togglePauseMenu() {
@@ -3307,7 +3694,6 @@ export class Game {
     }
 
     if (this.gameMode === 'infinite') {
-      // Infinite mode death: update best score then show overlay
       this.infiniteBestScore = Math.max(this.infiniteBestScore, this.infiniteRunScore);
       this.saveInfiniteBest();
       this.tracker.finishRun(false, reason, deathX);
@@ -3317,6 +3703,7 @@ export class Game {
       this.state = 'dead';
       this.deathTimer = 0;
       this.syncUiVisibility();
+      void this.submitAndRefreshLeaderboard(this.infiniteRunScore);
       return;
     }
 

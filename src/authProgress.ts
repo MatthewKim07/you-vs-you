@@ -30,6 +30,43 @@ export class AuthProgressClient {
     return this.client !== null;
   }
 
+  getClient(): SupabaseClient | null {
+    return this.client;
+  }
+
+  async createProfile(userId: string, username: string): Promise<void> {
+    if (!this.client) throw new Error('Auth is not configured');
+    const { error } = await this.client.from('profiles').insert({ id: userId, username });
+    if (error) throw error;
+  }
+
+  async checkUsernameAvailable(username: string): Promise<boolean> {
+    if (!this.client) return true;
+    const { data } = await this.client
+      .from('profiles')
+      .select('id')
+      .ilike('username', username)
+      .maybeSingle();
+    return data === null;
+  }
+
+  async getEmailByUsername(username: string): Promise<string | null> {
+    if (!this.client) return null;
+    const { data, error } = await this.client.rpc('get_email_by_username', { p_username: username });
+    if (error || !data) return null;
+    return data as string;
+  }
+
+  async getUsername(userId: string): Promise<string | null> {
+    if (!this.client) return null;
+    const { data } = await this.client
+      .from('profiles')
+      .select('username')
+      .eq('id', userId)
+      .maybeSingle<{ username: string }>();
+    return data?.username ?? null;
+  }
+
   async getCurrentUser(): Promise<User | null> {
     if (!this.client) return null;
     const { data, error } = await this.client.auth.getUser();
@@ -45,10 +82,13 @@ export class AuthProgressClient {
     return () => data.subscription.unsubscribe();
   }
 
-  async signUp(email: string, password: string): Promise<void> {
+  async signUp(email: string, password: string): Promise<{ emailAlreadyExists: boolean }> {
     if (!this.client) throw new Error('Auth is not configured');
-    const { error } = await this.client.auth.signUp({ email, password });
+    const { data, error } = await this.client.auth.signUp({ email, password });
     if (error) throw error;
+    // Supabase sets identities=[] when email is already registered (prevents enumeration).
+    const emailAlreadyExists = Array.isArray(data.user?.identities) && data.user.identities.length === 0;
+    return { emailAlreadyExists };
   }
 
   async signIn(email: string, password: string): Promise<void> {
@@ -93,4 +133,3 @@ export class AuthProgressClient {
     if (error) throw error;
   }
 }
-
