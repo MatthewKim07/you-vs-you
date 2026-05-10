@@ -1028,7 +1028,11 @@ export class Renderer {
     ctx.fillText(ready ? 'TAP TO RETRY' : '...', cx, cy + 22);
   }
 
-  drawLevelCompleteOverlay(canvas: HTMLCanvasElement, nextLevelNum: number) {
+  drawLevelCompleteOverlay(
+    canvas: HTMLCanvasElement,
+    nextLevelNum: number,
+    reward?: { base: number; total: number; boosted: boolean },
+  ) {
     const { ctx } = this;
     ctx.fillStyle = 'rgba(0,0,0,0.62)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1040,13 +1044,54 @@ export class Renderer {
     const fs = Math.min(24, px(canvas.width / 15));
     ctx.font = `${fs}px ${PIXEL_FONT}`;
     ctx.fillStyle = P_PLYR_HAT;
-    ctx.fillText('LEVEL CLEAR!', cx + 2, cy - 22 + 2);
+    ctx.fillText('LEVEL CLEAR!', cx + 2, cy - 30 + 2);
     ctx.fillStyle = '#fff';
-    ctx.fillText('LEVEL CLEAR!', cx, cy - 22);
+    ctx.fillText('LEVEL CLEAR!', cx, cy - 30);
+
+    if (reward) {
+      const rfs = Math.min(9, px(canvas.width / 38));
+      ctx.font = `${rfs}px ${PIXEL_FONT}`;
+      const coinScale = rfs + 2;
+      const coinText = reward.boosted
+        ? `+${reward.base} x2 = +${reward.total}`
+        : `+${reward.total}`;
+      const textW = ctx.measureText(coinText).width;
+      const gap = 6;
+      const totalW = textW + gap + coinScale;
+      const textX = px(cx - totalW / 2);
+      const coinX = textX + textW + gap;
+      const lineY = cy + 4;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#FFD46E';
+      ctx.fillText(coinText, textX, lineY);
+      this.drawPixelCoin(coinX, px(lineY - coinScale + 2), coinScale);
+      ctx.textAlign = 'center';
+    }
 
     ctx.font = `${Math.min(10, px(canvas.width / 34))}px ${PIXEL_FONT}`;
     ctx.fillStyle = '#88FF88';
-    ctx.fillText(`TAP FOR LEVEL ${nextLevelNum}`, cx, cy + 22);
+    ctx.fillText(`TAP FOR LEVEL ${nextLevelNum}`, cx, cy + 28);
+  }
+
+  private drawPixelCoin(x: number, y: number, size: number) {
+    const { ctx } = this;
+    const s = size / 8;
+    const face = '#ffd46e';
+    const edge = '#b8860b';
+    const hi   = '#fff3c4';
+    const cells: Array<[number, number, string]> = [
+      [2, 0, edge], [3, 0, hi],   [4, 0, hi],   [5, 0, edge],
+      [1, 1, edge], [2, 1, face], [3, 1, face], [4, 1, face], [5, 1, face], [6, 1, edge],
+      [0, 2, edge], [1, 2, face], [6, 2, face], [7, 2, edge],
+      [0, 3, edge], [1, 3, face], [6, 3, face], [7, 3, edge],
+      [0, 4, edge], [1, 4, face], [6, 4, face], [7, 4, edge],
+      [1, 5, edge], [2, 5, face], [3, 5, face], [4, 5, face], [5, 5, face], [6, 5, edge],
+      [2, 6, edge], [3, 6, hi],   [4, 6, hi],   [5, 6, edge],
+    ];
+    for (const [cx, cy, color] of cells) {
+      ctx.fillStyle = color;
+      ctx.fillRect(px(x + cx * s), px(y + cy * s), Math.max(1, px(s)), Math.max(1, px(s)));
+    }
   }
 
   drawPausedOverlay(canvas: HTMLCanvasElement) {

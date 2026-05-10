@@ -3745,7 +3745,7 @@ export class Game {
         this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
       }
     } else if (this.state === 'levelComplete') {
-      this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2);
+      this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2, this.lastLevelReward ?? undefined);
     }
 
     if (this.state === 'countdown') {
