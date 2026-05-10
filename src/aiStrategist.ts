@@ -196,86 +196,50 @@ function asShortString(value: unknown): string | null {
 
 function buildPlayerRead(input: StrategyBriefInput): string {
   const model = input.playerModel;
-  const style = input.playerProfile.jumpStyle;
-  const land = input.latestLandingZones[0];
   const counters = input.aiDebug?.counterTargets ?? [];
 
-  if (counters.includes('overusesChoiceJump') || model.preferredChoiceAction === 'jump') {
-    return `At every choice obstacle, you jump (${(model.choiceJumpRate * 100).toFixed(0)}%). I logged that.`;
-  }
-  if (counters.includes('overusesChoiceCrouch') || model.preferredChoiceAction === 'crouch') {
-    return `You always crouch at choice points (${(model.choiceCrouchRate * 100).toFixed(0)}%). That is easy to exploit.`;
-  }
-  if (model.consistency === 'predictable' && land !== undefined) {
-    return `You keep repeating a lane near ${Math.round(land)}px.`;
-  }
-  if (model.preferredRoute !== 'mixed' && model.routeConfidence > 0.45) {
-    return `You keep choosing the ${model.preferredRoute} route. I am tracking that lane.`;
-  }
-  if (counters.includes('diesToGaps') || counters.includes('platformWeak')) {
-    return 'Most of your deaths are gaps. You struggle with platform routes.';
-  }
-  if (counters.includes('diesToSpikes')) {
-    return 'Spikes keep killing you. Your spike timing is off.';
-  }
-  if (model.prefersJump && model.jumpFrequency > model.crouchFrequency) {
-    return `You lean on jumping, especially with ${style} timing.`;
-  }
-  if (model.prefersCrouch && model.crouchFrequency >= model.jumpFrequency) {
-    return 'You rely on crouch transitions more than jump commits.';
-  }
-  if (model.reactionTiming === 'late') {
-    return 'You react late under pressure, which narrows your safe window.';
-  }
-  return 'Your movement mix is balanced, but your rhythm is still readable.';
+  if (counters.includes('overusesChoiceJump') || model.preferredChoiceAction === 'jump') return 'Always jumps at choices. 🦘';
+  if (counters.includes('overusesChoiceCrouch') || model.preferredChoiceAction === 'crouch') return 'Always crouches at choices. 🦆';
+  if (model.preferredRoute !== 'mixed' && model.routeConfidence > 0.45) return `Sticks to ${model.preferredRoute} route. 🗺️`;
+  if (counters.includes('diesToGaps') || counters.includes('platformWeak')) return 'Keeps dying to gaps. 🕳️';
+  if (counters.includes('diesToSpikes')) return 'Spike timing is off. 🔺';
+  if (model.prefersJump && model.jumpFrequency > model.crouchFrequency) return 'Jump-heavy player. 🦘';
+  if (model.prefersCrouch && model.crouchFrequency >= model.jumpFrequency) return 'Crouch-reliant player. 🦆';
+  if (model.reactionTiming === 'late') return 'Reacts late under pressure. ⏱️';
+  return 'Readable rhythm. 📋';
 }
 
 function buildPlan(input: StrategyBriefInput): string {
   const strategy = input.aiDebug?.strategy ?? 'balancedEscalation';
-  const difficulty = input.aiDebug?.difficulty ?? 'medium';
-  const variants = input.aiDebug?.variants ?? [];
   const counters = input.aiDebug?.counterTargets ?? [];
 
-  if (counters.includes('jumpBiased')) {
-    return 'I stacked ceiling and crouch combos to punish your jump-first habit.';
-  }
-  if (counters.includes('crouchBiased')) {
-    return 'I added gap pressure and spike runs to expose your crouch reliance.';
-  }
-  if (counters.includes('platformWeak') || counters.includes('diesToGaps')) {
-    return 'I built more gap and platform sections since that is where you keep dying.';
-  }
-  if (counters.includes('lateReactor')) {
-    return 'I tightened every approach window. Your late reactions will cost you more.';
-  }
-  if (counters.includes('predictablePattern')) {
-    return 'I broke your usual route with choice+pressure traps you have not seen.';
-  }
-  if (strategy === 'punishJumpBias') {
-    return `I will chain low-overhead checks with ${difficulty} spacing to punish early jumps.`;
-  }
-  if (strategy === 'punishCrouchBias') {
-    return `I will force jump commitments after crouch-safe moments using ${difficulty} variants.`;
-  }
-  if (strategy === 'punishLateReactions') {
-    return 'I will tighten approach windows and keep pressure sequences in the mid lane.';
-  }
-  if (variants.length > 0) {
-    return `I will rotate ${variants[0]} with non-repeating variants to keep your route unstable.`;
-  }
-  return 'I will keep escalating pattern density while preserving a fair path.';
+  if (counters.includes('jumpBiased')) return 'Ceilings for your jumps. 😏';
+  if (counters.includes('crouchBiased')) return 'Gaps for your crouches. 😈';
+  if (counters.includes('platformWeak') || counters.includes('diesToGaps')) return 'More gaps next. 🕳️';
+  if (counters.includes('lateReactor')) return 'Tighter timing ahead. ⏱️';
+  if (counters.includes('predictablePattern')) return 'Your usual path is blocked. 🔀';
+  if (strategy === 'punishJumpBias') return 'Low ceilings incoming. 😏';
+  if (strategy === 'punishCrouchBias') return 'Jump gaps incoming. 😈';
+  if (strategy === 'punishLateReactions') return 'Fast traps incoming. ⚡';
+  return 'Escalating. Stay sharp. ⚡';
 }
 
-function buildSummary(input: StrategyBriefInput, read: string, plan: string): string {
+function buildSummary(input: StrategyBriefInput, _read: string, _plan: string): string {
   if (input.phase === 'death') {
-    const where = input.latestDeath?.x !== undefined ? ` near ${Math.round(input.latestDeath.x)}px` : '';
-    const why = input.latestDeath?.reason ?? 'timing';
-    return `You failed on ${why}${where}; ${plan.toLowerCase()}`;
+    const reason = input.latestDeath?.reason;
+    const counters = input.aiDebug?.counterTargets ?? [];
+    if (reason === 'gap') return 'Fell in the gap! 🕳️';
+    if (reason === 'spike') {
+      if (counters.includes('jumpBiased')) return 'Jumped into a spike. 😂';
+      if (counters.includes('lateReactor')) return 'Too slow! Spike wins. ⏱️';
+      return 'Ha! Got you! 😈';
+    }
+    return 'Ha! Got you! 😈';
   }
   if (input.phase === 'levelComplete') {
-    return `You cleared this route; ${plan.toLowerCase()}`;
+    return "Nice clear. Next is harder. 😤";
   }
-  return `${read} ${plan}`;
+  return "I'm learning your moves. 🧠";
 }
 
 function buildTaunt(input: StrategyBriefInput): string {
@@ -284,58 +248,49 @@ function buildTaunt(input: StrategyBriefInput): string {
   const streakDeaths = outcomes.length >= 2 && outcomes[outcomes.length - 1] === 'death' && outcomes[outcomes.length - 2] === 'death';
   const counters = input.aiDebug?.counterTargets ?? [];
   const aiPhase = input.aiDebug?.aiPhase;
-  const predictedLandingX = input.aiDebug?.predictedLandingX;
 
-  // Task 5: Phase-aware messages
   if (input.phase === 'levelStart') {
     switch (aiPhase) {
       case 'observe':
-        return "I'm watching how you move.";
-      case 'test': {
-        const topHabit = counters.includes('jumpBiased') ? 'jumping' : counters.includes('crouchBiased') ? 'crouching' : 'your pattern';
-        return `You seem to prefer ${topHabit}.`;
-      }
-      case 'counter': {
-        if (counters.includes('jumpBiased')) return 'You keep jumping. I adjusted the ceiling.';
-        if (counters.includes('crouchBiased')) return 'You keep crouching. I widened the gaps.';
-        return "You're predictable. I've added surprises.";
-      }
-      case 'predict': {
-        if (predictedLandingX !== undefined) {
-          return `I knew where you would land.`;
-        }
-        return 'I can predict your next move before you make it.';
-      }
+        return "I'm watching. 👀";
+      case 'test':
+        if (counters.includes('jumpBiased')) return 'You like to jump, huh? 🦘';
+        if (counters.includes('crouchBiased')) return 'Always crouching? 🦆';
+        return "I'm taking notes. 📋";
+      case 'counter':
+        if (counters.includes('jumpBiased')) return 'Jump again. Ceilings lowered. 😏';
+        if (counters.includes('crouchBiased')) return 'Crouch again. Gaps widened. 😈';
+        return "You're predictable. 😴";
+      case 'predict':
+        return 'I can read you. 🔮';
       case 'dominate':
-        return 'I know your habits now. Every trap is live.';
+        return 'Every trap is live. 😈';
     }
+    if (streakDeaths) return 'Same move. Same death. 😤';
+    if (counters.includes('jumpBiased')) return 'Jump first, think never. 🦘';
+    if (counters.includes('crouchBiased')) return "Crouch won't save you. 😈";
+    return "I'm watching. 👀";
   }
 
   if (input.phase === 'death') {
-    if (aiPhase === 'predict' && predictedLandingX !== undefined) {
-      return `I knew you would land near ${Math.round(predictedLandingX)}px.`;
-    }
-    if (counters.includes('jumpBiased')) return 'You jumped again. I built this level knowing you would.';
-    if (counters.includes('lateReactor')) return 'Half a second too slow. I already moved on.';
-    if (counters.includes('overusesChoiceJump') || model.preferredChoiceAction === 'jump') return 'You always jump at choices. I lowered the ceiling after it.';
-    if (counters.includes('overusesChoiceCrouch') || model.preferredChoiceAction === 'crouch') return 'You crouched again. I placed a spike right after.';
-    if (counters.includes('diesToGaps')) return 'The gap wins again. Your platform timing needs work.';
-    return 'You saw the trap, but your timing still blinked first.';
+    if (counters.includes('jumpBiased')) return 'You jumped. I knew it. 😂';
+    if (counters.includes('lateReactor')) return 'Too slow! ⏱️';
+    if (counters.includes('overusesChoiceJump') || model.preferredChoiceAction === 'jump') return 'Jumped at the choice. Classic. 😏';
+    if (counters.includes('overusesChoiceCrouch') || model.preferredChoiceAction === 'crouch') return 'Crouched into a spike. Nice. 🔺';
+    if (counters.includes('diesToGaps')) return 'Gap gets you every time! 🕳️';
+    if (streakDeaths) return 'Same move. Same death. 😤';
+    return 'Ha! Got you! 😈';
   }
-  if (streakDeaths) {
-    if (counters.includes('predictablePattern')) return 'Same path, same death. Change something.';
-    return 'You are close, but I am still one step ahead of your rhythm.';
-  }
+
   if (input.phase === 'levelComplete') {
-    if (aiPhase === 'predict') {
-      return 'You beat my prediction. Let me recalculate for next time.';
-    }
-    if (counters.length > 0) return `Good clear. I already adjusted the next level for your habits.`;
-    return 'Good clear; the next route is built to break that habit.';
+    if (aiPhase === 'predict') return 'You beat me. Adjusting. 🤖';
+    if (counters.length > 0) return 'Nice. Already adapting. 😏';
+    return "Enjoy it. Next is worse. 😤";
   }
-  if (counters.includes('predictablePattern')) return 'Predictable movement is easy to counter.';
-  if (counters.includes('jumpBiased')) return 'You jump first, think second. I am counting on that.';
-  return 'I am learning your route choices in real time.';
+
+  if (counters.includes('predictablePattern')) return 'Boring moves. Easy counters. 😴';
+  if (counters.includes('jumpBiased')) return 'Jump first, think never. 🦘';
+  return "I'm learning your moves. 🧠";
 }
 
 function capSentence(text: string): string {
