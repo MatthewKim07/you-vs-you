@@ -74,7 +74,7 @@ const COIN_STORAGE_KEY_BASE = 'you-vs-you-shop-v1';
 const AUDIO_SETTINGS_STORAGE_KEY = 'you-vs-you-audio-v1';
 
 type SkinId = 'classic' | 'ember' | 'forest' | 'void' | 'rainbow';
-type PowerUpId = 'speedBoost' | 'doubleJump' | 'shield';
+type PowerUpId = 'speedBoost' | 'doubleJump' | 'shield' | 'coinBooster';
 type AbilityId = 'fireball' | 'phase' | 'timeWarp';
 
 interface ShopState {
@@ -96,6 +96,7 @@ const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: st
 
 const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; description: string; preview: string }> = [
   { id: 'shield', label: 'Shield', cost: 100, description: 'Absorb one spike hit per level. Does not protect from falls.', preview: '🛡' },
+  { id: 'coinBooster', label: 'Coin Booster', cost: 120, description: 'Earn 2x coins from completed levels.', preview: '🪙' },
   { id: 'speedBoost', label: 'Speed Core', cost: 180, description: 'Permanent +15% run speed.', preview: '⚡' },
   { id: 'doubleJump', label: 'Double Jump', cost: 200, description: 'Press jump again while airborne for a second leap.', preview: '🦅' },
 ];
@@ -265,6 +266,7 @@ export class Game {
   private abilityHudBadge!: HTMLDivElement;
   private consumedShield = false;
   private invincibleUntilMs: number | null = null;
+  private lastLevelReward: { base: number; total: number; boosted: boolean } | null = null;
   private fireball: Fireball | null = null;
   private fireballUsed = false;
   private phaseUsed = false;
@@ -566,6 +568,7 @@ export class Game {
     this.timeWarpUsed = false;
     this.timeWarpActive = false;
     this.timeWarpTimeLeft = 0;
+    this.lastLevelReward = null;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
     this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
@@ -1708,12 +1711,14 @@ export class Game {
     this.refreshShopUi();
   }
 
-  private rewardCoinsForLevel(levelIndex: number): number {
-    const reward = 20 + levelIndex * 12;
-    this.coins += reward;
+  private rewardCoinsForLevel(levelIndex: number): { base: number; total: number; boosted: boolean } {
+    const base = 20 + levelIndex * 12;
+    const boosted = this.gameMode === 'levels' && this.activeBoosts.has('coinBooster');
+    const total = boosted ? base * 2 : base;
+    this.coins += total;
     this.saveLocalShopState();
     this.refreshShopUi();
-    return reward;
+    return { base, total, boosted };
   }
 
   private async initializeAuth() {
@@ -2650,8 +2655,12 @@ export class Game {
       this.refreshPlayerModel();
       this.debugPanel.setPlayerModel(this.playerModel);
       this.highestLevelUnlocked = Math.max(this.highestLevelUnlocked, this.levelIndex + 2);
-      const earnedCoins = this.rewardCoinsForLevel(this.levelIndex + 1);
-      this.showAIMessage(`Level clear: +${earnedCoins}`);
+      const reward = this.rewardCoinsForLevel(this.levelIndex + 1);
+      this.lastLevelReward = reward;
+      const coinMsg = reward.boosted
+        ? `Level clear: +${reward.base} x2 = +${reward.total}`
+        : `Level clear: +${reward.total}`;
+      this.showAIMessage(coinMsg);
       this.persistProgressIfSignedIn();
       this.audio.playLevelComplete();
       this.audio.stopMusic();
