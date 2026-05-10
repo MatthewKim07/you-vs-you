@@ -233,10 +233,9 @@ export class Game {
   private highestLevelUnlocked = 1;
   private menuStackScreen: MenuStackScreen = 'main';
   private shopSection: ShopSection = 'hub';
-  private shopBackButton!: HTMLButtonElement;
+  private shopNavButton!: HTMLButtonElement;
   private shopHeadingEl!: HTMLHeadingElement;
   private shopBodyEl!: HTMLDivElement;
-  private shopHeaderRowEl!: HTMLDivElement;
   private shopToggleButton!: HTMLButtonElement;
   private shopStatusLabel!: HTMLParagraphElement;
   private coinHudBadge!: HTMLDivElement;
@@ -1054,30 +1053,24 @@ export class Game {
         </div>
         <div class="shop-facade">
           <div class="shop-shell">
-            <div id="shop-header-row" class="shop-header-row">
-              <button type="button" id="shop-back-btn" class="shop-back-btn" aria-label="Back to categories">← Back</button>
-            </div>
             <div id="shop-body" class="shop-body"></div>
           </div>
         </div>
       </div>
     `;
-    this.shopBackButton = this.shopPanel.querySelector('#shop-back-btn') as HTMLButtonElement;
+    this.shopNavButton = this.shopPanel.querySelector('#shop-exit-to-main') as HTMLButtonElement;
     this.shopHeadingEl = this.shopPanel.querySelector('#shop-heading') as HTMLHeadingElement;
     this.shopBodyEl = this.shopPanel.querySelector('#shop-body') as HTMLDivElement;
-    this.shopHeaderRowEl = this.shopPanel.querySelector('#shop-header-row') as HTMLDivElement;
-    this.shopBackButton.addEventListener('click', (e) => {
+    this.shopNavButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.shopSection = 'hub';
-      this.refreshShopUi();
+      if (this.shopSection === 'hub') {
+        this.goMenuMain();
+      } else {
+        this.shopSection = 'hub';
+        this.refreshShopUi();
+      }
     });
-    this.shopBackButton.addEventListener('pointerdown', (e) => e.stopPropagation());
-    const shopExitMain = this.shopPanel.querySelector('#shop-exit-to-main') as HTMLButtonElement;
-    shopExitMain.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.goMenuMain();
-    });
-    shopExitMain.addEventListener('pointerdown', (e) => e.stopPropagation());
+    this.shopNavButton.addEventListener('pointerdown', (e) => e.stopPropagation());
     this.shopStatusLabel = document.createElement('p');
     this.shopStatusLabel.className = 'auth-status';
     this.shopStatusLabel.style.textAlign = 'center';
@@ -1190,7 +1183,7 @@ export class Game {
   }
 
   private refreshShopUi() {
-    if (!this.shopPanel || !this.shopStatusLabel || !this.shopBodyEl || !this.shopHeaderRowEl) return;
+    if (!this.shopPanel || !this.shopStatusLabel || !this.shopBodyEl) return;
     if (this.shopFeedbackMessage) {
       this.shopStatusLabel.textContent = this.shopFeedbackMessage;
       this.shopStatusLabel.style.display = 'block';
@@ -1205,14 +1198,13 @@ export class Game {
     this.shopPanel.style.display = this.menuStackScreen === 'shop' ? 'flex' : 'none';
 
     const isHub = this.shopSection === 'hub';
-    this.shopBackButton.style.display = isHub ? 'none' : 'inline-flex';
-    this.shopHeaderRowEl.classList.toggle('shop-header-row--with-back', !isHub);
+    this.shopNavButton.textContent = isHub ? '← Main menu' : '← Shop';
 
     const headings: Record<ShopSection, string> = {
       hub: 'Shop',
       looks: 'Skins',
       boosts: 'Boosts',
-      abilities: 'Special Abilities',
+      abilities: 'Abilities',
       inventory: 'Inventory',
     };
     this.shopHeadingEl.textContent = headings[this.shopSection];
@@ -1470,10 +1462,7 @@ export class Game {
     abilitiesTitle.textContent = 'Special Abilities';
     wrap.appendChild(abilitiesTitle);
 
-    const abilityNotice = document.createElement('p');
-    abilityNotice.className = 'shop-abilities-notice shop-abilities-notice--inventory';
-    abilityNotice.textContent = `Only one ability can be equipped at a time. Abilities only work in Level Mode. Press [${ABILITY_KEYBIND}] to activate.`;
-    wrap.appendChild(abilityNotice);
+
 
     const abilityGrid = document.createElement('div');
     abilityGrid.className = 'shop-grid';
