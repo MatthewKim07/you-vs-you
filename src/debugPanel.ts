@@ -5,6 +5,8 @@ import { StrategyBrief } from './aiStrategist';
 import { Obstacle } from './types';
 import type { PhaseDebugInfo } from './phase';
 
+const DEBUG_UI_ENABLED = false;
+
 interface RealtimeTrapDebugView {
   phase: string;
   activeTrap: string;
@@ -65,13 +67,15 @@ export class DebugPanel {
   constructor(private tracker: RunTracker) {
     this.button = this.makeButton();
     this.panel = this.makePanel();
-    document.body.appendChild(this.button);
-    document.body.appendChild(this.panel);
+    if (DEBUG_UI_ENABLED) {
+      document.body.appendChild(this.button);
+      document.body.appendChild(this.panel);
+    }
   }
 
   // Call once per draw cycle; skips work when hidden
   update(): void {
-    if (!this.visible) return;
+    if (!DEBUG_UI_ENABLED || !this.visible) return;
 
     const run = this.tracker.getCurrentRun();
     const profile = this.tracker.getProfile();
@@ -286,6 +290,14 @@ export class DebugPanel {
     const btn = document.createElement('button');
     btn.id = 'debug-toggle';
     btn.textContent = 'AI Data';
+    if (!DEBUG_UI_ENABLED) {
+      btn.style.display = 'none';
+      btn.style.pointerEvents = 'none';
+      btn.disabled = true;
+      btn.setAttribute('aria-hidden', 'true');
+      btn.tabIndex = -1;
+      return btn;
+    }
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.visible = !this.visible;
@@ -301,7 +313,12 @@ export class DebugPanel {
   private makePanel(): HTMLDivElement {
     const el = document.createElement('div');
     el.id = 'debug-panel';
-    el.style.display = 'none';
+    el.style.display = DEBUG_UI_ENABLED ? 'none' : 'none';
+    if (!DEBUG_UI_ENABLED) {
+      el.style.pointerEvents = 'none';
+      el.setAttribute('aria-hidden', 'true');
+      return el;
+    }
     // Stop pointer + scroll/wheel events so dragging/scrolling the panel never reaches the
     // fullscreen death-tap-zone (which would otherwise trigger respawn) or the canvas.
     el.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
