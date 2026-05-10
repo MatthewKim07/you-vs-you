@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 120" shape-rendering="crispEdges" width="128" height="120">
+  <!-- Crouched player — classic skin (w=32, h=30, scaled ×4) -->
+  <!-- Dark outline -->
+  <rect x="0"   y="0"   width="128" height="120" fill="#2A6AB0"/>
+  <!-- Body fill -->
+  <rect x="8"   y="8"   width="112" height="104" fill="#4A90E2"/>
+  <!-- Hat strip -->
+  <rect x="16"  y="0"   width="96"  height="20"  fill="#F2C94C"/>
+  <!-- Left eye — white -->
+  <rect x="16"  y="28"  width="36"  height="28"  fill="#ffffff"/>
+  <!-- Right eye — white -->
+  <rect x="68"  y="28"  width="36"  height="28"  fill="#ffffff"/>
+  <!-- Left pupil — dark -->
+  <rect x="28"  y="36"  width="24"  height="20"  fill="#111111"/>
+  <!-- Right pupil — dark -->
+  <rect x="80"  y="36"  width="24"  height="20"  fill="#111111"/>
+  <!-- Left pupil shine -->
+  <rect x="28"  y="36"  width="8"   height="8"   fill="#ffffff"/>
+  <!-- Right pupil shine -->
+  <rect x="80"  y="36"  width="8"   height="8"   fill="#ffffff"/>
+</svg>
