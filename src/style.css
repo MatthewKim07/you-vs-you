@@ -314,10 +314,10 @@ html, body {
   margin-top: 12px;
   padding: 0;
   overflow: hidden;
-  background: transparent;
-  border: none;
+  background: #0D1B2A;
+  border: 3px solid #F2C94C;
   box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55);
-  border-radius: 0 0 14px 14px;
+  border-radius: 4px;
   display: flex;
   flex-direction: column;
 }
@@ -335,10 +335,9 @@ html, body {
   min-height: 0;
   flex: 1;
   max-height: 100%;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 0 0 12px 12px;
-  border: 4px solid #2c1810;
-  border-top: none;
+  border: none;
   box-shadow:
     inset 0 1px 0 rgba(255, 220, 170, 0.12),
     0 5px 0 #120a06;
@@ -346,19 +345,28 @@ html, body {
 
 .shop-roof-block {
   flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  width: 100%;
 }
 
 .shop-wood-sign {
   background:
     repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(0, 0, 0, 0.07) 3px, rgba(0, 0, 0, 0.07) 4px),
     linear-gradient(180deg, #9a6845 0%, #6d452c 40%, #4a2f1a 100%);
-  padding: 12px 18px 11px;
+  padding: 10px 22px 10px;
   border: 3px solid #3d2515;
-  border-bottom: none;
-  border-radius: 10px 10px 0 0;
-  box-shadow: inset 0 2px 0 rgba(255, 200, 140, 0.22);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 200, 140, 0.22),
+    0 4px 0 #2a1508,
+    0 6px 12px rgba(0,0,0,0.5);
+  /* Float centered over the awning — takes no space in flow */
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  white-space: nowrap;
 }
 
 .shop-wood-sign .shop-title {
@@ -366,23 +374,20 @@ html, body {
   text-align: center;
   font-family: 'Press Start 2P', monospace;
   font-size: clamp(16px, 4vw, 22px);
-  color: #ffe566;
-  text-shadow:
-    2px 2px 0 #6a3b13,
-    0 0 12px rgba(255, 220, 100, 0.35);
   letter-spacing: 0.06em;
+  color: #f2c94c;
+  text-shadow: 3px 3px 0 #8b6800;
 }
 
 .shop-awning {
   display: flex;
   flex-direction: column;
-  margin: 0 8px;
-  margin-top: -3px;
+  margin: 0;
   filter: drop-shadow(0 4px 3px rgba(0, 0, 0, 0.4));
 }
 
 .shop-awning-stripes {
-  height: 36px;
+  height: 56px;
   background: repeating-linear-gradient(
     90deg,
     #5c3d82 0px,
@@ -391,25 +396,17 @@ html, body {
     #f4f0ff 36px
   );
   border: 2px solid #3a2650;
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
   box-shadow: inset 0 -6px 10px rgba(0, 0, 0, 0.12);
 }
 
 .shop-awning-scallops {
-  height: 11px;
-  margin-top: -1px;
-  background: radial-gradient(circle at 50% 0, transparent 8px, #3d2818 8.5px);
-  background-size: 18px 11px;
-  background-repeat: repeat-x;
-  background-position: 9px 0;
-  position: relative;
-  z-index: 1;
+  display: none;
 }
 
 .shop-facade {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background:

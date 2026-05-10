@@ -80,9 +80,9 @@ const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: st
 ];
 
 const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; description: string; preview: string }> = [
-  { id: 'speedBoost', label: 'Speed Core', cost: 180, description: 'Permanent +8% run speed.', preview: '⚡' },
-  { id: 'doubleJump', label: 'Double Jump', cost: 200, description: 'Press jump again while airborne for a second leap.', preview: '🦅' },
   { id: 'shield', label: 'Shield', cost: 100, description: 'Absorb one spike hit per level. Does not protect from falls.', preview: '🛡' },
+  { id: 'speedBoost', label: 'Speed Core', cost: 180, description: 'Permanent +15% run speed.', preview: '⚡' },
+  { id: 'doubleJump', label: 'Double Jump', cost: 200, description: 'Press jump again while airborne for a second leap.', preview: '🦅' },
 ];
 
 type ShopSection = 'hub' | 'looks' | 'boosts' | 'inventory';
@@ -435,7 +435,7 @@ export class Game {
 
   private updatePlayerSpeedFromPowerUps() {
     if (!this.player) return;
-    const multiplier = this.activeBoosts.has('speedBoost') ? 1.08 : 1;
+    const multiplier = this.activeBoosts.has('speedBoost') ? 1.15 : 1;
     this.player.setSpeedMultiplier(multiplier);
     this.player.hasDoubleJump = this.activeBoosts.has('doubleJump');
   }
