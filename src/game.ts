@@ -2433,7 +2433,9 @@ export class Game {
         const usesAnimatedHeight = s.aiModifier === 'risingSpike' || s.aiModifier === 'pulsingSpike';
         const sh = usesAnimatedHeight ? (s.aiModVisualHeight ?? 0) : (s.currentHeight ?? s.height);
         if (sh < 4) return false;
-        const tipY = groundY - sh;
+        // Elevated spikes sit on a platform surface; ground spikes sit at groundY
+        const baseY = s.elevationH !== undefined ? groundY - s.elevationH : groundY;
+        const tipY = baseY - sh;
 
         if (pb <= tipY) return false;
         const t = Math.min(1, (pb - tipY) / sh);

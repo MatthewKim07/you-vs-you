@@ -87,6 +87,8 @@ export interface Obstacle {
   patrolDir?: number;         // current direction: 1 = right, -1 = left
   // Warning marker type (warningMarker kind)
   warningType?: 'moving' | 'electric' | 'crusher' | 'crumble';
+  // Elevated spike: sits on top of a platform surface instead of the ground
+  elevationH?: number;  // platform.height — base of spike is groundY - elevationH
 }
 
 export type GameState = 'menu' | 'countdown' | 'paused' | 'playing' | 'dead' | 'levelComplete';
@@ -106,7 +108,8 @@ export type LevelMutationActionType =
   | 'ADD_ELECTRIC_FIELD'      // timed deadly ground zone — counters fast/careless runners
   | 'ADD_CRUSHER_CEILING'     // overhead crusher section — counters jump-heavy players
   | 'APPLY_CRUMBLE_PLATFORM'  // fast-crumble platform — counters reliable-platform users
-  | 'ADD_WARNING_MARKER';     // floor warning indicator auto-placed before new hazards
+  | 'ADD_WARNING_MARKER'      // floor warning indicator auto-placed before new hazards
+  | 'ADD_PLATFORM_SPIKE';     // spike on top of an upper-route platform — counters upper-route players
 
 export interface LevelMutationAction {
   id: string;
@@ -115,6 +118,8 @@ export interface LevelMutationAction {
   targetRouteLayer?: RouteLayer;
   difficultyCost: number;
   reason: string;
+  targetElevationH?: number;  // platform height for ADD_PLATFORM_SPIKE
+  targetPlatformWidth?: number;
 }
 
 export interface DifficultyBudget {

@@ -23,6 +23,7 @@ const MUTATION_COSTS: Record<LevelMutationActionType, number> = {
   ADD_CRUSHER_CEILING: 3,
   APPLY_CRUMBLE_PLATFORM: 2,
   ADD_WARNING_MARKER: 0,
+  ADD_PLATFORM_SPIKE: 2,
 };
 
 const SAFE_SPAWN_END = 320;
@@ -591,6 +592,48 @@ function selectCandidateMutations(
     }
   }
 
+  // 13. ADD_PLATFORM_SPIKE — spike on top of an upper-route platform, forcing careful landing.
+  //     Trigger: player uses upper route heavily.
+  if (levelIndex >= 3 && model.routeUsage) {
+    const total = (model.routeUsage.upper ?? 0) + (model.routeUsage.mid ?? 0) + (model.routeUsage.lower ?? 0);
+    const upperRatio = total > 0 ? (model.routeUsage.upper ?? 0) / total : 0;
+    if (upperRatio > 0.45 || model.preferredRoute === 'upper') {
+      const upperPlatforms = obstacles.filter(o =>
+        o.kind === 'platform' &&
+        o.routeLayer === 'upper' &&
+        !o.aiModifier &&
+        o.disappearMode === undefined &&
+        !o.trapHost &&
+        o.width >= 80 &&
+        (o.currentX ?? o.x) >= SAFE_SPAWN_END + 80,
+      );
+      // Prefer platforms the player has actually walked on most
+      const sorted = hasStats
+        ? upperPlatforms
+            .map(o => ({ obs: o, stats: interactionStats[`platform_${Math.round(o.x)}_${Math.round(o.width)}`] }))
+            .filter(({ stats }) => stats && stats.passCount >= 2)
+            .sort((a, b) => (b.stats?.passCount ?? 0) - (a.stats?.passCount ?? 0))
+            .map(({ obs }) => obs)
+        : upperPlatforms.slice(1, -1);
+
+      for (const plat of sorted.slice(0, 2)) {
+        const SPIKE_W = 24;
+        const SAFE_ZONE = 48;
+        if (plat.width < SPIKE_W + SAFE_ZONE + 8) continue;
+        candidates.push({
+          id: `platform_spike_${Math.round(plat.x)}`,
+          type: 'ADD_PLATFORM_SPIKE',
+          targetX: plat.x,
+          targetRouteLayer: 'upper',
+          targetElevationH: plat.height,
+          targetPlatformWidth: plat.width,
+          difficultyCost: MUTATION_COSTS.ADD_PLATFORM_SPIKE,
+          reason: `Upper platform at x=${Math.round(plat.x)} (w=${plat.width}px) — spike near left edge, land on right side`,
+        });
+      }
+    }
+  }
+
   // 8. APPLY_TEMP_BLOCKER — make a platform temporarily invisible on a cycle.
   //    Targets a platform the player regularly jumps on (lower or mid route).
   //    Trigger: player uses mid/lower route heavily and has reliable platform passes.
@@ -634,6 +677,7 @@ function selectCandidateMutations(
   const PRIORITY_TYPES = new Set<LevelMutationActionType>([
     'APPLY_DROPPING_PLATFORM', 'APPLY_CRUMBLE_PLATFORM', 'APPLY_TEMP_BLOCKER',
     'MAKE_PLATFORM_DISAPPEAR', 'APPLY_PATROL_SPIKE', 'APPLY_RISING_SPIKE', 'APPLY_PULSING_SPIKE',
+    'ADD_PLATFORM_SPIKE',
   ]);
   return candidates.sort((a, b) => {
     const ap = PRIORITY_TYPES.has(a.type) ? 0 : 1;
@@ -817,6 +861,24 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
         return Math.max(0, gap) < maxJump * 0.88;
       });
       return alternates.length >= 1 && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
+    }
+
+    case 'ADD_PLATFORM_SPIKE': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' &&
+        o.routeLayer === 'upper' &&
+        Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (!target || target.width < 80) return false;
+      if ((target.currentX ?? target.x) < SAFE_SPAWN_END) return false;
+      // Must not already have an elevated spike on this platform
+      const alreadyHasSpike = obstacles.some(o =>
+        o.kind === 'spike' &&
+        o.elevationH !== undefined &&
+        o.x >= target.x &&
+        o.x + o.width <= target.x + target.width,
+      );
+      return !alreadyHasSpike;
     }
 
     case 'ADD_WARNING_MARKER':
@@ -1025,6 +1087,24 @@ function applyMutation(obstacles: Obstacle[], mutation: LevelMutationAction): vo
         target.aiModDropOffset = 0;
         target.triggeredByAI = true;
         obstacles.push({ kind: 'warningMarker', x: target.x - 20, width: 32, height: 0, warningType: 'crumble', aiModTimer: 0 });
+      }
+      break;
+    }
+
+    case 'ADD_PLATFORM_SPIKE': {
+      const target = obstacles.find(o =>
+        o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5,
+      );
+      if (target) {
+        obstacles.push({
+          kind: 'spike',
+          x: target.x + 8,
+          width: 24,
+          height: 40,
+          elevationH: target.height,
+          routeLayer: 'upper',
+          triggeredByAI: true,
+        });
       }
       break;
     }

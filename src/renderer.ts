@@ -317,7 +317,9 @@ export class Renderer {
     const { ctx } = this;
     const sx  = px(obsX(obs) - cameraX);
     const w = obsW(obs);
-    const baseY = px(groundY + 2);
+    // Platform spikes sit on the platform surface; ground spikes get +2 overlap with ground
+    const surfaceY = obs.elevationH !== undefined ? groundY - obs.elevationH : groundY;
+    const baseY = px(surfaceY + (obs.elevationH !== undefined ? 0 : 2));
     const tipX  = px(obsX(obs) - cameraX + w / 2);
 
     // AI modifier: draw warning indicator, then use animated height
@@ -325,13 +327,13 @@ export class Renderer {
       this.drawSpikeModifierWarning(obs, sx, w, baseY);
       const h = obs.aiModVisualHeight ?? 0;
       if (h < 2) return;
-      const tipY = px(groundY - h);
+      const tipY = px(surfaceY - h);
       this.drawSpikeShape(ctx, tipX, tipY, sx, w, baseY);
       return;
     }
 
     const h = obsH(obs);
-    const tipY = px(groundY - h);
+    const tipY = px(surfaceY - h);
     this.drawSpikeShape(ctx, tipX, tipY, sx, w, baseY);
   }
 
