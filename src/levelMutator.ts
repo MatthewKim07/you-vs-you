@@ -480,17 +480,23 @@ function selectCandidateMutations(
         o.routeLayer === 'upper',
       );
       if (upperPlatforms.length >= 2) {
-        // Target a non-first, non-last platform so player can still make it
-        const targetIdx = Math.max(1, Math.floor(upperPlatforms.length / 2));
-        const target = upperPlatforms[targetIdx];
-        candidates.push({
-          id: `dropping_platform_${Math.round(target.x)}`,
-          type: 'APPLY_DROPPING_PLATFORM',
-          targetX: target.x,
-          targetRouteLayer: 'upper',
-          difficultyCost: MUTATION_COSTS.APPLY_DROPPING_PLATFORM,
-          reason: `Upper route usage ${(upperRatio * 100).toFixed(0)}% — platform at x=${Math.round(target.x)} now drops`,
-        });
+        // Skip first platform (entry) and last (exit safe landing); target up to 3 in the middle
+        const inner = upperPlatforms.slice(1, -1);
+        const targets = inner.length <= 3 ? inner : [
+          inner[Math.floor(inner.length * 0.25)],
+          inner[Math.floor(inner.length * 0.5)],
+          inner[Math.floor(inner.length * 0.75)],
+        ];
+        for (const target of targets) {
+          candidates.push({
+            id: `dropping_platform_${Math.round(target.x)}`,
+            type: 'APPLY_DROPPING_PLATFORM',
+            targetX: target.x,
+            targetRouteLayer: 'upper',
+            difficultyCost: MUTATION_COSTS.APPLY_DROPPING_PLATFORM,
+            reason: `Upper route usage ${(upperRatio * 100).toFixed(0)}% — platform at x=${Math.round(target.x)} now drops`,
+          });
+        }
       }
     }
   }
@@ -576,11 +582,11 @@ function selectCandidateMutations(
         const stats = interactionStats[id];
         return { obs: o, stats };
       })
-      .filter(({ stats }) => stats && stats.passCount >= 3 && stats.failureRate < 0.35)
+      .filter(({ stats }) => stats && stats.passCount >= 2 && stats.failureRate < 0.45)
       .sort((a, b) => (b.stats?.passCount ?? 0) - (a.stats?.passCount ?? 0));
 
-    if (reliablePlatformsForCrumble.length > 0) {
-      const { obs, stats } = reliablePlatformsForCrumble[0];
+    // Push up to 3 crumble candidates — more upper tiles affected per level
+    for (const { obs, stats } of reliablePlatformsForCrumble.slice(0, 3)) {
       candidates.push({
         id: `crumble_platform_${Math.round(obs.x)}`,
         type: 'APPLY_CRUMBLE_PLATFORM',
