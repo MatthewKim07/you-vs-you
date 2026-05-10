@@ -30,6 +30,8 @@ const SPIKE_OVERHEAD_MIN_HEIGHT = 208;
 const SPIKE_HEADROOM_X_PAD = 96;
 const FORCED_ACTION_RECOVERY_GAP = 148;
 const MIN_LANDING_WIDTH = PLAYER_WIDTH + 10;
+/** Hard rule: open horizontal space between vertically overlapping path solids must exceed player width + margin (stand + jump buffer). */
+const MIN_SAME_PATH_CORRIDOR = PLAYER_WIDTH + 28;
 const LANDING_BUFFER = 6;
 // Physics: JUMP_FORCE=620, GRAVITY=1400 → apex ≈ 137px above feet.
 // MAX_JUMP_FROM_GROUND is a safe margin so isolated platforms stay reachable.
@@ -279,11 +281,12 @@ export function generateAdaptiveLevel(
         segmentCtx.reactionSpacing,
       );
 
-      // Update build with trapped obstacles
-      const trappedBuild: BuildResult = {
-        ...mutatedBuilt,
-        obstacles: trapResult.obstacles,
-      };
+      // Mutator + traps can place new solids; re-apply corridor + recovery and widen world if needed.
+      const trappedBuild = extendBuildAfterCorridorPass(
+        { ...mutatedBuilt, obstacles: trapResult.obstacles },
+        trapResult.obstacles,
+        canvasWidth,
+      );
 
       const levelData = finalizeLevel(
         levelIndex,
@@ -332,10 +335,11 @@ export function generateAdaptiveLevel(
     segmentCtx.reactionSpacing,
   );
 
-  const trappedFallback: BuildResult = {
-    ...safeFallback,
-    obstacles: trapResult.obstacles,
-  };
+  const trappedFallback = extendBuildAfterCorridorPass(
+    { ...safeFallback, obstacles: trapResult.obstacles },
+    trapResult.obstacles,
+    canvasWidth,
+  );
 
   return finalizeLevel(
     levelIndex,
@@ -1019,37 +1023,149 @@ function spreadPlatformChains(platforms: Obstacle[]): void {
 // Minimum ground-level gap between any two adjacent hazards on the same surface.
 // spike|spike: 100px landing window. spike|doubleSpike (or vice versa): 160px so the
 // player clearly sees them as separate challenges and has time to react and jump again.
-const MIN_GROUND_GAP         = PLAYER_WIDTH * 2 + 36;  // 100px — spike adjacent to spike
+// Pairs involving platforms / ceilings / fields use at least MIN_SAME_PATH_CORRIDOR via Math.max below.
+const MIN_GROUND_GAP         = Math.max(PLAYER_WIDTH * 2 + 36, MIN_SAME_PATH_CORRIDOR); // 100px
 const MIN_GROUND_GAP_WIDE    = 160;                     // spike adjacent to doubleSpike
 
+const PATH_CORRIDOR_KINDS: ReadonlySet<Obstacle['kind']> = new Set([
+  'spike',
+  'doubleSpike',
+  'choiceObstacle',
+  'platform',
+  'lowCeiling',
+  'electricField',
+  'crusherCeiling',
+]);
+
+function geomLeft(ob: Obstacle): number {
+  return ob.currentX ?? ob.x;
+}
+
+function geomRight(ob: Obstacle): number {
+  return geomLeft(ob) + (ob.currentWidth ?? ob.width);
+}
+
+/** Normalized bounds (GROUND_TOP = 0) using current geometry — matches obstacleBounds but tracks patrol/shifted x. */
+function normalizedObstacleBounds(ob: Obstacle): { left: number; right: number; top: number; bottom: number } | null {
+  const left = geomLeft(ob);
+  const right = geomRight(ob);
+  switch (ob.kind) {
+    case 'gap':
+    case 'warningMarker':
+      return null;
+    case 'spike':
+    case 'doubleSpike':
+      return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP };
+    case 'lowCeiling':
+      return { left, right, top: GROUND_TOP - ob.height - 16, bottom: GROUND_TOP - ob.height };
+    case 'choiceObstacle':
+      return { left, right, top: GROUND_TOP - ob.height - 12, bottom: GROUND_TOP - ob.height };
+    case 'platform':
+      return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP - ob.height + 16 };
+    case 'electricField':
+      return { left, right, top: GROUND_TOP - ob.height, bottom: GROUND_TOP };
+    case 'crusherCeiling':
+      return { left, right, top: GROUND_TOP - ob.height - 20, bottom: GROUND_TOP - ob.height };
+    default:
+      return null;
+  }
+}
+
+function normalizedVerticalOverlap(a: Obstacle, b: Obstacle): boolean {
+  const ra = normalizedObstacleBounds(a);
+  const rb = normalizedObstacleBounds(b);
+  if (!ra || !rb) return false;
+  return ra.bottom > rb.top && ra.top < rb.bottom;
+}
+
+function shiftObstacleHorizontally(ob: Obstacle, dx: number): void {
+  if (dx === 0) return;
+  ob.x += dx;
+  if (ob.currentX !== undefined) ob.currentX += dx;
+  if (ob.targetX !== undefined) ob.targetX += dx;
+  if (ob.trapInitialX !== undefined) ob.trapInitialX += dx;
+  if (ob.patrolMinX !== undefined) ob.patrolMinX += dx;
+  if (ob.patrolMaxX !== undefined) ob.patrolMaxX += dx;
+}
+
+function minCorridorGapForPair(left: Obstacle, right: Obstacle): number {
+  const needsWideGap = left.kind === 'doubleSpike' || right.kind === 'doubleSpike';
+  if (needsWideGap) return MIN_GROUND_GAP_WIDE;
+  return Math.max(MIN_GROUND_GAP, MIN_SAME_PATH_CORRIDOR);
+}
+
+/**
+ * Ensures a wide-enough horizontal corridor between consecutive path-blocking solids whose
+ * hitboxes overlap vertically (same running lane), including spike↔platform pairs.
+ */
 function enforceMinGroundGap(obstacles: Obstacle[]): void {
-  const groundHazards = obstacles.filter(
-    (o) => o.kind === 'spike' || o.kind === 'doubleSpike' || o.kind === 'choiceObstacle',
-  ).sort((a, b) => a.x - b.x);
+  const path = obstacles.filter((o) => PATH_CORRIDOR_KINDS.has(o.kind)).sort((a, b) => geomLeft(a) - geomLeft(b));
 
-  for (let i = 0; i < groundHazards.length - 1; i++) {
-    const left  = groundHazards[i];
-    const right = groundHazards[i + 1];
-    const leftRight  = (left.currentX ?? left.x) + (left.currentWidth ?? left.width);
-    const rightLeft  = right.currentX ?? right.x;
-    const gap = rightLeft - leftRight;
+  for (let i = 0; i < path.length; i++) {
+    const leftEnd = geomRight(path[i]);
+    let j = i + 1;
+    while (j < path.length && geomLeft(path[j]) < leftEnd) j++;
+    if (j >= path.length) continue;
 
-    // Use wider gap when either side is a doubleSpike so the player can read and
-    // react to each challenge separately rather than seeing an unjumpable wall.
-    const needsWideGap = left.kind === 'doubleSpike' || right.kind === 'doubleSpike';
-    const minGap = needsWideGap ? MIN_GROUND_GAP_WIDE : MIN_GROUND_GAP;
+    const left = path[i];
+    const right = path[j];
+    if (!normalizedVerticalOverlap(left, right)) continue;
 
+    const gap = geomLeft(right) - leftEnd;
+    const minGap = minCorridorGapForPair(left, right);
     if (gap >= minGap) continue;
-    // Push the right obstacle rightward until there's enough room
-    const shift = minGap - gap;
-    right.x += shift;
-    if (right.currentX !== undefined) right.currentX += shift;
-    if (right.targetX   !== undefined) right.targetX  += shift;
-    if (right.trapInitialX !== undefined) right.trapInitialX += shift;
-    // Re-sort the slice so subsequent pairs use updated positions
-    groundHazards.sort((a, b) => a.x - b.x);
+
+    shiftObstacleHorizontally(right, minGap - gap);
+    path.sort((a, b) => geomLeft(a) - geomLeft(b));
+    i = -1;
   }
   obstacles.sort((a, b) => a.x - b.x);
+}
+
+/** Re-run corridor + recovery after mutator/traps shift geometry; widen world if needed. */
+function extendBuildAfterCorridorPass(base: BuildResult, obstacles: Obstacle[], canvasWidth: number): BuildResult {
+  enforceMinGroundGap(obstacles);
+  enforceForcedActionRecovery(obstacles);
+  obstacles.sort((a, b) => a.x - b.x);
+  const maxEnd = obstacles.length > 0
+    ? Math.max(...obstacles.map((o) => geomRight(o)))
+    : 0;
+  const worldWidth = Math.max(
+    Math.round(canvasWidth * 2),
+    base.worldWidth,
+    Math.round(maxEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120),
+  );
+  const flagX = worldWidth - FLAG_OFFSET;
+  return {
+    ...base,
+    obstacles,
+    worldWidth,
+    flagX,
+    maxQuietGap: computeMaxQuietGap(obstacles, SAFE_SPAWN_END, flagX - SAFE_FLAG_GAP),
+  };
+}
+
+function validatePathCorridors(obstacles: Obstacle[]): string[] {
+  const path = obstacles.filter((o) => PATH_CORRIDOR_KINDS.has(o.kind)).sort((a, b) => geomLeft(a) - geomLeft(b));
+  const issues: string[] = [];
+
+  for (let i = 0; i < path.length; i++) {
+    const leftEnd = geomRight(path[i]);
+    let j = i + 1;
+    while (j < path.length && geomLeft(path[j]) < leftEnd) j++;
+    if (j >= path.length) continue;
+
+    const left = path[i];
+    const right = path[j];
+    if (!normalizedVerticalOverlap(left, right)) continue;
+
+    const gap = geomLeft(right) - leftEnd;
+    const minGap = minCorridorGapForPair(left, right);
+    if (gap < minGap) {
+      issues.push(`same-path corridor ${gap}px < ${minGap}px (${left.kind}→${right.kind})`);
+    }
+  }
+  return issues;
 }
 
 function enforceSpikeJumpHeadroom(obstacles: Obstacle[]): void {
@@ -2149,6 +2265,12 @@ function validateBuild(args: {
   }
   warnings.push(...pathValidation.warnings);
 
+  const corridorIssues = validatePathCorridors(built.obstacles);
+  if (corridorIssues.length > 0) {
+    ok = false;
+    notes.push(...corridorIssues.slice(0, 4));
+  }
+
   const routeValidation = validateRouteConnectivity(built.obstacles, levelIndex);
   if (!routeValidation.ok) {
     ok = false;
@@ -2719,7 +2841,10 @@ function rebuildBuildResultFromSegments(
   enforceGapJumpHeadroom(obstacles);
   enforceSpikeJumpHeadroom(obstacles);
   enforcePlatformChainReachability(obstacles);
-  const maxEnd     = obstacles.length > 0 ? Math.max(...obstacles.map((o) => o.x + o.width)) : canvasWidth;
+  enforceMinGroundGap(obstacles);
+  enforceForcedActionRecovery(obstacles);
+  obstacles.sort((a, b) => a.x - b.x);
+  const maxEnd     = obstacles.length > 0 ? Math.max(...obstacles.map((o) => (o.currentX ?? o.x) + (o.currentWidth ?? o.width))) : canvasWidth;
   const worldWidth = Math.max(Math.round(canvasWidth * 2), Math.round(maxEnd + SAFE_FLAG_GAP + FLAG_OFFSET + 120));
   const flagX      = worldWidth - FLAG_OFFSET;
 
