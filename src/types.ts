@@ -74,6 +74,8 @@ export interface Obstacle {
   disappearTimer?: number;
   disappearCount?: number;
   approachWarning?: boolean;    // true when player is near but not yet triggering disappear
+  // Set by fireball hit — obstacle is visually and physically gone until next respawn
+  fireballDestroyed?: boolean;
   // AI modifier — layered behavior on existing obstacles
   aiModifier?: AiModifierType;
   aiModState?: AiModState;
