@@ -1152,33 +1152,29 @@ export function isPlayerOnPlatform(
 function trapTriggerMessage(
   trapType: string,
   predictedAction: 'jump' | 'crouch' | 'mixed' | 'unknown',
-  predictedLandingX?: number,
+  _predictedLandingX?: number,
 ): string {
   switch (trapType) {
     case 'adaptiveChoiceGateJump':
-      return 'You jumped at every choice. Spikes are shooting up.';
+      return 'Spikes up! 🔺 Saw that jump coming.';
     case 'adaptiveChoiceGateCrouch':
-      return 'You kept crouching. I dropped the bar to the floor.';
+      return 'Bar dropped! 😏 Predictable.';
     case 'popUpSpike':
-      return 'Ground spike — jump now!';
+      return 'Spike incoming! 🔺';
     case 'platformNeedle':
-      return 'You trusted that tile. It grew spikes.';
+      return 'That tile has spikes now. 😈';
     case 'landingPunisher':
-      return predictedLandingX !== undefined
-        ? `I predicted that landing near ${Math.round(predictedLandingX)}px.`
-        : 'I predicted that landing.';
+      return 'Called your landing! 🎯';
     case 'collapsingPlatform':
-      return 'You trusted that platform again.';
+      return 'Floor gone! 😂';
     case 'shiftingGap':
-      return predictedAction === 'jump'
-        ? 'You jump early, so I stretched the far edge.'
-        : 'Your timing is late, so I shifted the near edge.';
+      return predictedAction === 'jump' ? 'Gap stretched! 🕳️' : 'Gap shifted! 🕳️';
     case 'reactiveLowCeiling':
-      return 'You used the crouch lane. I sealed it.';
+      return 'Crouch lane sealed! 😏';
     case 'vanishingUpperPlatform':
-      return 'You keep taking upper tiles. This one now disappears.';
+      return 'Upper tile gone! 👋';
     default:
-      return 'I changed the trap while you approached it.';
+      return 'Trap changed! 😈';
   }
 }
 
