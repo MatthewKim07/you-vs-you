@@ -3,6 +3,7 @@ import { LevelData, AdaptiveDebugInfo } from './level';
 import { PlayerModel } from './telemetry';
 import { StrategyBrief } from './aiStrategist';
 import { Obstacle } from './types';
+import type { PhaseDebugInfo } from './phase';
 
 interface RealtimeTrapDebugView {
   phase: string;
@@ -39,6 +40,7 @@ export class DebugPanel {
     lastMutation: 'none',
     mutationCountsByRoute: { lower: 0, mid: 0, upper: 0 },
   };
+  private lastPhaseDebug: PhaseDebugInfo | null = null;
   private playerModel: PlayerModel = {
     prefersJump: true,
     prefersCrouch: false,
@@ -91,6 +93,7 @@ export class DebugPanel {
     const rt = this.realtimeTrapDebug;
 
     this.panel.innerHTML = `
+      ${this.renderPhaseDebugSection()}
       <div class="dbg-section">
         <div class="dbg-title">AI LEARNING</div>
         <div class="dbg-row"><span>Phase</span><span>${phaseLabel}</span></div>
@@ -228,6 +231,39 @@ export class DebugPanel {
 
   setRealtimeTrapDebug(debug: RealtimeTrapDebugView): void {
     this.realtimeTrapDebug = debug;
+  }
+
+  setLastPhaseDebug(info: PhaseDebugInfo): void {
+    this.lastPhaseDebug = info;
+  }
+
+  private renderPhaseDebugSection(): string {
+    const d = this.lastPhaseDebug;
+    if (!d) {
+      return `
+      <div class="dbg-section">
+        <div class="dbg-title">PHASE (last press)</div>
+        <div class="dbg-row"><span>Status</span><span>(no E pressed yet)</span></div>
+      </div>`;
+    }
+    const reasonColor =
+      d.reason === 'success' ? '#7ef07e' :
+      d.reason === 'noCandidates' ? '#ff7777' :
+      d.reason === 'allCandidatesUnreachable' ? '#ffaa55' :
+      d.reason === 'inPit' ? '#ff66aa' :
+      '#ffd95a';
+    const attempts = d.candidateAttempts.map((a) =>
+      `<div class="dbg-row"><span>${a.kind}@${Math.round(a.x)} (w${Math.round(a.width)})</span><span>${a.note}</span></div>`
+    ).join('');
+    return `
+      <div class="dbg-section">
+        <div class="dbg-title">PHASE (last press)</div>
+        <div class="dbg-row"><span>Reason</span><span style="color:${reasonColor}">${d.reason}</span></div>
+        <div class="dbg-row"><span>Player</span><span>x=${Math.round(d.playerX)} y=${Math.round(d.playerY)} ${d.playerOnGround ? 'ground' : 'air'}</span></div>
+        <div class="dbg-row"><span>Mode</span><span>${d.airborne ? 'airborne' : 'grounded'}</span></div>
+        <div class="dbg-row"><span>Candidates</span><span>${d.candidateCount}: ${d.candidateKinds.join(', ') || '—'}</span></div>
+        ${attempts || '<div class="dbg-row"><span>—</span><span>no attempts</span></div>'}
+      </div>`;
   }
 
   private renderAiModifiersSection(): string {
