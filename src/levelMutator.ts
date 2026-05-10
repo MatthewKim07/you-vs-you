@@ -46,8 +46,8 @@ export const PULSE_INACTIVE_MS  = 800;
 export const PULSE_RISE_MS      = 300;
 
 // Dropping platform (ms)
-export const DROP_WARNING_MS    = 700;
-export const DROP_FALL_MS       = 400;
+export const DROP_WARNING_MS    = 380;
+export const DROP_FALL_MS       = 350;
 export const DROP_INVISIBLE_MS  = 2000;
 export const DROP_SPAWN_MS      = 500;
 
@@ -80,9 +80,9 @@ export const CRUSHER_RAISED_H    = 68;   // clearance when raised (player stands
 export const CRUSHER_LOWERED_H   = 32;   // clearance when crushed (must crouch; crouch height=30)
 export const CRUSHER_WIDTH       = 200;
 
-// Crumble platform (ms) — faster than droppingPlatform, distinct orange visual
-export const CRUMBLE_WARNING_MS  = 300;
-export const CRUMBLE_FALL_MS     = 250;
+// Crumble platform (ms) — instant-drop on touch; 80ms flash so player sees it react
+export const CRUMBLE_WARNING_MS  = 80;
+export const CRUMBLE_FALL_MS     = 220;
 export const CRUMBLE_INVISIBLE_MS = 1500;
 export const CRUMBLE_SPAWN_MS    = 400;
 
@@ -219,11 +219,12 @@ function computeDifficultyBudget(runs: RunData[], levelIndex: number): Difficult
     return { total: 0, spent: 0 };
   }
 
-  // Budget grows slowly; cap at 6 to prevent dumping many mutations at once
-  const base = Math.min(1 + Math.floor(levelIndex * 0.4), 4);
+  // Budget scales with level; cap grows to let mutations stack at higher levels
+  const hardCap = levelIndex >= 10 ? 12 : levelIndex >= 7 ? 9 : 6;
+  const base = Math.min(2 + Math.floor(levelIndex * 0.5), hardCap - 2);
   // Success adds budget, deaths reduce it (less aggressive growth)
   const delta = completions * 1 - Math.floor(deaths * 0.7);
-  const total = Math.max(0, Math.min(6, base + delta));
+  const total = Math.max(0, Math.min(hardCap, base + delta));
 
   return { total, spent: 0 };
 }
@@ -466,7 +467,7 @@ function selectCandidateMutations(
 
   // 7. APPLY_DROPPING_PLATFORM — mark a platform the player relies on as dropping.
   //    Trigger: player uses upper route heavily.
-  if (levelIndex >= 3 && model.routeUsage) {
+  if (levelIndex >= 2 && model.routeUsage) {
     const total = (model.routeUsage.upper ?? 0) + (model.routeUsage.mid ?? 0) + (model.routeUsage.lower ?? 0);
     const upperRatio = total > 0 ? (model.routeUsage.upper ?? 0) / total : 0;
     if (upperRatio > 0.45 || model.preferredRoute === 'upper') {
@@ -628,7 +629,18 @@ function selectCandidateMutations(
     }
   }
 
-  return candidates.sort((a, b) => a.difficultyCost - b.difficultyCost);
+  // Behavior-targeted mutations (dropping, crumble, temp blocker) get priority
+  // over generic cheap mutations so they aren't crowded out by ADD_SPIKE spam.
+  const PRIORITY_TYPES = new Set<LevelMutationActionType>([
+    'APPLY_DROPPING_PLATFORM', 'APPLY_CRUMBLE_PLATFORM', 'APPLY_TEMP_BLOCKER',
+    'MAKE_PLATFORM_DISAPPEAR', 'APPLY_PATROL_SPIKE', 'APPLY_RISING_SPIKE', 'APPLY_PULSING_SPIKE',
+  ]);
+  return candidates.sort((a, b) => {
+    const ap = PRIORITY_TYPES.has(a.type) ? 0 : 1;
+    const bp = PRIORITY_TYPES.has(b.type) ? 0 : 1;
+    if (ap !== bp) return ap - bp;
+    return a.difficultyCost - b.difficultyCost;
+  });
 }
 
 function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): boolean {
@@ -666,14 +678,14 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
         o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5,
       );
       if (!target) return false;
+      const tRight = target.x + target.width;
       // At least one non-disappear platform must remain reachable as fallback
-      const alternates = obstacles.filter(o =>
-        o.kind === 'platform' &&
-        o !== target &&
-        o.disappearMode === undefined &&
-        !o.trapHost &&
-        Math.abs(o.x - target.x) < maxJump * 0.88,
-      );
+      const alternates = obstacles.filter(o => {
+        if (o.kind !== 'platform' || o === target || o.disappearMode !== undefined || o.trapHost) return false;
+        const oRight = o.x + o.width;
+        const gap = o.x > target.x ? o.x - tRight : target.x - oRight;
+        return Math.max(0, gap) < maxJump * 0.88;
+      });
       return alternates.length >= 1;
     }
 
@@ -712,14 +724,14 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
         o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5 && !o.aiModifier,
       );
       if (!target) return false;
-      // Must have at least one alternate stable platform nearby
-      const alternates = obstacles.filter(o =>
-        o.kind === 'platform' &&
-        o !== target &&
-        !o.aiModifier &&
-        o.disappearMode === undefined &&
-        Math.abs(o.x - target.x) < maxJump * 0.88,
-      );
+      const tRight = target.x + target.width;
+      // Must have at least one alternate stable platform nearby (edge-to-edge gap)
+      const alternates = obstacles.filter(o => {
+        if (o.kind !== 'platform' || o === target || o.aiModifier || o.disappearMode !== undefined) return false;
+        const oRight = o.x + o.width;
+        const gap = o.x > target.x ? o.x - tRight : target.x - oRight;
+        return Math.max(0, gap) < maxJump * 0.88;
+      });
       return alternates.length >= 1;
     }
 
@@ -728,14 +740,14 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
         o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5 && !o.aiModifier,
       );
       if (!target) return false;
+      const tRight = target.x + target.width;
       // Must have an alternate platform nearby so player has a fallback when this one is invisible
-      const alternates = obstacles.filter(o =>
-        o.kind === 'platform' &&
-        o !== target &&
-        !o.aiModifier &&
-        o.disappearMode === undefined &&
-        Math.abs(o.x - target.x) < maxJump * 0.88,
-      );
+      const alternates = obstacles.filter(o => {
+        if (o.kind !== 'platform' || o === target || o.aiModifier || o.disappearMode !== undefined) return false;
+        const oRight = o.x + o.width;
+        const gap = o.x > target.x ? o.x - tRight : target.x - oRight;
+        return Math.max(0, gap) < maxJump * 0.88;
+      });
       return alternates.length >= 1 && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
     }
 
@@ -796,14 +808,14 @@ function isMutationSafe(obstacles: Obstacle[], mutation: LevelMutationAction): b
         o.kind === 'platform' && Math.abs(o.x - mutation.targetX) < 5 && !o.aiModifier && !o.disappearMode,
       );
       if (!target) return false;
+      const tRight = target.x + target.width;
       // Need an alternate platform nearby so player isn't stranded
-      const alternates = obstacles.filter(o =>
-        o.kind === 'platform' &&
-        o !== target &&
-        !o.aiModifier &&
-        o.disappearMode === undefined &&
-        Math.abs(o.x - target.x) < maxJump * 0.88,
-      );
+      const alternates = obstacles.filter(o => {
+        if (o.kind !== 'platform' || o === target || o.aiModifier || o.disappearMode !== undefined) return false;
+        const oRight = o.x + o.width;
+        const gap = o.x > target.x ? o.x - tRight : target.x - oRight;
+        return Math.max(0, gap) < maxJump * 0.88;
+      });
       return alternates.length >= 1 && (target.currentX ?? target.x) >= SAFE_SPAWN_END;
     }
 
