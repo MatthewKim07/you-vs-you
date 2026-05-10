@@ -2,6 +2,7 @@ import { Player } from './player';
 import { buildLevel, LevelData } from './level';
 import { InputHandler } from './input';
 import { Renderer } from './renderer';
+import { Fireball } from './fireball';
 import { RunTracker } from './runTracker';
 import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
@@ -251,6 +252,8 @@ export class Game {
   private abilityHudBadge!: HTMLDivElement;
   private consumedShield = false;
   private invincibleUntilMs: number | null = null;
+  private fireball: Fireball | null = null;
+  private fireballUsed = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -485,7 +488,10 @@ export class Game {
     if (this.equippedAbility && isLevels && inGame) {
       const meta = ABILITY_CATALOG.find((a) => a.id === this.equippedAbility);
       const label = meta?.label ?? '';
-      this.abilityHudBadge.innerHTML = `<span class="ability-hud-inner"><span class="ability-hud-key">[${ABILITY_KEYBIND}]</span><span class="ability-hud-name">${label}</span></span>`;
+      const used = this.fireballUsed && this.equippedAbility === 'fireball';
+      const statusClass = used ? 'ability-hud-status--used' : 'ability-hud-status--ready';
+      const statusText = used ? 'Used' : 'Ready';
+      this.abilityHudBadge.innerHTML = `<span class="ability-hud-inner"><span class="ability-hud-key">[${ABILITY_KEYBIND}]</span><span class="ability-hud-name">${label}</span><span class="ability-hud-status ${statusClass}">${statusText}</span></span>`;
       this.abilityHudBadge.style.display = 'flex';
     } else {
       this.abilityHudBadge.style.display = 'none';
@@ -515,6 +521,8 @@ export class Game {
     this.levelAgeSec = 0;
     this.consumedShield = false;
     this.invincibleUntilMs = null;
+    this.fireball = null;
+    this.fireballUsed = false;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
     this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
@@ -545,10 +553,14 @@ export class Game {
     resetAiModifiers(this.level.obstacles);
     // Reset new hazard kind state machines (electricField, crusherCeiling).
     resetNewHazardKinds(this.level.obstacles);
+    // Restore any obstacles destroyed by fireball — destruction is per-life only.
+    for (const o of this.level.obstacles) o.fireballDestroyed = false;
     this.spawnPlayer();
     this.cameraX = 0;
     this.state = 'playing';
     this.invincibleUntilMs = null;
+    this.fireball = null;
+    this.fireballUsed = false;
     this.hasSpawnedPlayer = true;
     this.resetFrameTracking();
     this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
@@ -2316,8 +2328,11 @@ export class Game {
 
     // Ability activation — Level Mode only; Infinite Mode ignores it entirely
     if (this.input.consumeAbility() && this.gameMode === 'levels' && this.equippedAbility) {
-      // Placeholder: ability effects not yet implemented
+      this.activateEquippedAbility();
     }
+
+    // Update fireball (Level Mode only — already gated at activation)
+    this.updateFireball(dt);
 
     // Read previous frame's ground state before any mutation this frame
     const wasOnGround = this.wasOnGround;
@@ -2585,6 +2600,7 @@ export class Game {
     const platforms = this.level.obstacles.filter(
       (o) =>
         o.kind === 'platform' &&
+        !o.fireballDestroyed &&
         !(o.trapType === 'collapsingPlatform' && o.trapState === 'spent') &&
         o.disappearState !== 'invisible' &&
         !(o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) &&
@@ -2636,7 +2652,7 @@ export class Game {
     const groundY = this.level.groundY;
 
     return this.level.obstacles
-      .filter(o => o.kind === 'spike' || o.kind === 'doubleSpike')
+      .filter(o => (o.kind === 'spike' || o.kind === 'doubleSpike') && !o.fireballDestroyed)
       .some(s => {
         const sx = s.currentX ?? s.x;
         const sw = s.currentWidth ?? s.width;
@@ -2678,7 +2694,7 @@ export class Game {
     const INSET = 4;
 
     return this.level.obstacles
-      .filter(o => o.kind === 'choiceObstacle')
+      .filter(o => o.kind === 'choiceObstacle' && !o.fireballDestroyed)
       .some(c => {
         const cx = c.currentX ?? c.x;
         const cw = c.currentWidth ?? c.width;
@@ -2769,7 +2785,7 @@ export class Game {
 
   private hitLowCeiling(): boolean {
     const ceilings = this.level.obstacles.filter(
-      (o): o is Obstacle & { kind: 'lowCeiling' } => o.kind === 'lowCeiling'
+      (o): o is Obstacle & { kind: 'lowCeiling' } => o.kind === 'lowCeiling' && !o.fireballDestroyed
     );
     const px = this.player.pos.x;
     const pr = px + this.player.width;
@@ -2798,6 +2814,7 @@ export class Game {
 
     for (const o of this.level.obstacles) {
       if (o.kind !== 'platform' || !o.solid) continue;
+      if (o.fireballDestroyed) continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
       if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
@@ -2831,6 +2848,7 @@ export class Game {
 
     for (const o of this.level.obstacles) {
       if (o.kind !== 'platform') continue;
+      if (o.fireballDestroyed) continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
       if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
@@ -2865,6 +2883,7 @@ export class Game {
 
     for (const o of this.level.obstacles) {
       if (o.kind !== 'platform') continue;
+      if (o.fireballDestroyed) continue;
       if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
       if (o.disappearState === 'invisible') continue;
       if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
@@ -3169,7 +3188,7 @@ export class Game {
     const pt = this.player.pos.y;
     const groundY = this.level.groundY;
     return this.level.obstacles
-      .filter(o => o.kind === 'electricField' && o.aiModState === 'active')
+      .filter(o => o.kind === 'electricField' && o.aiModState === 'active' && !o.fireballDestroyed)
       .some(ef => {
         const ex = ef.x;
         const ew = ef.width;
@@ -3186,7 +3205,7 @@ export class Game {
     const groundY = this.level.groundY;
     const CEIL_THICKNESS = 16;
     return this.level.obstacles
-      .filter(o => o.kind === 'crusherCeiling' && o.aiModState === 'active')
+      .filter(o => o.kind === 'crusherCeiling' && o.aiModState === 'active' && !o.fireballDestroyed)
       .some(c => {
         const clearance = CRUSHER_LOWERED_H;
         const slabTop = groundY - clearance - CEIL_THICKNESS;
@@ -3421,6 +3440,32 @@ export class Game {
     this.aiMessageTimeLeft = AI_MESSAGE_SECS;
   }
 
+  private activateEquippedAbility() {
+    if (this.equippedAbility === 'fireball') {
+      if (this.fireballUsed) return; // one per life — silently ignore re-press
+      this.fireballUsed = true;
+      const cx = this.player.pos.x + this.player.width; // launch from player front
+      const cy = this.player.pos.y + this.player.height * 0.45; // mid-torso height
+      this.fireball = new Fireball(cx, cy);
+      this.updateAbilityHudBadge();
+    }
+    // Other abilities: not yet implemented
+  }
+
+  private updateFireball(dt: number) {
+    if (!this.fireball) return;
+    const fb = this.fireball;
+    fb.update(dt, this.level.obstacles, this.level.groundY);
+
+    // Obstacle destruction is non-permanent: fireballDestroyed flag set on the obstacle,
+    // cleared on respawn so nothing is permanently removed from the level.
+
+    // Clean up fully expired fireball
+    if (!fb.isRenderable) {
+      this.fireball = null;
+    }
+  }
+
   private draw() {
     this.renderer.drawBackground(this.cameraX);
     const obstaclePulse = this.level.index > 0
@@ -3431,6 +3476,15 @@ export class Game {
     if (this.hasSpawnedPlayer) {
       const isInvincible = this.invincibleUntilMs !== null && performance.now() < this.invincibleUntilMs;
       this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead', this.equippedSkin, isInvincible);
+    }
+    // Draw fireball + hit effect (Level Mode only — fireball is null during infinite)
+    if (this.fireball) {
+      if (this.fireball.alive) {
+        this.renderer.drawFireball(this.fireball, this.cameraX);
+      }
+      if (this.fireball.hitEffect) {
+        this.renderer.drawFireballHitEffect(this.fireball.hitEffect, this.cameraX);
+      }
     }
     if (this.state !== 'menu' && this.hasSpawnedPlayer) {
       if (this.gameMode === 'infinite') {
@@ -3444,6 +3498,7 @@ export class Game {
         const abilityMeta = this.equippedAbility
           ? ABILITY_CATALOG.find((a) => a.id === this.equippedAbility)
           : undefined;
+        const abilityUsed = this.fireballUsed && this.equippedAbility === 'fireball';
         this.renderer.drawHUD(
           this.player.pos.x,
           this.level.flagX,
@@ -3452,6 +3507,7 @@ export class Game {
           this.levelIndex + 1,
           this.attempts,
           abilityMeta?.label,
+          abilityUsed,
         );
       }
     }

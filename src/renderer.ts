@@ -2,6 +2,7 @@ import { Player } from './player';
 import { LevelData, getGroundSegments } from './level';
 import { Obstacle, TrapState } from './types';
 import { BLOCKER_RETRACT_MS, CRUMBLE_WARNING_MS, CRUSHER_RAISED_H } from './levelMutator';
+import { Fireball, FireballHitEffect, FIREBALL_HALF_W, HIT_EFFECT_DURATION } from './fireball';
 
 const TILE = 16;
 
@@ -240,6 +241,7 @@ export class Renderer {
   ) {
     for (let i = 0; i < obstacles.length; i++) {
       const obs = obstacles[i];
+      if (obs.fireballDestroyed) continue; // temporarily gone — restored on respawn
       // Only pulse obstacles the AI actually modified — not every base layout obstacle.
       const isAiModified = !!(obs.aiModifier || obs.disappearMode || obs.trapHost);
       if (pulse > 0.02 && isAiModified) {
@@ -848,6 +850,7 @@ export class Renderer {
     levelNum: number,
     attempts: number,
     equippedAbilityLabel?: string,
+    abilityUsed = false,
   ) {
     const { ctx } = this;
 
@@ -908,8 +911,9 @@ export class Renderer {
       // Show ability hint on all levels when ability is equipped
       ctx.textAlign = 'right';
       ctx.font = `${Math.min(8, px(canvasW / 44))}px ${PIXEL_FONT}`;
-      ctx.fillStyle = 'rgba(255,220,100,0.7)';
-      ctx.fillText(`[E] ${equippedAbilityLabel.toUpperCase()}`, canvasW - 8, canvasH - 14);
+      ctx.fillStyle = abilityUsed ? 'rgba(160,160,160,0.45)' : 'rgba(255,220,100,0.7)';
+      const usedSuffix = abilityUsed ? ' (used)' : '';
+      ctx.fillText(`[E] ${equippedAbilityLabel.toUpperCase()}${usedSuffix}`, canvasW - 8, canvasH - 14);
     }
   }
 
@@ -1619,5 +1623,100 @@ export class Renderer {
     }
 
     ctx.restore();
+  }
+
+  drawFireball(fb: Fireball, cameraX: number): void {
+    if (!fb.alive) return;
+    const { ctx } = this;
+    const sx = px(fb.x - cameraX);
+    const sy = px(fb.y);
+    const r  = FIREBALL_HALF_W;
+    const t  = fb.age; // seconds
+
+    // Pulsing wobble: alternate between slightly wider/taller to feel alive
+    const wobble = 1 + 0.18 * Math.sin(t * 28);
+    const rx = r * wobble;
+    const ry = r / wobble;
+
+    // Outer glow
+    const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, rx * 2.6);
+    glow.addColorStop(0,   'rgba(255,220,60,0.55)');
+    glow.addColorStop(0.5, 'rgba(255,100,20,0.25)');
+    glow.addColorStop(1,   'rgba(255,60,0,0)');
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, rx * 2.6, ry * 2.6, 0, 0, Math.PI * 2);
+    ctx.fillStyle = glow;
+    ctx.fill();
+
+    // Core flame body
+    const flame = ctx.createRadialGradient(sx - rx * 0.2, sy - ry * 0.25, 0, sx, sy, rx);
+    flame.addColorStop(0,   '#fff7a0');
+    flame.addColorStop(0.3, '#ffcc00');
+    flame.addColorStop(0.65,'#ff6000');
+    flame.addColorStop(1,   '#cc1800');
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = flame;
+    ctx.fill();
+
+    // Spark trail — 3 fading dots behind the ball
+    for (let i = 1; i <= 3; i++) {
+      const trailX = px(sx - i * 10);
+      const alpha  = 0.55 - i * 0.15;
+      const tr     = px(r * (0.65 - i * 0.12));
+      if (tr <= 0) continue;
+      ctx.beginPath();
+      ctx.arc(trailX, sy, tr, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,${150 - i * 30},0,${alpha.toFixed(2)})`;
+      ctx.fill();
+    }
+  }
+
+  drawFireballHitEffect(effect: FireballHitEffect, cameraX: number): void {
+    const { ctx } = this;
+    const t     = effect.age / HIT_EFFECT_DURATION; // 0..1
+    const alpha = Math.max(0, 1 - t);
+    const sx    = px(effect.x - cameraX);
+    const sy    = px(effect.y);
+
+    // Expanding ring
+    const ringR = px(18 + t * 38);
+    ctx.beginPath();
+    ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,180,0,${(alpha * 0.8).toFixed(2)})`;
+    ctx.lineWidth = px(4 - t * 3);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    // Burst shards — 8 lines radiating outward
+    const shardLen = px(6 + t * 22);
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      const dist  = px(10 + t * 26);
+      const x0    = sx + Math.cos(angle) * dist;
+      const y0    = sy + Math.sin(angle) * dist;
+      const x1    = sx + Math.cos(angle) * (dist + shardLen);
+      const y1    = sy + Math.sin(angle) * (dist + shardLen);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = `rgba(255,${Math.round(200 - t * 140)},0,${alpha.toFixed(2)})`;
+      ctx.lineWidth = px(2.5 - t * 1.5);
+      ctx.stroke();
+    }
+    ctx.lineWidth = 1;
+
+    // Central flash (fades out early)
+    const flashAlpha = Math.max(0, 1 - t * 3.5) * 0.7;
+    if (flashAlpha > 0) {
+      const flashR = px(14 - t * 10);
+      const flash  = ctx.createRadialGradient(sx, sy, 0, sx, sy, flashR);
+      flash.addColorStop(0,   `rgba(255,255,200,${flashAlpha.toFixed(2)})`);
+      flash.addColorStop(1,   'rgba(255,160,0,0)');
+      ctx.beginPath();
+      ctx.arc(sx, sy, flashR, 0, Math.PI * 2);
+      ctx.fillStyle = flash;
+      ctx.fill();
+    }
   }
 }
