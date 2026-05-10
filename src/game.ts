@@ -73,7 +73,7 @@ const ROUTE_MID_MAX_HEIGHT = 86;
 const COIN_STORAGE_KEY_BASE = 'you-vs-you-shop-v1';
 const AUDIO_SETTINGS_STORAGE_KEY = 'you-vs-you-audio-v1';
 
-type SkinId = 'classic' | 'ember' | 'forest' | 'void';
+type SkinId = 'classic' | 'ember' | 'forest' | 'void' | 'rainbow';
 type PowerUpId = 'speedBoost' | 'doubleJump' | 'shield';
 type AbilityId = 'fireball' | 'phase' | 'timeWarp';
 
@@ -91,6 +91,7 @@ const SKIN_CATALOG: Array<{ id: SkinId; label: string; cost: number; preview: st
   { id: 'ember', label: 'Ember Skin', cost: 75, preview: '🔥' },
   { id: 'forest', label: 'Forest Skin', cost: 140, preview: '🌿' },
   { id: 'void', label: 'Void Skin', cost: 220, preview: '🌌' },
+  { id: 'rainbow', label: 'Rainbow Skin', cost: 400, preview: '🌈' },
 ];
 
 const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; description: string; preview: string }> = [
@@ -114,6 +115,9 @@ type GameMode = 'levels' | 'infinite';
 function skinDisplayMeta(id: SkinId): { label: string; preview: string; subtitle: string } {
   if (id === 'classic') {
     return { label: 'Classic', preview: '🎮', subtitle: 'Default look' };
+  }
+  if (id === 'rainbow') {
+    return { label: 'Rainbow Skin', preview: '🌈', subtitle: 'Animated rainbow' };
   }
   const row = SKIN_CATALOG.find((s) => s.id === id);
   if (row) return { label: row.label, preview: row.preview, subtitle: 'Skin' };
@@ -1315,6 +1319,7 @@ export class Game {
         title: skin.label,
         subtitle,
         preview: skin.preview,
+        previewHtml: skin.id === 'rainbow' ? '<span class="rainbow-skin-preview-block"></span>' : undefined,
         actionLabel,
         buyPrice: owned ? undefined : skin.cost,
         buttonKind,
@@ -1447,6 +1452,7 @@ export class Game {
         title: meta.label,
         subtitle: meta.subtitle,
         preview: meta.preview,
+        previewHtml: skinId === 'rainbow' ? '<span class="rainbow-skin-preview-block"></span>' : undefined,
         actionLabel,
         buttonKind,
         onAffordableClick: () => {
@@ -1543,6 +1549,7 @@ export class Game {
     title: string;
     subtitle: string;
     preview: string;
+    previewHtml?: string;
     actionLabel: string;
     buyPrice?: number;
     buttonKind: 'buy-ready' | 'buy-locked' | 'equip' | 'equipped' | 'owned' | 'active' | 'boost-on' | 'boost-off';
@@ -1564,7 +1571,11 @@ export class Game {
 
     const preview = document.createElement('div');
     preview.className = 'shop-item-preview';
-    preview.textContent = opts.preview;
+    if (opts.previewHtml) {
+      preview.innerHTML = opts.previewHtml;
+    } else {
+      preview.textContent = opts.preview;
+    }
 
     const title = document.createElement('p');
     title.className = 'shop-item-title';

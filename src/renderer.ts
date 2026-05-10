@@ -31,8 +31,23 @@ const PLAYER_SKINS = {
   ember: { hat: '#FFD166', body: '#F97316', dark: '#9A3412' },
   forest: { hat: '#84CC16', body: '#22C55E', dark: '#166534' },
   void: { hat: '#C084FC', body: '#8B5CF6', dark: '#4C1D95' },
+  rainbow: { hat: '#FF88CC', body: '#88CCFF', dark: '#5533BB' },
 } as const;
 type PlayerSkinId = keyof typeof PLAYER_SKINS;
+
+function makeRainbowGradient(
+  ctx: CanvasRenderingContext2D,
+  x: number, y0: number, y1: number,
+  shift: number, lightness: number, saturation = 100,
+): CanvasGradient {
+  const g = ctx.createLinearGradient(x, y0, x, y1);
+  const stops = [0, 40, 80, 120, 160, 200, 240, 280, 320, 360];
+  stops.forEach((hue, i) => {
+    const h = Math.round((hue + shift) % 360);
+    g.addColorStop(i / (stops.length - 1), `hsl(${h},${saturation}%,${lightness}%)`);
+  });
+  return g;
+}
 // New hazard colors
 const P_ELEC_POST  = '#1A2A3A';  // electric field post
 const P_ELEC_BEAM  = '#00FFFF';  // active electric beam
@@ -775,9 +790,26 @@ export class Renderer {
     // Flash grey every 100ms during invincibility
     const flashGrey = isInvincible && Math.floor(performance.now() / 100) % 2 === 0;
     const skin = PLAYER_SKINS[skinId] ?? PLAYER_SKINS.classic;
-    const hatColor  = flashGrey ? '#aaa' : skin.hat;
-    const bodyColor = flashGrey ? '#bbb' : skin.body;
-    const darkColor = flashGrey ? '#888' : skin.dark;
+    let hatColor: string | CanvasGradient;
+    let bodyColor: string | CanvasGradient;
+    let darkColor: string | CanvasGradient;
+    if (flashGrey) {
+      hatColor = '#aaa';
+      bodyColor = '#bbb';
+      darkColor = '#888';
+    } else if (skinId === 'rainbow') {
+      // Gradient anchored to full player height — each fillRect samples the right hue at its y
+      const shift = (performance.now() / 1000 * 48) % 360;
+      const bright = makeRainbowGradient(ctx, sx, sy, sy + h, shift, 55);
+      const dark   = makeRainbowGradient(ctx, sx, sy, sy + h, shift, 30, 85);
+      hatColor  = bright;
+      bodyColor = bright;
+      darkColor = dark;
+    } else {
+      hatColor  = skin.hat;
+      bodyColor = skin.body;
+      darkColor = skin.dark;
+    }
 
     if (player.isCrouching) {
       // Dark outline
