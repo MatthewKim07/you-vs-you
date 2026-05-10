@@ -2457,11 +2457,12 @@ export class Game {
   }
 
   private hitChoiceObstacle(): boolean {
-    const px = this.player.pos.x;
-    const pr = px + this.player.width;
+    const pl = this.player.pos.x;
+    const pr = pl + this.player.width;
     const playerTop = this.player.pos.y;
     const playerBottom = playerTop + this.player.height;
     const isCrouching = this.player.isCrouching;
+    const INSET = 4;
 
     return this.level.obstacles
       .filter(o => o.kind === 'choiceObstacle')
@@ -2475,9 +2476,8 @@ export class Game {
         const spikeExt = (c.trapType === 'adaptiveChoiceGateJump')
           ? (c.currentSpikeExt ?? 0)
           : 0;
-        const barTop = barBottom - CHOICE_BAR_THICKNESS - spikeExt;
-
-        const xOverlap = pr > cx && px < cx + cw;
+        const spikeBaseY = barBottom - CHOICE_BAR_THICKNESS; // top of the bar = base of spikes
+        const barTop = spikeBaseY - spikeExt;                // tip of spikes
 
         // Crouch counter (bar drops to floor): crouching players are NOT safe — must jump.
         const crouchCounterTriggered =
@@ -2486,8 +2486,28 @@ export class Game {
           ch <= 6;
         if (isCrouching && !crouchCounterTriggered) return false;
 
-        const yOverlap = playerBottom > barTop && playerTop < barBottom;
-        return xOverlap && yOverlap;
+        // Bar region: solid rectangle collision
+        const inBarZone = playerBottom > spikeBaseY && playerTop < barBottom;
+        if (inBarZone && pr > cx && pl < cx + cw) return true;
+
+        // Spike zone: per-spike triangle collision (matches drawJumpBlockerSpikes exactly)
+        if (spikeExt > 1 && playerBottom > barTop && playerTop < spikeBaseY) {
+          const SPIKE_W = 14;
+          const PITCH   = 20;
+          const EDGE_PAD = 8;
+          const spikeCount = Math.max(1, Math.floor((cw - EDGE_PAD * 2 + (PITCH - SPIKE_W)) / PITCH));
+          const totalW = (spikeCount - 1) * PITCH + SPIKE_W;
+          const startX = cx + (cw - totalW) / 2;
+          const pb = Math.min(playerBottom, spikeBaseY);
+          const t = Math.min(1, (pb - barTop) / spikeExt);
+          for (let i = 0; i < spikeCount; i++) {
+            const tipX = startX + i * PITCH + SPIKE_W / 2;
+            const halfW = (SPIKE_W / 2) * t;
+            if (pr - INSET > tipX - halfW && pl + INSET < tipX + halfW) return true;
+          }
+        }
+
+        return false;
       });
   }
 
