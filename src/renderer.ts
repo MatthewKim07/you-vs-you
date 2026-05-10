@@ -889,6 +889,49 @@ export class Renderer {
     }
   }
 
+  drawInfiniteHUD(score: number, bestScore: number, canvasW: number, _canvasH: number) {
+    const { ctx } = this;
+
+    const barBgH = 32;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, canvasW, barBgH);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(0, barBgH, canvasW, 1);
+
+    const fs = Math.min(10, px(canvasW / 32));
+    ctx.font = `${fs}px ${PIXEL_FONT}`;
+    const cy = px(barBgH / 2 + fs / 2 - 1);
+
+    // Same center-band geometry as levels HUD so labels sit clear of the coin
+    // badge (left) and hamburger button (right).
+    const bW  = px(canvasW * 0.36);
+    const bX  = px((canvasW - bW) / 2);
+    const gap = 14;
+
+    // ∞ has no glyph in Press Start 2P — draw it separately in a system font
+    // sized to match the pixel-font cap height, then draw MODE beside it.
+    ctx.fillStyle = 'rgba(180,220,255,0.75)';
+    ctx.font = `${fs}px ${PIXEL_FONT}`;
+    const modeW = ctx.measureText('MODE').width;
+    const symFs = Math.round(fs * 2.0);
+    ctx.font = `bold ${symFs}px sans-serif`;
+    const symW  = ctx.measureText('∞').width;
+    const symSp = 5;
+    const blockLeft = px(bX - gap - symW - symSp - modeW);
+    ctx.textAlign = 'left';
+    ctx.fillText('∞', blockLeft, cy);
+    ctx.font = `${fs}px ${PIXEL_FONT}`;
+    ctx.fillText('MODE', blockLeft + symW + symSp, cy);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = P_PLYR_HAT;
+    ctx.fillText(String(score), px(canvasW / 2), cy);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#FF9999';
+    if (bestScore > 0) ctx.fillText(`BEST ${bestScore}`, bX + bW + gap, cy);
+  }
+
   drawDeathOverlay(canvas: HTMLCanvasElement, timer: number, delay: number) {
     const { ctx } = this;
     ctx.fillStyle = 'rgba(160,0,0,0.38)';

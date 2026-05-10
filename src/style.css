@@ -1087,3 +1087,201 @@ html, body {
 .mobile-action-btn:active {
   background: rgba(255, 255, 255, 0.08);
 }
+
+/* ── Mode Select ──────────────────────────────────────────── */
+
+.mode-select-panel {
+  background: #0D1B2A;
+  border: 3px solid #F2C94C;
+  padding: 20px;
+  gap: 12px;
+  min-width: min(92vw, 360px);
+}
+
+.mode-select-title {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(12px, 3vw, 16px);
+  color: #F2C94C;
+  text-shadow: 2px 2px 0 #8B6800;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.mode-btn {
+  min-height: 60px;
+  border: 0;
+  border-bottom: 4px solid rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(11px, 2.8vw, 13px);
+  cursor: pointer;
+  touch-action: manipulation;
+  padding: 0 16px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.mode-btn-levels {
+  background: #1A4A8A;
+  border-bottom-color: #0E2A55;
+}
+
+.mode-btn-levels:hover,
+.mode-btn-levels:focus-visible {
+  background: #2A6ABF;
+}
+
+.mode-btn-levels:active {
+  border-bottom-width: 2px;
+  transform: translateY(2px);
+}
+
+.mode-btn-infinite {
+  background: #5A1A8A;
+  border-bottom-color: #360D55;
+}
+
+.mode-btn-infinite:hover,
+.mode-btn-infinite:focus-visible {
+  background: #7A2ABF;
+}
+
+.mode-btn-infinite:active {
+  border-bottom-width: 2px;
+  transform: translateY(2px);
+}
+
+.mode-btn-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+  min-width: 28px;
+  text-align: center;
+}
+
+.mode-btn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.mode-btn-name {
+  font-size: inherit;
+}
+
+.mode-btn-desc {
+  font-family: monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: normal;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ── Infinite Game Over ───────────────────────────────────── */
+
+#infinite-game-over {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 10, 18, 0.78);
+  padding: 16px;
+}
+
+.infinite-over-card {
+  background: #0D1B2A;
+  border: 3px solid #F2C94C;
+  padding: 28px 32px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  min-width: min(92vw, 360px);
+}
+
+.infinite-over-label {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(8px, 2vw, 10px);
+  color: rgba(200, 230, 255, 0.65);
+  letter-spacing: 0.1em;
+}
+
+.infinite-over-title {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(16px, 4.5vw, 24px);
+  color: #FF4D4D;
+  text-shadow: 2px 2px 0 #800000;
+  margin: 0;
+}
+
+.infinite-over-score {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(22px, 6vw, 36px);
+  color: #F2C94C;
+  text-shadow: 2px 2px 0 #8B6800;
+  display: block;
+}
+
+.infinite-over-best {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(9px, 2.2vw, 11px);
+  color: #FF9999;
+  min-height: 1em;
+}
+
+.infinite-over-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.infinite-over-btn {
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(10px, 2.4vw, 12px);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.infinite-over-btn-primary {
+  background: #1dd1a1;
+  border-bottom: 4px solid #0A7A52;
+  color: #052418;
+}
+
+.infinite-over-btn-primary:hover,
+.infinite-over-btn-primary:focus-visible {
+  background: #2ef5bf;
+}
+
+.infinite-over-btn-primary:active {
+  border-bottom-width: 2px;
+  transform: translateY(2px);
+}
+
+.infinite-over-btn-secondary {
+  background: #355072;
+  border-bottom: 3px solid rgba(0, 0, 0, 0.45);
+  color: #fff;
+}
+
+.infinite-over-btn-secondary:hover,
+.infinite-over-btn-secondary:focus-visible {
+  background: #5e84ad;
+}
+
+.infinite-over-btn-secondary:active {
+  border-bottom-width: 1px;
+  transform: translateY(2px);
+}

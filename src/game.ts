@@ -6,6 +6,7 @@ import { RunTracker } from './runTracker';
 import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
 import { generateAdaptiveLevel } from './adaptiveGenerator';
+import { InfiniteGenerator } from './infiniteGenerator';
 import { introMessage } from './aiGameMaster';
 import { PlayerModel, ChoiceDecisionEvent, ObstacleInteractionEvent, RouteId } from './telemetry';
 import { analyzePlayer } from './playerAnalyzer';
@@ -85,7 +86,8 @@ const POWERUP_CATALOG: Array<{ id: PowerUpId; label: string; cost: number; descr
 ];
 
 type ShopSection = 'hub' | 'looks' | 'boosts' | 'inventory';
-type MenuStackScreen = 'main' | 'auth' | 'settings' | 'shop';
+type MenuStackScreen = 'main' | 'auth' | 'settings' | 'shop' | 'modeSelect';
+type GameMode = 'levels' | 'infinite';
 
 function skinDisplayMeta(id: SkinId): { label: string; preview: string; subtitle: string } {
   if (id === 'classic') {
@@ -199,6 +201,20 @@ export class Game {
   private lastRouteEventX = Number.NEGATIVE_INFINITY;
   private audioArmed = false;
   private lastCountdownAnnounced: number | null = null;
+
+  // ── Infinite Mode ──────────────────────────────────────────────────────────
+  private gameMode: GameMode = 'levels';
+  private infiniteRunScore = 0;
+  private infiniteBestScore = 0;
+  private infiniteGen: InfiniteGenerator | null = null;
+  private infiniteGameOverEl!: HTMLDivElement;
+  private infiniteScoreEl!: HTMLSpanElement;
+  private infiniteBestEl!: HTMLSpanElement;
+  private modeSelectPanel!: HTMLDivElement;
+  private static readonly INFINITE_BEST_KEY = 'you-vs-you-infinite-best-v1';
+  // Throttle playerModel refreshes during infinite runs so the AI adapts to recent behavior.
+  private infiniteModelRefreshTimer = 0;
+  private static readonly INFINITE_MODEL_REFRESH_INTERVAL = 6; // seconds
   private audioMuted = false;
   private authClient = new AuthProgressClient();
   private authUserId: string | null = null;
@@ -230,6 +246,7 @@ export class Game {
     this.debugPanel.setPlayerModel(this.playerModel);
     this.loadLocalShopState();
     this.loadAudioSettings();
+    this.loadInfiniteBest();
     this.setupResize();
     this.setupUi();
     this.armAudioOnFirstGesture();
@@ -684,7 +701,8 @@ export class Game {
     this.playButton.textContent = 'Play';
     this.playButton.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.startFromMenu();
+      this.menuStackScreen = 'modeSelect';
+      this.refreshAuthUi();
     });
     this.playButton.addEventListener('pointerdown', (e) => e.stopPropagation());
 
@@ -746,7 +764,14 @@ export class Game {
     this.menuOverlay.appendChild(this.shopPanel);
     this.setupShopUi();
 
+    this.modeSelectPanel = document.createElement('div');
+    this.modeSelectPanel.id = 'mode-select-panel';
+    this.menuOverlay.appendChild(this.modeSelectPanel);
+    this.setupModeSelectUi();
+
     document.body.appendChild(this.menuOverlay);
+
+    this.setupInfiniteGameOverUi();
     this.updateCoinHudBadge();
     this.refreshAuthUi();
     this.syncUiVisibility();
@@ -989,6 +1014,109 @@ export class Game {
     this.shopStatusLabel.style.marginTop = '2px';
     this.shopPanel.appendChild(this.shopStatusLabel);
     this.refreshShopUi();
+  }
+
+  private setupModeSelectUi() {
+    const panel = this.modeSelectPanel;
+    panel.className = 'mode-select-panel menu-sub-panel';
+
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'menu-sub-back-btn';
+    back.textContent = '← Main menu';
+    back.addEventListener('click', (e) => { e.stopPropagation(); this.goMenuMain(); });
+    back.addEventListener('pointerdown', (e) => e.stopPropagation());
+    panel.appendChild(back);
+
+    const title = document.createElement('p');
+    title.className = 'mode-select-title';
+    title.textContent = 'Choose Mode';
+    panel.appendChild(title);
+
+    const levelsBtn = document.createElement('button');
+    levelsBtn.className = 'mode-btn mode-btn-levels';
+    levelsBtn.innerHTML = `
+      <span class="mode-btn-icon">🗺</span>
+      <span class="mode-btn-text">
+        <span class="mode-btn-name">Levels</span>
+        <span class="mode-btn-desc">AI adapts the course to your playstyle</span>
+      </span>`;
+    levelsBtn.addEventListener('click', (e) => { e.stopPropagation(); this.startFromMenu(); });
+    levelsBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    panel.appendChild(levelsBtn);
+
+    const infiniteBtn = document.createElement('button');
+    infiniteBtn.className = 'mode-btn mode-btn-infinite';
+    infiniteBtn.innerHTML = `
+      <span class="mode-btn-icon">∞</span>
+      <span class="mode-btn-text">
+        <span class="mode-btn-name">Infinite</span>
+        <span class="mode-btn-desc">Endless run — survive as long as you can</span>
+      </span>`;
+    infiniteBtn.addEventListener('click', (e) => { e.stopPropagation(); this.startInfiniteMode(); });
+    infiniteBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    panel.appendChild(infiniteBtn);
+  }
+
+  private setupInfiniteGameOverUi() {
+    this.infiniteGameOverEl = document.createElement('div');
+    this.infiniteGameOverEl.id = 'infinite-game-over';
+
+    const card = document.createElement('div');
+    card.className = 'infinite-over-card';
+
+    const modeLabel = document.createElement('p');
+    modeLabel.className = 'infinite-over-label';
+    modeLabel.textContent = '— INFINITE MODE —';
+    card.appendChild(modeLabel);
+
+    const title = document.createElement('h2');
+    title.className = 'infinite-over-title';
+    title.textContent = 'GAME OVER';
+    card.appendChild(title);
+
+    const scoreLabel = document.createElement('p');
+    scoreLabel.className = 'infinite-over-label';
+    scoreLabel.textContent = 'Score';
+    card.appendChild(scoreLabel);
+
+    this.infiniteScoreEl = document.createElement('span');
+    this.infiniteScoreEl.className = 'infinite-over-score';
+    this.infiniteScoreEl.textContent = '0';
+    card.appendChild(this.infiniteScoreEl);
+
+    this.infiniteBestEl = document.createElement('p');
+    this.infiniteBestEl.className = 'infinite-over-best';
+    card.appendChild(this.infiniteBestEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'infinite-over-actions';
+
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'infinite-over-btn infinite-over-btn-primary';
+    retryBtn.textContent = 'Play Again';
+    retryBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.audio.playRetry();
+      this.restartInfiniteMode();
+    });
+    retryBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    actions.appendChild(retryBtn);
+
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'infinite-over-btn infinite-over-btn-secondary';
+    menuBtn.textContent = 'Main Menu';
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.audio.playUiClick();
+      this.enterMenu();
+    });
+    menuBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    actions.appendChild(menuBtn);
+
+    card.appendChild(actions);
+    this.infiniteGameOverEl.appendChild(card);
+    document.body.appendChild(this.infiniteGameOverEl);
   }
 
   private refreshShopUi() {
@@ -1468,6 +1596,9 @@ export class Game {
     this.menuMainStack.style.display = onMain ? 'flex' : 'none';
     this.authPanel.style.display = this.menuStackScreen === 'auth' ? 'flex' : 'none';
     this.settingsPanel.style.display = this.menuStackScreen === 'settings' ? 'flex' : 'none';
+    if (this.modeSelectPanel) {
+      this.modeSelectPanel.style.display = this.menuStackScreen === 'modeSelect' ? 'flex' : 'none';
+    }
     this.refreshShopUi();
   }
 
@@ -1510,6 +1641,10 @@ export class Game {
       this.persistProgressIfSignedIn();
     }
 
+    this.gameMode = 'levels';
+    this.infiniteGen = null;
+    this.infiniteRunScore = 0;
+
     this.resizeCanvas();
     this.levelIndex = 0;
     this.attempts = 1;
@@ -1546,6 +1681,107 @@ export class Game {
     this.startLevel(startAt, 'countdown');
   }
 
+  private startInfiniteMode() {
+    this.audio.unlock();
+    this.audio.playUiClick();
+    this.audio.playMenuStart();
+    this.audio.stopMusic();
+    this.gameMode = 'infinite';
+    this.infiniteRunScore = 0;
+    this.attempts = 1;
+    this.menuStackScreen = 'main';
+    this.shopSection = 'hub';
+    this.refreshAuthUi();
+    this.refreshPlayerModel();
+
+    this.resizeCanvas();
+    this.infiniteGen = new InfiniteGenerator();
+    this.level = {
+      index: 0,
+      worldWidth: this.infiniteGen.currentFrontier + this.canvas.width + 1000,
+      groundY: this.canvas.height - 80,
+      flagX: Number.MAX_SAFE_INTEGER,
+      obstacles: [],
+    };
+    this.spawnPlayer();
+    this.hasSpawnedPlayer = true;
+    this.cameraX = 0;
+    this.state = 'countdown';
+    this.countdownSec = START_COUNTDOWN_SECS;
+    this.lastCountdownAnnounced = null;
+    this.resetFrameTracking();
+    this.tracker.startRun(0, this.attempts, [], {});
+    this.infiniteModelRefreshTimer = 0;
+    this.updateInfiniteGeneration(0);
+    this.levelAgeSec = 0;
+    this.consumedShield = false;
+    this.invincibleUntilMs = null;
+    this.syncUiVisibility();
+  }
+
+  private restartInfiniteMode() {
+    this.infiniteRunScore = 0;
+    this.attempts++;
+    this.infiniteGen = new InfiniteGenerator();
+    this.refreshPlayerModel();
+
+    this.resizeCanvas();
+    this.level = {
+      index: 0,
+      worldWidth: this.infiniteGen.currentFrontier + this.canvas.width + 1000,
+      groundY: this.canvas.height - 80,
+      flagX: Number.MAX_SAFE_INTEGER,
+      obstacles: [],
+    };
+    this.spawnPlayer();
+    this.hasSpawnedPlayer = true;
+    this.cameraX = 0;
+    this.state = 'playing';
+    this.invincibleUntilMs = null;
+    this.resetFrameTracking();
+    this.tracker.startRun(0, this.attempts, [], {});
+    this.infiniteModelRefreshTimer = 0;
+    this.updateInfiniteGeneration(0);
+    this.levelAgeSec = 0;
+    this.consumedShield = false;
+    this.syncUiVisibility();
+    this.audio.startGameplayMusic();
+  }
+
+  private updateInfiniteGeneration(dt: number) {
+    if (!this.infiniteGen) return;
+    const newObs = this.infiniteGen.generateChunks(
+      this.player.pos.x,
+      this.infiniteRunScore,
+      this.playerModel,
+    );
+    for (const o of newObs) this.level.obstacles.push(o);
+    // Remove off-screen obstacles to keep the array bounded
+    this.level.obstacles = this.infiniteGen.cleanupBefore(this.cameraX, this.level.obstacles);
+    // Extend worldWidth so ground always renders ahead of the player
+    this.level.worldWidth = this.infiniteGen.currentFrontier + this.canvas.width + 1000;
+    // Periodically refresh the player model so trap weighting reflects recent behavior.
+    this.infiniteModelRefreshTimer += dt;
+    if (this.infiniteModelRefreshTimer >= Game.INFINITE_MODEL_REFRESH_INTERVAL) {
+      this.infiniteModelRefreshTimer = 0;
+      this.refreshPlayerModel();
+    }
+  }
+
+  // ── Infinite Mode persistent best score ────────────────────────────────────
+  private loadInfiniteBest() {
+    try {
+      const raw = window.localStorage.getItem(Game.INFINITE_BEST_KEY);
+      if (raw) this.infiniteBestScore = Math.max(0, parseInt(raw, 10) || 0);
+    } catch { /* ignore private mode / quota */ }
+  }
+
+  private saveInfiniteBest() {
+    try {
+      window.localStorage.setItem(Game.INFINITE_BEST_KEY, String(this.infiniteBestScore));
+    } catch { /* ignore */ }
+  }
+
   private togglePauseMenu() {
     if (this.state === 'paused') {
       this.closePauseMenu();
@@ -1577,13 +1813,28 @@ export class Game {
     const inMenu = this.state === 'menu';
     this.menuOverlay.style.display = inMenu ? 'flex' : 'none';
     const inGameplay = this.state === 'playing' || this.state === 'paused' || this.state === 'countdown' || this.state === 'dead' || this.state === 'levelComplete';
-    this.menuButton.style.display = inGameplay ? 'inline-flex' : 'none';
+    // Hide menu button when showing the infinite game-over overlay (it has its own buttons)
+    const infiniteOver = this.gameMode === 'infinite' && this.state === 'dead';
+    this.menuButton.style.display = (inGameplay && !infiniteOver) ? 'inline-flex' : 'none';
     this.pauseMenu.style.display = this.state === 'paused' ? 'flex' : 'none';
     const isActivePlay = this.state === 'playing' || this.state === 'paused' || this.state === 'countdown';
     this.mobileControls?.classList.toggle('is-playing', isActivePlay);
     this.mobileControls?.classList.toggle('is-dead', this.state === 'dead');
     if (this.deathTapZone) {
-      this.deathTapZone.style.display = (this.state === 'dead' || this.state === 'levelComplete') ? 'block' : 'none';
+      // In infinite mode dead state, buttons are on the overlay — don't show the tap zone
+      const showTap = (this.state === 'dead' && this.gameMode === 'levels') || this.state === 'levelComplete';
+      this.deathTapZone.style.display = showTap ? 'block' : 'none';
+    }
+    // Infinite game-over overlay
+    if (this.infiniteGameOverEl) {
+      this.infiniteGameOverEl.style.display = infiniteOver ? 'flex' : 'none';
+      if (infiniteOver) {
+        this.infiniteScoreEl.textContent = String(this.infiniteRunScore);
+        const hasBest = this.infiniteBestScore > 0;
+        this.infiniteBestEl.textContent = hasBest
+          ? (this.infiniteRunScore >= this.infiniteBestScore ? `NEW BEST: ${this.infiniteBestScore}` : `Best: ${this.infiniteBestScore}`)
+          : '';
+      }
     }
   }
 
@@ -1800,7 +2051,8 @@ export class Game {
 
       case 'dead':
         this.deathTimer += dt;
-        if (this.deathTimer >= DEATH_INPUT_DELAY && this.input.consumeJump()) {
+        // Infinite mode: retry is handled by the HTML game-over overlay buttons
+        if (this.gameMode === 'levels' && this.deathTimer >= DEATH_INPUT_DELAY && this.input.consumeJump()) {
           this.audio.playRetry();
           this.restartLevel();
         }
@@ -1816,6 +2068,7 @@ export class Game {
         break;
 
       case 'playing':
+        if (this.gameMode === 'infinite') this.updateInfiniteGeneration(dt);
         this.updatePlaying(dt);
         break;
     }
@@ -1892,7 +2145,15 @@ export class Game {
     this.updateElectricFields(dt);
     this.updateCrusherCeilings(dt);
 
-    if (this.levelIndex > 0) {
+    // Run the real-time trap director for levels mode (level > 0) and for infinite mode
+    // once the player has been running long enough to generate meaningful telemetry.
+    const infiniteTrapsActive = this.gameMode === 'infinite' && this.infiniteRunScore >= 200;
+    if (this.levelIndex > 0 || infiniteTrapsActive) {
+      // In infinite mode use a synthetic level index that grows with score so the AI
+      // unlocks more aggressive phases over time (must be >= 2 to pass the observe gate).
+      const effectiveLevelIndex = infiniteTrapsActive
+        ? Math.max(2, Math.floor(this.infiniteRunScore / 150))
+        : this.levelIndex;
       const runsWithCurrent = this.collectRunsWithCurrent();
       const knowledge = calculateKnowledge(runsWithCurrent, this.playerModel);
       const runtimeTrap = updateRealtimeTraps({
@@ -1910,7 +2171,7 @@ export class Game {
         playerModel: this.playerModel,
         knowledge,
         recentRuns: runsWithCurrent,
-        levelIndex: this.levelIndex,
+        levelIndex: effectiveLevelIndex,
         groundY: level.groundY,
         dt,
       });
@@ -1938,14 +2199,16 @@ export class Game {
         this.audio.playTrapCue(mutation.trapType);
       }
     } else {
-      // Level 1 is pure baseline observation: no runtime trap mutations.
+      const observeReason = this.gameMode === 'infinite'
+        ? `AI observing... adapts at score 200 (${this.infiniteRunScore}/200)`
+        : 'Learning baseline behavior on Level 1';
       this.trapRuntimeDebug = {
         ...this.trapRuntimeDebug,
         phase: 'observe',
         activeTrap: 'none',
         trapState: 'none',
         activeRoute: 'none',
-        trapReason: 'Learning baseline behavior on Level 1',
+        trapReason: observeReason,
       };
       this.debugPanel.setRealtimeTrapDebug(this.trapRuntimeDebug);
     }
@@ -2068,8 +2331,14 @@ export class Game {
       }
     }
 
-    // --- Win check ---
-    if (player.pos.x + player.width >= level.flagX) {
+    // --- Infinite mode: update run score ---
+    if (this.gameMode === 'infinite') {
+      const rawScore = Math.max(0, Math.floor((player.pos.x - SPAWN_X) / 10));
+      this.infiniteRunScore = Math.max(this.infiniteRunScore, rawScore);
+    }
+
+    // --- Win check (never fires in infinite mode: flagX = MAX_SAFE_INTEGER) ---
+    if (this.gameMode !== 'infinite' && player.pos.x + player.width >= level.flagX) {
       this.tracker.recordRouteChoice({
         routeId: this.detectRouteFromPlayer(),
         x: player.pos.x,
@@ -2685,6 +2954,21 @@ export class Game {
       this.showAIMessage('Shield!');
       return;
     }
+
+    if (this.gameMode === 'infinite') {
+      // Infinite mode death: update best score then show overlay
+      this.infiniteBestScore = Math.max(this.infiniteBestScore, this.infiniteRunScore);
+      this.saveInfiniteBest();
+      this.tracker.finishRun(false, reason, deathX);
+      this.refreshPlayerModel();
+      this.audio.playDeath();
+      this.audio.stopMusic();
+      this.state = 'dead';
+      this.deathTimer = 0;
+      this.syncUiVisibility();
+      return;
+    }
+
     this.recordDeathObstacleInteraction(deathX);
     this.tracker.recordRouteChoice({
       routeId: this.detectRouteFromPlayer(),
@@ -2899,18 +3183,30 @@ export class Game {
       this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead', this.equippedSkin, isInvincible);
     }
     if (this.state !== 'menu' && this.hasSpawnedPlayer) {
-      this.renderer.drawHUD(
-        this.player.pos.x,
-        this.level.flagX,
-        this.canvas.width,
-        this.canvas.height,
-        this.levelIndex + 1,
-        this.attempts,
-      );
+      if (this.gameMode === 'infinite') {
+        this.renderer.drawInfiniteHUD(
+          this.infiniteRunScore,
+          this.infiniteBestScore,
+          this.canvas.width,
+          this.canvas.height,
+        );
+      } else {
+        this.renderer.drawHUD(
+          this.player.pos.x,
+          this.level.flagX,
+          this.canvas.width,
+          this.canvas.height,
+          this.levelIndex + 1,
+          this.attempts,
+        );
+      }
     }
 
     if (this.state === 'dead') {
-      this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
+      // Infinite mode shows an HTML overlay instead of the canvas death overlay
+      if (this.gameMode === 'levels') {
+        this.renderer.drawDeathOverlay(this.canvas, this.deathTimer, DEATH_INPUT_DELAY);
+      }
     } else if (this.state === 'levelComplete') {
       this.renderer.drawLevelCompleteOverlay(this.canvas, this.levelIndex + 2);
     }
