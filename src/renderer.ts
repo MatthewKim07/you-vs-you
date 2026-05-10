@@ -852,6 +852,8 @@ export class Renderer {
     attempts: number,
     equippedAbilityLabel?: string,
     abilityUsed = false,
+    timeWarpActive = false,
+    timeWarpTimeLeft = 0,
   ) {
     const { ctx } = this;
 
@@ -912,9 +914,20 @@ export class Renderer {
       // Show ability hint on all levels when ability is equipped
       ctx.textAlign = 'right';
       ctx.font = `${Math.min(8, px(canvasW / 44))}px ${PIXEL_FONT}`;
-      ctx.fillStyle = abilityUsed ? 'rgba(160,160,160,0.45)' : 'rgba(255,220,100,0.7)';
-      const usedSuffix = abilityUsed ? ' (used)' : '';
-      ctx.fillText(`[E] ${equippedAbilityLabel.toUpperCase()}${usedSuffix}`, canvasW - 8, canvasH - 14);
+      let abilitySuffix: string;
+      let abilityColor: string;
+      if (timeWarpActive) {
+        abilitySuffix = ` (${timeWarpTimeLeft.toFixed(1)}s)`;
+        abilityColor = 'rgba(140,200,255,0.9)';
+      } else if (abilityUsed) {
+        abilitySuffix = ' (used)';
+        abilityColor = 'rgba(160,160,160,0.45)';
+      } else {
+        abilitySuffix = '';
+        abilityColor = 'rgba(255,220,100,0.7)';
+      }
+      ctx.fillStyle = abilityColor;
+      ctx.fillText(`[E] ${equippedAbilityLabel.toUpperCase()}${abilitySuffix}`, canvasW - 8, canvasH - 14);
     }
   }
 
@@ -1834,6 +1847,43 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(x, y, px(6), 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+
+  drawTimeWarpOverlay(canvasW: number, canvasH: number, progress: number, ageSec: number): void {
+    const { ctx } = this;
+    // Vignette: cool blue tint fading in at activation, out at end
+    const fadeIn = Math.min(1, progress / 0.18);
+    const fadeOut = Math.min(1, (1 - progress) / 0.15);
+    const alpha = 0.18 * fadeIn * fadeOut + 0.06;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(80,160,255,1)';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+    ctx.restore();
+
+    // Edge vignette rings — subtle chromatic border
+    ctx.save();
+    const pulse = 0.5 + 0.5 * Math.sin(ageSec * 6.28 * 1.5);
+    ctx.globalAlpha = (0.12 + 0.06 * pulse) * fadeIn * fadeOut;
+    const g = ctx.createRadialGradient(
+      canvasW / 2, canvasH / 2, canvasH * 0.28,
+      canvasW / 2, canvasH / 2, canvasH * 0.82,
+    );
+    g.addColorStop(0, 'rgba(60,140,255,0)');
+    g.addColorStop(1, 'rgba(60,140,255,1)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, canvasW, canvasH);
+    ctx.restore();
+
+    // Scanline shimmer — three horizontal bands drifting upward
+    ctx.save();
+    ctx.globalAlpha = 0.055 * fadeIn * fadeOut;
+    ctx.fillStyle = 'rgba(180,230,255,1)';
+    for (let i = 0; i < 3; i++) {
+      const y = ((ageSec * 0.4 + i / 3) % 1) * canvasH;
+      ctx.fillRect(0, y, canvasW, px(2));
+    }
     ctx.restore();
   }
 }

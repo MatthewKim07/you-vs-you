@@ -49,6 +49,8 @@ import { AuthProgressClient, StoredProgress } from './authProgress';
 
 const SPAWN_X = 80;
 const DEATH_INPUT_DELAY = 0.4;  // seconds before tap-to-retry accepted after death
+const TIME_WARP_DURATION = 4.0;      // seconds the effect lasts per activation
+const TIME_WARP_SPEED_MULT = 0.65;   // physics dt multiplier while active
 const SAMPLE_INTERVAL = 0.2;    // seconds between position samples
 const LEVEL_HIGHLIGHT_SECS = 2.4;
 const AI_MESSAGE_SECS = 2.6;
@@ -264,6 +266,9 @@ export class Game {
   private phaseUsed = false;
   private phaseFx: PhaseFxState | null = null;
   private phaseDenyFx: PhaseDenyFxState | null = null;
+  private timeWarpUsed = false;
+  private timeWarpActive = false;
+  private timeWarpTimeLeft = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -498,12 +503,28 @@ export class Game {
     if (this.equippedAbility && isLevels && inGame) {
       const meta = ABILITY_CATALOG.find((a) => a.id === this.equippedAbility);
       const label = meta?.label ?? '';
-      const used =
-        (this.fireballUsed && this.equippedAbility === 'fireball') ||
-        (this.phaseUsed && this.equippedAbility === 'phase');
-      const statusClass = used ? 'ability-hud-status--used' : 'ability-hud-status--ready';
-      const statusText = used ? 'Used' : 'Ready';
+      let statusClass: string;
+      let statusText: string;
+      if (this.equippedAbility === 'timeWarp') {
+        if (this.timeWarpActive) {
+          statusClass = 'ability-hud-status--active';
+          statusText = `Active ${this.timeWarpTimeLeft.toFixed(1)}s`;
+        } else if (this.timeWarpUsed) {
+          statusClass = 'ability-hud-status--used';
+          statusText = 'Used';
+        } else {
+          statusClass = 'ability-hud-status--ready';
+          statusText = 'Ready';
+        }
+      } else {
+        const used =
+          (this.fireballUsed && this.equippedAbility === 'fireball') ||
+          (this.phaseUsed && this.equippedAbility === 'phase');
+        statusClass = used ? 'ability-hud-status--used' : 'ability-hud-status--ready';
+        statusText = used ? 'Used' : 'Ready';
+      }
       this.abilityHudBadge.innerHTML = `<span class="ability-hud-inner"><span class="ability-hud-key">[${ABILITY_KEYBIND}]</span><span class="ability-hud-name">${label}</span><span class="ability-hud-status ${statusClass}">${statusText}</span></span>`;
+      this.abilityHudBadge.dataset.abilityState = statusClass.replace('ability-hud-status--', '');
       this.abilityHudBadge.style.display = 'flex';
     } else {
       this.abilityHudBadge.style.display = 'none';
@@ -538,6 +559,9 @@ export class Game {
     this.phaseUsed = false;
     this.phaseFx = null;
     this.phaseDenyFx = null;
+    this.timeWarpUsed = false;
+    this.timeWarpActive = false;
+    this.timeWarpTimeLeft = 0;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
     this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
@@ -579,6 +603,9 @@ export class Game {
     this.phaseUsed = false;
     this.phaseFx = null;
     this.phaseDenyFx = null;
+    this.timeWarpUsed = false;
+    this.timeWarpActive = false;
+    this.timeWarpTimeLeft = 0;
     this.hasSpawnedPlayer = true;
     this.resetFrameTracking();
     this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
@@ -2353,6 +2380,20 @@ export class Game {
     // Update fireball (Level Mode only — already gated at activation)
     this.updateFireball(dt);
 
+    // Tick time warp — only in level mode (activation is already level-only gated)
+    if (this.timeWarpActive && this.gameMode === 'levels') {
+      this.timeWarpTimeLeft = Math.max(0, this.timeWarpTimeLeft - dt);
+      if (this.timeWarpTimeLeft <= 0) {
+        this.timeWarpActive = false;
+        this.updateAbilityHudBadge();
+      } else {
+        this.updateAbilityHudBadge();
+      }
+    }
+
+    // Physics dt — scaled for time warp to slow both horizontal and vertical motion uniformly
+    const physicsDt = this.timeWarpActive ? dt * TIME_WARP_SPEED_MULT : dt;
+
     // Read previous frame's ground state before any mutation this frame
     const wasOnGround = this.wasOnGround;
 
@@ -2364,7 +2405,7 @@ export class Game {
     const prevLeft = playerLeft;
     const prevRight = playerRight;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
-    player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null, {
+    player.update(physicsDt, effectiveFloor ?? level.groundY, effectiveFloor !== null, {
       freezeVertical: this.phaseFx !== null,
     });
     this.resolvePlatformTopCollision(prevBottom);
@@ -3471,6 +3512,12 @@ export class Game {
       this.updateAbilityHudBadge();
     } else if (this.equippedAbility === 'phase') {
       this.tryActivatePhase();
+    } else if (this.equippedAbility === 'timeWarp') {
+      if (this.timeWarpUsed) return;
+      this.timeWarpUsed = true;
+      this.timeWarpActive = true;
+      this.timeWarpTimeLeft = TIME_WARP_DURATION;
+      this.updateAbilityHudBadge();
     }
   }
 
@@ -3651,7 +3698,8 @@ export class Game {
           : undefined;
         const abilityUsed =
           (this.fireballUsed && this.equippedAbility === 'fireball') ||
-          (this.phaseUsed && this.equippedAbility === 'phase');
+          (this.phaseUsed && this.equippedAbility === 'phase') ||
+          (this.timeWarpUsed && this.equippedAbility === 'timeWarp' && !this.timeWarpActive);
         this.renderer.drawHUD(
           this.player.pos.x,
           this.level.flagX,
@@ -3661,7 +3709,13 @@ export class Game {
           this.attempts,
           abilityMeta?.label,
           abilityUsed,
+          this.timeWarpActive,
+          this.timeWarpTimeLeft,
         );
+        if (this.timeWarpActive) {
+          const warpProgress = 1 - this.timeWarpTimeLeft / TIME_WARP_DURATION;
+          this.renderer.drawTimeWarpOverlay(this.canvas.width, this.canvas.height, warpProgress, this.levelAgeSec);
+        }
       }
     }
 

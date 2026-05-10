@@ -723,6 +723,11 @@ html, body {
   align-items: center;
   gap: 6px;
   pointer-events: none;
+  transition: border-color 0.3s ease;
+}
+
+#ability-hud-badge[data-ability-state="active"] {
+  border-color: rgba(80, 160, 255, 0.75);
 }
 
 .ability-hud-inner {
@@ -757,6 +762,18 @@ html, body {
   background: rgba(120, 120, 120, 0.18);
   color: rgba(180, 180, 180, 0.6);
   border: 1px solid rgba(120, 120, 120, 0.3);
+}
+
+.ability-hud-status--active {
+  background: rgba(80, 160, 255, 0.22);
+  color: #8cd0ff;
+  border: 1px solid rgba(80, 160, 255, 0.55);
+  animation: timewarp-pulse 1s ease-in-out infinite;
+}
+
+@keyframes timewarp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
 }
 
 /* ── Shop: Special Abilities ───────────────────────────── */
