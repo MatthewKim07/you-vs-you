@@ -292,8 +292,9 @@ export class DebugPanel {
       this.panel.style.display = this.visible ? 'block' : 'none';
       btn.classList.toggle('active', this.visible);
     });
-    // Prevent tap from propagating to canvas as a jump
-    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // Block death-tap-zone / canvas from receiving pointer events that hit this button.
+    btn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+    btn.addEventListener('pointerup', (e) => { e.stopPropagation(); });
     return btn;
   }
 
@@ -301,8 +302,14 @@ export class DebugPanel {
     const el = document.createElement('div');
     el.id = 'debug-panel';
     el.style.display = 'none';
-    // Prevent touches on panel from jumping
-    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // Stop pointer + scroll/wheel events so dragging/scrolling the panel never reaches the
+    // fullscreen death-tap-zone (which would otherwise trigger respawn) or the canvas.
+    el.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+    el.addEventListener('pointerup', (e) => { e.stopPropagation(); });
+    el.addEventListener('click', (e) => { e.stopPropagation(); });
+    el.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
+    el.addEventListener('touchstart', (e) => { e.stopPropagation(); }, { passive: true });
+    el.addEventListener('touchmove', (e) => { e.stopPropagation(); }, { passive: true });
     return el;
   }
 }

@@ -964,7 +964,8 @@ html, body {
   position: fixed;
   bottom: 16px;
   right: 16px;
-  z-index: 100;
+  /* Must sit above #death-tap-zone (z 180) so clicks open the panel instead of triggering respawn. */
+  z-index: 200;
   background: rgba(0, 0, 0, 0.72);
   color: #aaa;
   border: 0;
@@ -993,7 +994,8 @@ html, body {
   position: fixed;
   bottom: 50px;
   right: 16px;
-  z-index: 100;
+  /* Above #death-tap-zone (z 180) — keeps the panel scrollable on the dead screen. */
+  z-index: 200;
   background: rgba(0, 0, 0, 0.88);
   color: #eee;
   border: 0;
