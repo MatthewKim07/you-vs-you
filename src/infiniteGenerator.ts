@@ -21,10 +21,18 @@ interface InfinitePattern {
   punishesNoCrouch: boolean;   // requires crouching; punishes jump-only players
 }
 
-// Guardrail: mandatory empty approach space before every pattern.
-// Player moves at 230 px/s; 100 px = 0.43 s of clear ground — enough to react.
-// Patterns add their own relX on top of this, so real approach is ENTRY_GAP + relX.
-const ENTRY_GAP = 100;
+// Mandatory empty approach space before every pattern — score-dependent.
+// Player moves at ~230 px/s. Three difficulty bands match user-facing progression:
+//   0 – 1000  : learning phase  — very generous gaps
+//   1000 – 5000: pressure phase  — gaps gradually tighten
+//   5000 – 10000: hard phase    — noticeably tighter
+//   10000+      : expert        — minimum safe gap
+function scoreToEntryGap(score: number): number {
+  if (score < 1000)  return Math.round(340 - (score / 1000) * 80);           // 340 → 260
+  if (score < 5000)  return Math.round(260 - ((score - 1000) / 4000) * 100); // 260 → 160
+  if (score < 10000) return Math.round(160 - ((score - 5000) / 5000) * 50);  // 160 → 110
+  return 110;
+}
 
 // Generate terrain this far ahead of the player.
 const LOOKAHEAD = 2400;
@@ -32,8 +40,8 @@ const LOOKAHEAD = 2400;
 // Remove obstacles this far behind the camera's left edge to keep memory bounded.
 const CLEANUP_MARGIN = 500;
 
-// Short start zone — player only needs a couple of steps before the first obstacle.
-const INITIAL_RUNWAY = 300;
+// Clear start zone before the very first obstacle.
+const INITIAL_RUNWAY = 320;
 
 // ─── Pattern Library ─────────────────────────────────────────────────────────
 //
@@ -46,16 +54,6 @@ const INITIAL_RUNWAY = 300;
 
 const PATTERNS: InfinitePattern[] = [
   // ── EASY (diff 0 – 0.4) ────────────────────────────────────────────────────
-  {
-    // Short breather only used in the opening seconds. Capped at diff 0.25 so
-    // it disappears quickly — players should never coast for long.
-    id: 'flat',
-    length: 180,
-    templates: [],
-    requiredAction: 'none',
-    minDiff: 0, maxDiff: 0.25,
-    punishesEarlyJump: false, punishesNoCrouch: false,
-  },
   {
     id: 'spike_sm',
     length: 280,
@@ -100,10 +98,10 @@ const PATTERNS: InfinitePattern[] = [
   },
   {
     id: 'low_ceil_spike',
-    length: 400,
+    length: 500,
     templates: [
-      { kind: 'lowCeiling', relX: 50, width: 130, height: 34 },
-      { kind: 'spike', relX: 240, width: 44, height: 52 },
+      { kind: 'lowCeiling', relX: 60, width: 130, height: 34 },
+      { kind: 'spike', relX: 310, width: 44, height: 52 },
     ],
     requiredAction: 'crouch',
     minDiff: 0.35, maxDiff: 1.0,
@@ -111,10 +109,10 @@ const PATTERNS: InfinitePattern[] = [
   },
   {
     id: 'spike_then_ceil',
-    length: 400,
+    length: 520,
     templates: [
-      { kind: 'spike', relX: 60, width: 44, height: 52 },
-      { kind: 'lowCeiling', relX: 160, width: 140, height: 34 },
+      { kind: 'spike', relX: 70, width: 44, height: 52 },
+      { kind: 'lowCeiling', relX: 280, width: 140, height: 34 },
     ],
     requiredAction: 'either',
     minDiff: 0.4, maxDiff: 1.0,
@@ -220,7 +218,7 @@ export class InfiniteGenerator {
   private frontier: number;
   // Sliding window of recently placed pattern IDs for anti-repeat filtering.
   private recentIds: string[] = [];
-  private readonly ANTI_REPEAT = 3;
+  private readonly ANTI_REPEAT = 6;
 
   constructor() {
     this.frontier = INITIAL_RUNWAY;
@@ -237,8 +235,13 @@ export class InfiniteGenerator {
     const diff = scoreToDifficulty(score);
     while (this.frontier < playerX + LOOKAHEAD) {
       const pattern = this.pickPattern(score, playerModel);
-      // ENTRY_GAP ensures no obstacle can appear immediately in front of the player.
-      const startX = this.frontier + ENTRY_GAP;
+      // Vary the gap so rhythm breathes naturally — mild variation only.
+      // Hard floor of 110 px regardless.
+      const base = scoreToEntryGap(score);
+      const roll = Math.random();
+      const gapMult = roll < 0.2 ? 1.3 : roll < 0.4 ? 0.82 : 1.0;
+      const gap = Math.max(110, Math.round(base * gapMult));
+      const startX = this.frontier + gap;
       for (const t of pattern.templates) {
         const obs: Obstacle = {
           kind: t.kind,
@@ -313,8 +316,9 @@ export class InfiniteGenerator {
     // Early-timing players get punished by jump-punisher patterns.
     if (model.reactionTiming === 'early' && p.punishesEarlyJump) w *= 1.4;
 
-    // Multi-obstacle combos are hard — suppress below diff 0.45.
-    if (diff < 0.45 && p.templates.length > 1) w *= 0.25;
+    // Multi-obstacle combos are hard — strongly suppress at low diff.
+    if (diff < 0.25 && p.templates.length > 1) w = 0;
+    else if (diff < 0.55 && p.templates.length > 1) w *= 0.15;
 
     return Math.max(0.01, w);
   }
