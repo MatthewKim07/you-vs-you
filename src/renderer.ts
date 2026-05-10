@@ -3,6 +3,7 @@ import { LevelData, getGroundSegments } from './level';
 import { Obstacle, TrapState } from './types';
 import { BLOCKER_RETRACT_MS, CRUMBLE_WARNING_MS, CRUSHER_RAISED_H } from './levelMutator';
 import { Fireball, FireballHitEffect, FIREBALL_HALF_W, HIT_EFFECT_DURATION } from './fireball';
+import { PhaseFxState, PhaseDenyFxState, PHASE_FX_DURATION, PHASE_DENY_FX_DURATION } from './phase';
 
 const TILE = 16;
 
@@ -1718,5 +1719,121 @@ export class Renderer {
       ctx.fillStyle = flash;
       ctx.fill();
     }
+  }
+
+  drawPhaseEffect(fx: PhaseFxState, cameraX: number, skinId: PlayerSkinId = 'classic'): void {
+    const { ctx } = this;
+    const skin = PLAYER_SKINS[skinId] ?? PLAYER_SKINS.classic;
+    const T = PHASE_FX_DURATION;
+    const t = Math.min(1, fx.age / T);
+    const w = 32;
+    const h = fx.playerH;
+
+    const x0 = px(fx.fromX - cameraX);
+    const y0 = px(fx.fromY);
+    const x1 = px(fx.toX - cameraX);
+    const y1 = px(fx.toY);
+
+    const pre = Math.max(0, 1 - t / 0.18);
+    if (pre > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.38 * pre;
+      const cx = x0 + w / 2;
+      const cy = y0 + h / 2;
+      const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, w * 0.85);
+      g.addColorStop(0, 'rgba(200,255,255,0.95)');
+      g.addColorStop(0.45, 'rgba(120,220,255,0.35)');
+      g.addColorStop(1, 'rgba(80,160,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x0 - 10, y0 - 10, w + 20, h + 20);
+      ctx.restore();
+    }
+
+    const slideStart = 0.06;
+    const slideT = Math.max(0, Math.min(1, (t - slideStart) / 0.42));
+    const ease = slideT * slideT * (3 - 2 * slideT);
+
+    const cx0 = x0 + w / 2;
+    const cy0 = y0 + h / 2;
+    const cx1 = x1 + w / 2;
+    const cy1 = y1 + h / 2;
+    ctx.save();
+    const grad = ctx.createLinearGradient(cx0, cy0, cx1, cy1);
+    grad.addColorStop(0, `rgba(90,200,255,${(0.2 * (1 - t * 0.9)).toFixed(2)})`);
+    grad.addColorStop(0.45, `rgba(220,255,255,${(0.42 * (1 - t * 0.75)).toFixed(2)})`);
+    grad.addColorStop(1, `rgba(100,190,255,${(0.14 * (1 - t * 0.9)).toFixed(2)})`);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = px(Math.max(5, h * 0.38));
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx0, cy0);
+    ctx.lineTo(cx1, cy1);
+    ctx.stroke();
+    ctx.restore();
+
+    for (let i = 0; i < 4; i++) {
+      const u = ease * (i / 3) * 0.94;
+      const gx = px(fx.fromX - cameraX + (fx.toX - fx.fromX) * u);
+      const gy = px(fx.fromY + (fx.toY - fx.fromY) * u);
+      const ga = 0.24 * (1 - i * 0.17) * (1 - t * 0.72);
+      if (ga <= 0.02) continue;
+      ctx.save();
+      ctx.globalAlpha = ga;
+      ctx.fillStyle = skin.dark;
+      ctx.fillRect(gx, gy, w, h);
+      ctx.fillStyle = skin.body;
+      ctx.fillRect(gx + 2, gy + 2, w - 4, h - 4);
+      ctx.restore();
+    }
+
+    const arrive = Math.max(0, (t - 0.48) / 0.52);
+    if (arrive > 0 && arrive <= 1) {
+      ctx.save();
+      ctx.globalAlpha = (1 - arrive) * 0.88;
+      const ring = px(10 + arrive * 40);
+      ctx.strokeStyle = '#c4ffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x1 + w / 2, y1 + h / 2, ring, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (t > 0.38 && t < 0.92) {
+      const seed = fx.fromX + fx.toX;
+      for (let i = 0; i < 7; i++) {
+        const ang = (i / 7) * Math.PI * 2 + seed * 0.002;
+        const dist = px(8 + (t - 0.38) * 34 + i * 2);
+        const px2 = x1 + w / 2 + Math.cos(ang) * dist;
+        const py2 = y1 + h / 2 + Math.sin(ang) * dist * 0.4;
+        ctx.fillStyle = `rgba(200,255,255,${(0.45 * (1 - t * 0.65)).toFixed(2)})`;
+        ctx.fillRect(px(px2), px(py2), px(3), px(3));
+      }
+    }
+  }
+
+  drawPhaseDeny(fx: PhaseDenyFxState, cameraX: number): void {
+    const { ctx } = this;
+    const u = Math.min(1, fx.age / PHASE_DENY_FX_DURATION);
+    const a = (1 - u) * 0.55;
+    if (a < 0.03) return;
+    const x = px(fx.x - cameraX);
+    const y = px(fx.y);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = 'rgba(160,200,220,0.85)';
+    ctx.lineWidth = 2;
+    const s = px(10 + (1 - u) * 8);
+    ctx.beginPath();
+    ctx.moveTo(x - s, y - s);
+    ctx.lineTo(x + s, y + s);
+    ctx.moveTo(x + s, y - s);
+    ctx.lineTo(x - s, y + s);
+    ctx.stroke();
+    ctx.fillStyle = `rgba(120,200,255,${(a * 0.25).toFixed(2)})`;
+    ctx.beginPath();
+    ctx.arc(x, y, px(6), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 }

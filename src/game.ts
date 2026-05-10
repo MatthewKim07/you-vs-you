@@ -3,6 +3,14 @@ import { buildLevel, LevelData } from './level';
 import { InputHandler } from './input';
 import { Renderer } from './renderer';
 import { Fireball } from './fireball';
+import {
+  resolvePhaseRelocation,
+  PHASE_FX_DURATION,
+  PHASE_DENY_FX_DURATION,
+  type PhaseFxState,
+  type PhaseDenyFxState,
+  type PhaseDebugInfo,
+} from './phase';
 import { RunTracker } from './runTracker';
 import { DebugPanel } from './debugPanel';
 import { GameState, Obstacle } from './types';
@@ -253,6 +261,9 @@ export class Game {
   private invincibleUntilMs: number | null = null;
   private fireball: Fireball | null = null;
   private fireballUsed = false;
+  private phaseUsed = false;
+  private phaseFx: PhaseFxState | null = null;
+  private phaseDenyFx: PhaseDenyFxState | null = null;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
@@ -487,7 +498,9 @@ export class Game {
     if (this.equippedAbility && isLevels && inGame) {
       const meta = ABILITY_CATALOG.find((a) => a.id === this.equippedAbility);
       const label = meta?.label ?? '';
-      const used = this.fireballUsed && this.equippedAbility === 'fireball';
+      const used =
+        (this.fireballUsed && this.equippedAbility === 'fireball') ||
+        (this.phaseUsed && this.equippedAbility === 'phase');
       const statusClass = used ? 'ability-hud-status--used' : 'ability-hud-status--ready';
       const statusText = used ? 'Used' : 'Ready';
       this.abilityHudBadge.innerHTML = `<span class="ability-hud-inner"><span class="ability-hud-key">[${ABILITY_KEYBIND}]</span><span class="ability-hud-name">${label}</span><span class="ability-hud-status ${statusClass}">${statusText}</span></span>`;
@@ -522,6 +535,9 @@ export class Game {
     this.invincibleUntilMs = null;
     this.fireball = null;
     this.fireballUsed = false;
+    this.phaseUsed = false;
+    this.phaseFx = null;
+    this.phaseDenyFx = null;
     this.countdownSec = startMode === 'countdown' ? START_COUNTDOWN_SECS : 0;
     this.lastCountdownAnnounced = null;
     this.syncUiVisibility();
@@ -560,6 +576,9 @@ export class Game {
     this.invincibleUntilMs = null;
     this.fireball = null;
     this.fireballUsed = false;
+    this.phaseUsed = false;
+    this.phaseFx = null;
+    this.phaseDenyFx = null;
     this.hasSpawnedPlayer = true;
     this.resetFrameTracking();
     this.tracker.startRun(this.levelIndex, this.attempts, this.level.obstacles, {
@@ -2177,7 +2196,9 @@ export class Game {
     const prevLeft = playerLeft;
     const prevRight = playerRight;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
-    player.update(dt, effectiveFloor ?? this.level.groundY, effectiveFloor !== null);
+    player.update(dt, effectiveFloor ?? this.level.groundY, effectiveFloor !== null, {
+      freezeVertical: false,
+    });
     this.resolvePlatformTopCollision(prevBottom);
     this.resolveSolidPlatformHeadCollision(prevTop);
     this.resolvePlatformSideCollision(prevLeft, prevRight);
@@ -2320,6 +2341,15 @@ export class Game {
       this.activateEquippedAbility();
     }
 
+    if (this.phaseFx) {
+      this.phaseFx.age += dt;
+      if (this.phaseFx.age >= PHASE_FX_DURATION) this.phaseFx = null;
+    }
+    if (this.phaseDenyFx) {
+      this.phaseDenyFx.age += dt;
+      if (this.phaseDenyFx.age >= PHASE_DENY_FX_DURATION) this.phaseDenyFx = null;
+    }
+
     // Update fireball (Level Mode only — already gated at activation)
     this.updateFireball(dt);
 
@@ -2334,7 +2364,9 @@ export class Game {
     const prevLeft = playerLeft;
     const prevRight = playerRight;
     const effectiveFloor = this.getEffectiveFloor(playerLeft, playerRight, playerBottom, player.vel.y);
-    player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null);
+    player.update(dt, effectiveFloor ?? level.groundY, effectiveFloor !== null, {
+      freezeVertical: this.phaseFx !== null,
+    });
     this.resolvePlatformTopCollision(prevBottom);
     this.resolveSolidPlatformHeadCollision(prevTop);
     this.resolvePlatformSideCollision(prevLeft, prevRight);
@@ -3437,8 +3469,132 @@ export class Game {
       const cy = this.player.pos.y + this.player.height * 0.45; // mid-torso height
       this.fireball = new Fireball(cx, cy);
       this.updateAbilityHudBadge();
+    } else if (this.equippedAbility === 'phase') {
+      this.tryActivatePhase();
     }
-    // Other abilities: not yet implemented
+  }
+
+  private hazardsWouldKillAt(px: number, pyTop: number): boolean {
+    const ox = this.player.pos.x;
+    const oy = this.player.pos.y;
+    this.player.pos.x = px;
+    this.player.pos.y = pyTop;
+    const dead =
+      this.hitSpike() ||
+      this.hitPlatformNeedle() ||
+      this.hitLowCeiling() ||
+      this.hitChoiceObstacle() ||
+      this.hitElectricField() ||
+      this.hitCrusherCeiling();
+    this.player.pos.x = ox;
+    this.player.pos.y = oy;
+    return dead;
+  }
+
+  /** Solid AABB overlap for airborne phase destinations (platform slabs + low-ceiling mass). */
+  private playerBodyOverlapsSolid(px: number, pyTop: number, w: number, h: number): boolean {
+    const pl = px + SUPPORT_EDGE_INSET;
+    const pr = px + w - SUPPORT_EDGE_INSET;
+    const pt = pyTop;
+    const pb = pyTop + h;
+    const groundY = this.level.groundY;
+
+    for (const o of this.level.obstacles) {
+      if (o.kind === 'platform' && o.solid) {
+        if (o.fireballDestroyed) continue;
+        if (o.trapType === 'collapsingPlatform' && o.trapState === 'spent') continue;
+        if (o.disappearState === 'invisible') continue;
+        if (o.aiModifier === 'droppingPlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+        if (o.aiModifier === 'crumblePlatform' && (o.aiModState === 'dropping' || o.aiModState === 'invisible')) continue;
+        if (o.aiModifier === 'temporaryBlocker' && o.aiModState === 'active') continue;
+
+        const ox = o.currentX ?? o.x;
+        const ow = o.currentWidth ?? o.width;
+        const oh = o.currentHeight ?? o.height;
+        const platformTop = groundY - oh;
+        const platformBottom = platformTop + 16;
+        const xOverlap = pr > ox && pl < ox + ow;
+        const yOverlap = pb > platformTop && pt < platformBottom;
+        if (xOverlap && yOverlap) return true;
+      }
+
+      if (o.kind === 'lowCeiling' && !o.fireballDestroyed) {
+        const cx = o.currentX ?? o.x;
+        const cw = o.currentWidth ?? o.width;
+        const ch = o.currentHeight ?? o.height;
+        const slabTop = groundY - ch - LOW_CEILING_THICKNESS;
+        const slabBottom = groundY - ch;
+        const xOverlap = pr > cx && pl < cx + cw;
+        const yOverlap = pb > slabTop && pt < slabBottom;
+        if (xOverlap && yOverlap) return true;
+      }
+    }
+    return false;
+  }
+
+  private tryActivatePhase() {
+    if (this.phaseUsed) return;
+    const p = this.player;
+    const fromX = p.pos.x;
+    const fromY = p.pos.y;
+    const airborne = !p.onGround;
+    const debugInfo: PhaseDebugInfo = {
+      reason: 'noCandidates',
+      candidateCount: 0,
+      candidateKinds: [],
+      candidateAttempts: [],
+      airborne,
+      playerX: p.pos.x,
+      playerY: p.pos.y,
+      playerOnGround: p.onGround,
+    };
+    const res = resolvePhaseRelocation(
+      this.level.obstacles,
+      this.level.groundY,
+      this.level.flagX,
+      this.level.worldWidth,
+      p.pos.x,
+      p.pos.y,
+      p.width,
+      p.height,
+      p.pos.x + p.width,
+      airborne,
+      (pl, pr, pb, vy) => this.getEffectiveFloor(pl, pr, pb, vy),
+      (px, pyTop) => this.hazardsWouldKillAt(px, pyTop),
+      (px, pyTop, w, h) => this.playerBodyOverlapsSolid(px, pyTop, w, h),
+      p.getHorizontalSpeed(),
+      debugInfo,
+    );
+    this.debugPanel.setLastPhaseDebug(debugInfo);
+    if (!res) {
+      this.phaseDenyFx = {
+        age: 0,
+        x: fromX + p.width / 2,
+        y: fromY + p.height / 2,
+      };
+      this.audio.playPhaseDenied();
+      return;
+    }
+    this.phaseUsed = true;
+    p.pos.x = res.x;
+    p.pos.y = res.y;
+    if (!airborne) {
+      p.vel.y = 0;
+      p.onGround = true;
+    } else {
+      p.onGround = false;
+    }
+    this.phaseFx = {
+      age: 0,
+      fromX,
+      fromY,
+      toX: res.x,
+      toY: res.y,
+      playerH: p.height,
+      crouch: p.isCrouching,
+    };
+    this.audio.playPhase();
+    this.updateAbilityHudBadge();
   }
 
   private updateFireball(dt: number) {
@@ -3465,6 +3621,12 @@ export class Game {
     if (this.hasSpawnedPlayer) {
       const isInvincible = this.invincibleUntilMs !== null && performance.now() < this.invincibleUntilMs;
       this.renderer.drawPlayer(this.player, this.cameraX, this.state === 'dead', this.equippedSkin, isInvincible);
+      if (this.phaseFx) {
+        this.renderer.drawPhaseEffect(this.phaseFx, this.cameraX, this.equippedSkin);
+      }
+      if (this.phaseDenyFx) {
+        this.renderer.drawPhaseDeny(this.phaseDenyFx, this.cameraX);
+      }
     }
     // Draw fireball + hit effect (Level Mode only — fireball is null during infinite)
     if (this.fireball) {
@@ -3487,7 +3649,9 @@ export class Game {
         const abilityMeta = this.equippedAbility
           ? ABILITY_CATALOG.find((a) => a.id === this.equippedAbility)
           : undefined;
-        const abilityUsed = this.fireballUsed && this.equippedAbility === 'fireball';
+        const abilityUsed =
+          (this.fireballUsed && this.equippedAbility === 'fireball') ||
+          (this.phaseUsed && this.equippedAbility === 'phase');
         this.renderer.drawHUD(
           this.player.pos.x,
           this.level.flagX,

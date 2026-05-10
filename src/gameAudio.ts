@@ -309,6 +309,23 @@ export class GameAudio {
     this.tone(t + 0.03, 840, 0.04, 0.06, 'triangle');
   }
 
+  /** Phase ability — short whoosh + bright blip */
+  playPhase(): void {
+    const t = this.now();
+    if (t === null) return;
+    this.slide(t, 880, 2200, 0.08, 0.09, 'triangle');
+    this.tone(t + 0.05, 2400, 0.04, 0.06, 'sine');
+    this.tone(t + 0.07, 1800, 0.03, 0.05, 'triangle');
+  }
+
+  /** Phase failed — no valid obstacle ahead */
+  playPhaseDenied(): void {
+    const t = this.now();
+    if (t === null) return;
+    this.tone(t, 180, 0.05, 0.06, 'square');
+    this.tone(t + 0.04, 120, 0.06, 0.05, 'triangle');
+  }
+
   playDeath(): void {
     const t = this.now();
     if (t === null) return;

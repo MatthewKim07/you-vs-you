@@ -21,6 +21,11 @@ export class Player {
     return this.currentHeight;
   }
 
+  /** Used by phase / fairness probes so reaction distance matches actual auto-scroll speed. */
+  getHorizontalSpeed(): number {
+    return MOVE_SPEED * this.speedMultiplier;
+  }
+
   constructor(x: number, y: number) {
     this.pos = { x, y };
     this.vel = { x: MOVE_SPEED * this.speedMultiplier, y: 0 };
@@ -72,10 +77,20 @@ export class Player {
   }
 
   // onSolidGround: false when player is over a gap — skip floor collision
-  update(dt: number, groundY: number, onSolidGround: boolean) {
-    this.vel.y += GRAVITY * dt;
+  update(
+    dt: number,
+    groundY: number,
+    onSolidGround: boolean,
+    opts?: { freezeVertical?: boolean },
+  ) {
     this.vel.x = MOVE_SPEED * this.speedMultiplier;
     this.pos.x += this.vel.x * dt;
+
+    if (opts?.freezeVertical) {
+      return;
+    }
+
+    this.vel.y += GRAVITY * dt;
     this.pos.y += this.vel.y * dt;
 
     if (onSolidGround) {
