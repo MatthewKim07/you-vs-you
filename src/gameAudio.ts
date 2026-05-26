@@ -1,42 +1,341 @@
+import * as Tone from 'tone';
+
 type Wave = OscillatorType;
+type N = string | null;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+// ============================================================================
+// Track Definitions — original compositions, public domain intent
+// 8th-note grid: 16 bars × 8 steps = 128 elements per track. null = rest.
+// ============================================================================
+
+// ---- GAME TRACK 1: "Sprint!" — G major, 144 BPM ----
+// Energetic platformer theme, arpeggiated melodies, bouncy bass.
+const G1_LEAD: N[] = [
+  // Phrase A (bars 1–4): G major arpeggios
+  "G5","B5","D6","G6","F#6","D6","B5","G5",
+  "A5","C6","E6","A6","G6","E6","C6","A5",
+  "B5","D6","G6","B6","A6","G6","E6","D6",
+  "C6","B5","A5","G5","F#5","E5","D5",null,
+  // Phrase A' (bars 5–8): scale runs
+  "G4","A4","B4","C5","D5","E5","F#5","G5",
+  "A5","G5","F#5","E5","D5","C5","B4","A4",
+  "G4","B4","D5","G5","B5","D6","G6","B6",
+  "D7","B6","G6","D6","B5","G5","D5",null,
+  // Phrase B (bars 9–12): bridge
+  "E6","D6","C6","B5","A5","G5","F#5","E5",
+  "D5","E5","F#5","G5","A5","B5","C6","D6",
+  "G6","F#6","E6","D6","C6","B5","A5","G5",
+  "F#5","E5","D5","C5","B4","A4","G4",null,
+  // Return (bars 13–16)
+  "G5","B5","D6","G6","F#6","D6","B5","G5",
+  "A5","C6","E6","A6","G6","E6","C6","A5",
+  "G5","B5","D6","G6","B6","G6","D6","B5",
+  "G5",null,"G5",null,"G6",null,null,null,
+];
+
+const G1_BASS: N[] = [
+  "G3",null,"D3",null,"G3",null,"D3",null,
+  "A3",null,"E3",null,"A3",null,"E3",null,
+  "G3",null,"D3",null,"G3",null,"B3",null,
+  "C3",null,"G3",null,"G2",null,null,null,
+  "G3",null,"D3",null,"G3",null,"D3",null,
+  "A2",null,"D3",null,"A2",null,"D3",null,
+  "G3",null,"D3",null,"G3",null,"D3",null,
+  "G2",null,"D3",null,"G2",null,null,null,
+  "E3",null,"B3",null,"E3",null,"B3",null,
+  "D3",null,"A3",null,"D3",null,"A3",null,
+  "G3",null,"D3",null,"G3",null,"E3",null,
+  "D3",null,"A2",null,"G2",null,null,null,
+  "G3",null,"D3",null,"G3",null,"D3",null,
+  "A3",null,"E3",null,"A3",null,"E3",null,
+  "G3",null,"D3",null,"B3",null,"D4",null,
+  "G2",null,"G3",null,"G2",null,null,null,
+];
+
+function rep<T>(arr: T[], n: number): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < n; i++) out.push(...arr);
+  return out;
+}
+
+const G1_KICK  = rep(["C1",null,null,null,"C1",null,null,null] as N[], 16);
+const G1_SNARE = rep([null,null,"C2",null,null,null,"C2",null] as N[], 16);
+const G1_HIHAT = rep(["C4",null,"C4",null,"C4",null,"C4",null] as N[], 16);
+
+// ---- GAME TRACK 2: "Dungeon Run" — D minor, 136 BPM ----
+// Darker, driving, minor key urgency.
+const G2_LEAD: N[] = [
+  "D5","F5","A5","D6","C6","A5","F5","D5",
+  "F5","G5","A5","C6","A5","G5","F5","E5",
+  "D5","A4","D5","F5","G5","A5","C6","D6",
+  "A5","F5","D5",null,null,null,null,null,
+  "D6","C6","A5","G5","F5","E5","D5","C5",
+  "A4","C5","D5","F5","G5","A5","G5","F5",
+  "D5","F5","G5","A5","C6","D6","C6","A5",
+  "G5","F5","E5","D5",null,null,null,null,
+  "F5","G5","A5",null,"C6",null,"D6",null,
+  "A5","G5","F5",null,"E5",null,"D5",null,
+  "C5","D5","E5","F5","G5","A5",null,null,
+  "D5",null,null,null,"D4",null,null,null,
+  "D5","F5","A5","D6","C6","A5","F5","D5",
+  "F5","A5","C6","F6","E6","C6","A5","F5",
+  "D5","F5","A5","D6","F6","A6","F6","D6",
+  "A5","F5","D5",null,"D4",null,null,null,
+];
+
+const G2_BASS: N[] = [
+  "D3",null,"A3",null,"D3",null,"A3",null,
+  "F3",null,"C3",null,"F3",null,"A3",null,
+  "G3",null,"D3",null,"G3",null,"A3",null,
+  "A3",null,null,null,"D2",null,null,null,
+  "D3",null,"A3",null,"D3",null,"A3",null,
+  "A2",null,"D3",null,"A2",null,"F3",null,
+  "G3",null,"D3",null,"G3",null,"A3",null,
+  "D3",null,null,null,"D2",null,null,null,
+  "F3",null,"C3",null,"F3",null,"C3",null,
+  "A3",null,"E3",null,"A3",null,"E3",null,
+  "C3",null,"G2",null,"C3",null,"G2",null,
+  "D3",null,null,null,"D2",null,null,null,
+  "D3",null,"A3",null,"D3",null,"A3",null,
+  "F3",null,"C3",null,"F3",null,"A3",null,
+  "G3",null,"D3",null,"G3",null,"A3",null,
+  "D2",null,"A2",null,"D2",null,null,null,
+];
+
+const G2_KICK  = rep(["C1",null,null,null,null,null,"C1",null] as N[], 16);
+const G2_SNARE = rep([null,null,"C2",null,null,null,"C2",null] as N[], 16);
+const G2_HIHAT = rep(["C4","C4","C4","C4","C4","C4","C4","C4"] as N[], 16);
+
+// ---- GAME TRACK 3: "Starfield" — E major, 152 BPM ----
+// Fast, electric, ascending energy.
+const G3_LEAD: N[] = [
+  "E5","G#5","B5","E6","D#6","B5","G#5","E5",
+  "F#5","A5","C#6","F#6","E6","C#6","A5","F#5",
+  "G#5","B5","E6","G#6","F#6","E6","C#6","B5",
+  "A5","B5","C#6","E6","B5","A5","G#5",null,
+  "E6","D#6","C#6","B5","A5","G#5","F#5","E5",
+  "F#5","G#5","A5","B5","C#6","D#6","E6","F#6",
+  "G#6","F#6","E6","D#6","C#6","B5","A5","G#5",
+  "F#5","E5","B4","E5","B5","E6",null,null,
+  "C#6","B5","A5","G#5","F#5","E5","D#5","C#5",
+  "B4","C#5","D#5","E5","F#5","G#5","A5","B5",
+  "C#6","E6","G#6",null,"B5","G#5","E5",null,
+  "F#5","G#5","A5","B5","E5",null,null,null,
+  "E5","G#5","B5","E6","D#6","B5","G#5","E5",
+  "F#5","A5","C#6","F#6","E6","C#6","A5","F#5",
+  "E5","G#5","B5","E6","G#6","B6","E7",null,
+  "B6","G#6","E6","B5","G#5","E5",null,null,
+];
+
+const G3_BASS: N[] = [
+  "E3",null,"B3",null,"E3",null,"B3",null,
+  "F#3",null,"C#3",null,"F#3",null,"A3",null,
+  "G#3",null,"D#3",null,"G#3",null,"B3",null,
+  "A3",null,"E3",null,"B2",null,null,null,
+  "E3",null,"B3",null,"E3",null,"B3",null,
+  "F#3",null,"C#3",null,"F#3",null,"C#4",null,
+  "G#3",null,"D#3",null,"G#3",null,"D#4",null,
+  "B3",null,"E3",null,"B2",null,null,null,
+  "C#3",null,"G#3",null,"C#3",null,"G#3",null,
+  "B2",null,"F#3",null,"B2",null,"F#3",null,
+  "G#3",null,"C#3",null,"G#3",null,"C#4",null,
+  "F#3",null,"B2",null,"E2",null,null,null,
+  "E3",null,"B3",null,"E3",null,"B3",null,
+  "F#3",null,"C#3",null,"F#3",null,"A3",null,
+  "E3",null,"B2",null,"E3",null,"B3",null,
+  "E2",null,"B2",null,"E2",null,null,null,
+];
+
+const G3_KICK  = rep(["C1",null,"C1",null,"C1",null,"C1",null] as N[], 16);
+const G3_SNARE = rep([null,null,"C2",null,null,null,"C2",null] as N[], 16);
+const G3_HIHAT = rep(["C4","C4","C4","C4","C4","C4","C4","C4"] as N[], 16);
+
+// ---- MENU TRACK 1: "Sunrise Plains" — C major, 108 BPM ----
+// Warm, flowing, welcoming. Mario World-ish calm energy.
+const M1_LEAD: N[] = [
+  "C5","E5","G5",null,"A5","G5","E5",null,
+  "F5",null,"A5",null,"C6",null,"E6",null,
+  "D5","F5","A5",null,"G5","E5","D5",null,
+  "C5","D5","E5","F5","G5",null,null,null,
+  "G5","A5","B5",null,"C6","B5","A5",null,
+  "G5","F5","E5",null,"D5","C5","B4",null,
+  "C5","E5","G5","C6","B5","A5","G5","F5",
+  "E5","D5","C5",null,null,null,null,null,
+  "A4","C5","E5","A5","G5","E5","C5","A4",
+  "F4","A4","C5","F5","E5","D5","C5","B4",
+  "C5","E5","G5","C6","E6","D6","C6","B5",
+  "A5","G5","F5","E5","D5","C5",null,null,
+  "C5","E5","G5",null,"A5","G5","E5",null,
+  "F5",null,"A5",null,"C6",null,"A5",null,
+  "G5","E5","D5","C5","B4","G4","A4","B4",
+  "C5",null,null,null,"C5",null,null,null,
+];
+
+const M1_BASS: N[] = [
+  "C3",null,null,null,"G3",null,null,null,
+  "F3",null,null,null,"C3",null,null,null,
+  "A3",null,null,null,"E3",null,null,null,
+  "G3",null,null,null,"G2",null,null,null,
+  "G3",null,null,null,"D3",null,null,null,
+  "G3",null,null,null,"G2",null,null,null,
+  "C3",null,null,null,"G2",null,null,null,
+  "G2",null,null,null,null,null,null,null,
+  "A2",null,null,null,"E3",null,null,null,
+  "F2",null,null,null,"C3",null,null,null,
+  "C3",null,null,null,"G3",null,null,null,
+  "A2",null,null,null,"G2",null,null,null,
+  "C3",null,null,null,"G3",null,null,null,
+  "F2",null,null,null,"C3",null,null,null,
+  "G2",null,null,null,"D3",null,null,null,
+  "C2",null,null,null,null,null,null,null,
+];
+
+// ---- MENU TRACK 2: "Wandering" — A minor, 84 BPM ----
+// Sparse, ambient, Minecraft-ish. Space between notes is part of the melody.
+const M2_LEAD: N[] = [
+  "A4",null,null,null,"C5",null,null,null,
+  "E5",null,null,null,"D5",null,null,null,
+  null,null,"A5",null,null,null,"G5",null,
+  "E5",null,null,null,"A4",null,null,null,
+  "C5",null,"E5",null,"G5",null,"A5",null,
+  "E5",null,"D5",null,"C5",null,null,null,
+  "A4",null,"C5",null,"E5",null,"G5",null,
+  "A5",null,null,null,null,null,null,null,
+  "E5",null,null,null,"C5",null,null,null,
+  "A4",null,"G4",null,null,null,null,null,
+  "D5",null,null,null,"A4",null,null,null,
+  "E5",null,null,null,"A3",null,null,null,
+  "A4",null,null,null,"C5",null,null,null,
+  "E5",null,"G5",null,"A5",null,null,null,
+  "G5",null,"E5",null,"C5",null,"A4",null,
+  "E4",null,null,null,null,null,null,null,
+];
+
+const M2_BASS: N[] = [
+  "A2",null,null,null,null,null,null,null,
+  "E3",null,null,null,null,null,null,null,
+  null,null,null,null,"A2",null,null,null,
+  "E2",null,null,null,null,null,null,null,
+  "A2",null,null,null,"E3",null,null,null,
+  "G2",null,null,null,"C3",null,null,null,
+  "A2",null,null,null,"E2",null,null,null,
+  "A1",null,null,null,null,null,null,null,
+  "E2",null,null,null,"C3",null,null,null,
+  "A2",null,null,null,null,null,null,null,
+  "D2",null,null,null,"A2",null,null,null,
+  "E2",null,null,null,null,null,null,null,
+  "A2",null,null,null,null,null,null,null,
+  "E2",null,null,null,"G2",null,null,null,
+  "C2",null,null,null,"G2",null,null,null,
+  "A1",null,null,null,null,null,null,null,
+];
+
+// ============================================================================
+
+type SimpleWave = 'sine' | 'triangle' | 'square' | 'sawtooth';
+
+interface TrackDef {
+  lead: N[];
+  bass: N[];
+  kick?: N[];
+  snare?: N[];
+  hihat?: N[];
+  bpm: number;
+  bars: number;
+  leadWave: SimpleWave;
+  leadDur: string;
+  bassDur: string;
+  reverbDecay: number;
+  reverbWet: number;
+  leadVol: number;
+  bassVol: number;
+  drumVol: number;
+}
+
+const MENU_TRACKS: TrackDef[] = [
+  {
+    lead: M1_LEAD, bass: M1_BASS, bpm: 108, bars: 16,
+    leadWave: 'triangle', leadDur: '4n', bassDur: '2n',
+    reverbDecay: 1.0, reverbWet: 0.35,
+    leadVol: 0.40, bassVol: 0.22, drumVol: 0,
+  },
+  {
+    lead: M2_LEAD, bass: M2_BASS, bpm: 84, bars: 16,
+    leadWave: 'sine', leadDur: '2n', bassDur: '1n',
+    reverbDecay: 1.8, reverbWet: 0.55,
+    leadVol: 0.38, bassVol: 0.18, drumVol: 0,
+  },
+];
+
+const GAME_TRACKS: TrackDef[] = [
+  {
+    lead: G1_LEAD, bass: G1_BASS, kick: G1_KICK, snare: G1_SNARE, hihat: G1_HIHAT,
+    bpm: 144, bars: 16,
+    leadWave: 'square', leadDur: '8n', bassDur: '4n',
+    reverbDecay: 0.3, reverbWet: 0.18,
+    leadVol: 0.35, bassVol: 0.26, drumVol: 0.20,
+  },
+  {
+    lead: G2_LEAD, bass: G2_BASS, kick: G2_KICK, snare: G2_SNARE, hihat: G2_HIHAT,
+    bpm: 136, bars: 16,
+    leadWave: 'square', leadDur: '8n', bassDur: '4n',
+    reverbDecay: 0.4, reverbWet: 0.22,
+    leadVol: 0.32, bassVol: 0.28, drumVol: 0.22,
+  },
+  {
+    lead: G3_LEAD, bass: G3_BASS, kick: G3_KICK, snare: G3_SNARE, hihat: G3_HIHAT,
+    bpm: 152, bars: 16,
+    leadWave: 'square', leadDur: '8n', bassDur: '4n',
+    reverbDecay: 0.25, reverbWet: 0.15,
+    leadVol: 0.36, bassVol: 0.24, drumVol: 0.18,
+  },
+];
+
+// ============================================================================
+
 export class GameAudio {
-  private ctx: AudioContext | null = null;
   private enabled = true;
   private masterGain = 0.18;
   private lastTrapCueAt = 0;
   private trapCueCooldownSec = 0.07;
-
-  private musicGain: GainNode | null = null;
-  private musicMode: 'none' | 'menu' | 'gameplay' = 'none';
-  private musicTimer: number | null = null;
-  private nextNoteAt = 0;
-  private musicStep = 0;
-  private bpm = 120;
   private musicVolume = 0.55;
+  private musicMode: 'none' | 'menu' | 'gameplay' = 'none';
+  private musicMuted = false;
+
+  // Tone.js music state
+  private toneReady = false;
+  private toneMasterGain: Tone.Gain | null = null;
+  private activeSeqs: Tone.Sequence[] = [];
+  private activeNodes: Tone.ToneAudioNode[] = [];
+  private trackTimer: number | null = null;
+  private menuTrackIdx = -1;
+  private gameTrackIdx = -1;
+
+  // Raw Web Audio API context for SFX (shared with Tone.js after unlock)
+  private ctx: AudioContext | null = null;
 
   unlock(): void {
     if (!this.enabled) return;
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    if (ctx.state === 'suspended') {
-      void ctx.resume();
-    }
+    void Tone.start().then(() => {
+      this.toneReady = true;
+      this.ctx = Tone.getContext().rawContext as AudioContext;
+      if (this.musicMode !== 'none' && !this.musicMuted) {
+        this.launchTrack();
+      }
+    });
   }
 
   isUnlocked(): boolean {
-    return this.ctx !== null;
+    return this.toneReady;
   }
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    if (!enabled) {
-      this.stopMusic();
-    }
+    if (!enabled) this.stopMusic();
   }
 
   setSfxVolume(volume01: number): void {
@@ -48,14 +347,11 @@ export class GameAudio {
   }
 
   setMusicVolume(volume01: number): void {
-    const normalized = clamp01(volume01);
-    this.musicVolume = Math.max(0.0001, normalized);
-    if (!this.musicGain || !this.ctx) return;
-    if (this.musicMode === 'none') return;
-    const now = this.ctx.currentTime;
-    this.musicGain.gain.cancelScheduledValues(now);
-    this.musicGain.gain.setValueAtTime(Math.max(0.0001, this.musicGain.gain.value), now);
-    this.musicGain.gain.exponentialRampToValueAtTime(this.musicVolume, now + 0.08);
+    const v = Math.max(0.0001, clamp01(volume01));
+    this.musicVolume = v;
+    if (this.toneMasterGain && !this.musicMuted) {
+      this.toneMasterGain.gain.rampTo(v, 0.08);
+    }
   }
 
   getMusicVolume(): number {
@@ -64,201 +360,182 @@ export class GameAudio {
 
   startMenuMusic(): void {
     if (!this.enabled) return;
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    if (!this.musicGain) this.musicGain = ctx.createGain();
-    this.musicGain.connect(ctx.destination);
-    this.musicGain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    this.setMusicMode('menu');
-    this.setMusicMuted(false);
+    const wasPlaying = this.musicMode === 'menu';
+    this.musicMode = 'menu';
+    this.musicMuted = false;
+    if (this.toneReady && !wasPlaying) this.launchTrack();
+    if (this.toneReady && wasPlaying) this.setToneMuted(false);
   }
 
   startGameplayMusic(): void {
     if (!this.enabled) return;
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    if (!this.musicGain) this.musicGain = ctx.createGain();
-    this.musicGain.connect(ctx.destination);
-    this.musicGain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    this.setMusicMode('gameplay');
-    this.setMusicMuted(false);
+    this.musicMode = 'gameplay';
+    this.musicMuted = false;
+    if (this.toneReady) this.launchTrack();
   }
 
   stopMusic(): void {
-    const ctx = this.ctx;
-    if (!ctx) return;
-    if (this.musicTimer !== null) {
-      window.clearInterval(this.musicTimer);
-      this.musicTimer = null;
-    }
     this.musicMode = 'none';
-    if (this.musicGain) {
-      const now = ctx.currentTime;
-      this.musicGain.gain.cancelScheduledValues(now);
-      this.musicGain.gain.setValueAtTime(Math.max(0.0001, this.musicGain.gain.value), now);
-      this.musicGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-    }
+    this.disposeActiveTrack();
+    this.setToneMuted(true);
   }
 
   setPaused(paused: boolean): void {
-    this.setMusicMuted(paused);
+    this.musicMuted = paused;
+    this.setToneMuted(paused);
   }
 
-  private setMusicMuted(muted: boolean): void {
-    const ctx = this.ctx;
-    if (!ctx || !this.musicGain) return;
-    const now = ctx.currentTime;
-    const target = muted ? 0.0001 : this.musicVolume;
-    this.musicGain.gain.cancelScheduledValues(now);
-    this.musicGain.gain.setValueAtTime(Math.max(0.0001, this.musicGain.gain.value), now);
-    this.musicGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, target), now + 0.08);
+  private setToneMuted(muted: boolean): void {
+    if (!this.toneMasterGain) return;
+    const target = muted ? 0.0001 : Math.max(0.0001, this.musicVolume);
+    this.toneMasterGain.gain.rampTo(target, 0.08);
   }
 
-  private setMusicMode(mode: 'menu' | 'gameplay'): void {
-    if (this.musicTimer !== null) {
-      window.clearInterval(this.musicTimer);
-      this.musicTimer = null;
+  private launchTrack(): void {
+    this.disposeActiveTrack();
+
+    if (!this.toneMasterGain) {
+      this.toneMasterGain = new Tone.Gain(0.0001).toDestination();
     }
-    this.musicMode = mode;
-    this.musicStep = 0;
-    this.nextNoteAt = 0;
 
-    if (mode === 'menu') {
-      this.bpm = 112;
-      this.musicVolume = 0.45;
+    const playlist = this.musicMode === 'menu' ? MENU_TRACKS : GAME_TRACKS;
+    if (this.musicMode === 'menu') {
+      this.menuTrackIdx = (this.menuTrackIdx + 1) % playlist.length;
     } else {
-      this.bpm = 128;
-      this.musicVolume = 0.55;
+      this.gameTrackIdx = (this.gameTrackIdx + 1) % playlist.length;
+    }
+    const idx = this.musicMode === 'menu' ? this.menuTrackIdx : this.gameTrackIdx;
+    const t = playlist[idx];
+
+    Tone.getTransport().bpm.value = t.bpm;
+
+    // Effects
+    const reverb = new Tone.Reverb({ decay: t.reverbDecay, wet: t.reverbWet });
+    this.activeNodes.push(reverb);
+
+    // Lead synth
+    const leadGain = new Tone.Gain(t.leadVol).connect(reverb);
+    reverb.connect(this.toneMasterGain);
+    const leadSynth = new Tone.Synth({
+      oscillator: { type: t.leadWave },
+      envelope: {
+        attack: t.leadWave === 'sine' ? 0.05 : 0.005,
+        decay: 0.15,
+        sustain: t.leadWave === 'sine' ? 0.8 : 0.5,
+        release: t.leadWave === 'sine' ? 0.6 : 0.08,
+      },
+    }).connect(leadGain);
+    this.activeNodes.push(leadGain, leadSynth);
+
+    // Bass synth
+    const bassGain = new Tone.Gain(t.bassVol).connect(this.toneMasterGain);
+    const bassSynth = new Tone.Synth({
+      oscillator: { type: 'triangle' },
+      envelope: {
+        attack: 0.005,
+        decay: 0.2,
+        sustain: t.leadWave === 'sine' ? 0.9 : 0.35,
+        release: t.leadWave === 'sine' ? 0.8 : 0.05,
+      },
+    }).connect(bassGain);
+    this.activeNodes.push(bassGain, bassSynth);
+
+    // Sequences
+    const leadDur = t.leadDur;
+    const bassDur = t.bassDur;
+
+    const leadSeq = new Tone.Sequence(
+      (time, note) => { if (note) leadSynth.triggerAttackRelease(note as string, leadDur, time); },
+      t.lead, '8n',
+    );
+    const bassSeq = new Tone.Sequence(
+      (time, note) => { if (note) bassSynth.triggerAttackRelease(note as string, bassDur, time); },
+      t.bass, '8n',
+    );
+    this.activeSeqs.push(leadSeq, bassSeq);
+
+    // Drums (gameplay tracks only)
+    if (t.kick && t.snare && t.hihat && t.drumVol > 0) {
+      const drumGain = new Tone.Gain(t.drumVol).connect(this.toneMasterGain);
+      this.activeNodes.push(drumGain);
+
+      const kickSynth = new Tone.MembraneSynth({
+        pitchDecay: 0.05, octaves: 6,
+        envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.1 },
+      }).connect(drumGain);
+      const snareSynth = new Tone.NoiseSynth({
+        noise: { type: 'white' },
+        envelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.02 },
+      }).connect(drumGain);
+      const hihatGain = new Tone.Gain(0.4).connect(drumGain);
+      const hihatSynth = new Tone.NoiseSynth({
+        noise: { type: 'white' },
+        envelope: { attack: 0.001, decay: 0.04, sustain: 0, release: 0.005 },
+      }).connect(hihatGain);
+      this.activeNodes.push(kickSynth, snareSynth, hihatSynth, hihatGain);
+
+      const kick = t.kick;
+      const snare = t.snare;
+      const hihat = t.hihat;
+      const kickSeq = new Tone.Sequence(
+        (time, n) => { if (n) kickSynth.triggerAttackRelease('16n', time); },
+        kick, '8n',
+      );
+      const snareSeq = new Tone.Sequence(
+        (time, n) => { if (n) snareSynth.triggerAttackRelease('8n', time); },
+        snare, '8n',
+      );
+      const hihatSeq = new Tone.Sequence(
+        (time, n) => { if (n) hihatSynth.triggerAttackRelease('16n', time); },
+        hihat, '8n',
+      );
+      this.activeSeqs.push(kickSeq, snareSeq, hihatSeq);
     }
 
-    // Clear to silence now; scheduler will fade in.
-    const ctx = this.ctx;
-    if (!ctx) return;
-    if (!this.musicGain) this.musicGain = ctx.createGain();
-    this.musicGain.disconnect();
-    this.musicGain.connect(ctx.destination);
-    this.musicGain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    this.musicGain.gain.exponentialRampToValueAtTime(Math.max(0.0001, this.musicVolume), ctx.currentTime + 0.12);
+    // Reset and start transport
+    const transport = Tone.getTransport();
+    if (transport.state === 'started') transport.stop();
+    transport.cancel(0);
+    transport.position = '0:0:0';
 
-    this.nextNoteAt = ctx.currentTime + 0.04;
+    for (const seq of this.activeSeqs) seq.start(0);
+    transport.start('+0.1');
 
-    this.musicTimer = window.setInterval(() => {
-      // Schedule notes a bit ahead for smooth playback.
-      const lookAheadSec = 0.18;
-      while (this.ctx && this.nextNoteAt < this.ctx.currentTime + lookAheadSec) {
-        this.scheduleMusicNote(this.nextNoteAt, this.musicStep);
-        this.nextNoteAt += this.beatSec() / 2; // 8th-note grid
-        this.musicStep++;
-      }
-    }, 60);
+    // Fade in
+    const targetVol = this.musicMuted ? 0.0001 : Math.max(0.0001, this.musicVolume);
+    this.toneMasterGain.gain.rampTo(targetVol, 0.4);
+
+    // Schedule rotation to next track after 2 full loops
+    const loopMs = (60000 / t.bpm) * 4 * t.bars;
+    this.trackTimer = window.setTimeout(() => {
+      if (this.musicMode !== 'none') this.launchTrack();
+    }, loopMs * 2 - 200);
   }
 
-  private beatSec(): number {
-    return 60 / this.bpm;
-  }
-
-  private scheduleMusicNote(time: number, step: number): void {
-    const ctx = this.ctx;
-    const musicGain = this.musicGain;
-    if (!ctx || !musicGain) return;
-    if (this.musicMode === 'none') return;
-
-    const isMenu = this.musicMode === 'menu';
-    const waveLead: Wave = isMenu ? 'square' : 'square';
-    const waveBass: Wave = isMenu ? 'triangle' : 'triangle';
-
-    // Long loops: 64 eighth-notes.
-    // menu @112 BPM -> ~17.1s, gameplay @128 BPM -> 15.0s.
-    const loopSteps = 64;
-    const stepInLoop = step % loopSteps;
-    const bar = Math.floor(stepInLoop / 8); // 8 eighth-notes per bar
-    const pos = stepInLoop % 8;
-
-    const leadFreq = isMenu
-      ? this.menuLeadNote(bar, pos)
-      : this.gameLeadNote(bar, pos);
-    const bassFreq = isMenu
-      ? this.menuBassNote(bar, pos)
-      : this.gameBassNote(bar, pos);
-
-    // 8th note duration
-    const dur = this.beatSec() / 2 * 0.92;
-    const leadVol = isMenu ? 0.26 : 0.3;
-    const bassVol = isMenu ? 0.12 : 0.14;
-
-    if (leadFreq > 0) {
-      this.chipTone(time, leadFreq, dur, waveLead, leadVol, musicGain);
+  private disposeActiveTrack(): void {
+    if (this.trackTimer !== null) {
+      window.clearTimeout(this.trackTimer);
+      this.trackTimer = null;
     }
-    // Bass: mostly quarter-note pulses plus occasional fills.
-    const bassGate = isMenu ? pos % 2 === 0 : pos % 2 === 0 || (bar % 4 === 3 && pos === 7);
-    if (bassFreq > 0 && bassGate) {
-      this.chipTone(time + this.beatSec() / 16, bassFreq, dur * 1.05, waveBass, bassVol, musicGain);
+    for (const seq of this.activeSeqs) {
+      try { seq.stop(); seq.dispose(); } catch { /* already disposed */ }
     }
+    for (const node of this.activeNodes) {
+      try { node.dispose(); } catch { /* already disposed */ }
+    }
+    this.activeSeqs = [];
+    this.activeNodes = [];
+    const t = Tone.getTransport();
+    if (t.state === 'started') t.stop();
   }
 
-  private menuLeadNote(bar: number, pos: number): number {
-    // C-major flavored menu tune, intentionally relaxed.
-    const a = [0, 659.25, 783.99, 880.0, 783.99, 698.46, 659.25, 523.25];
-    const b = [0, 659.25, 698.46, 783.99, 698.46, 659.25, 587.33, 523.25];
-    const c = [0, 587.33, 659.25, 698.46, 783.99, 698.46, 659.25, 587.33];
-    const d = [0, 523.25, 587.33, 659.25, 698.46, 659.25, 587.33, 523.25];
-    const map = [a, b, a, c, a, b, d, c];
-    return map[bar]?.[pos] ?? 0;
-  }
-
-  private menuBassNote(bar: number, pos: number): number {
-    const roots = [261.63, 293.66, 261.63, 220.0, 261.63, 293.66, 196.0, 220.0];
-    const fifths = [392.0, 440.0, 392.0, 329.63, 392.0, 440.0, 293.66, 329.63];
-    if (pos === 0 || pos === 4) return roots[bar] ?? 0;
-    if (pos === 2 || pos === 6) return fifths[bar] ?? 0;
-    return 0;
-  }
-
-  private gameLeadNote(bar: number, pos: number): number {
-    // Higher-energy gameplay theme; still same tonal family as menu.
-    const p1 = [523.25, 659.25, 783.99, 1046.5, 783.99, 659.25, 587.33, 659.25];
-    const p2 = [587.33, 698.46, 783.99, 1174.66, 783.99, 698.46, 659.25, 587.33];
-    const p3 = [659.25, 783.99, 880.0, 1046.5, 880.0, 783.99, 698.46, 659.25];
-    const p4 = [523.25, 587.33, 659.25, 783.99, 659.25, 587.33, 523.25, 493.88];
-    const map = [p1, p2, p1, p3, p1, p2, p4, p3];
-    return map[bar]?.[pos] ?? 0;
-  }
-
-  private gameBassNote(bar: number, pos: number): number {
-    const roots = [130.81, 146.83, 130.81, 164.81, 130.81, 146.83, 123.47, 164.81];
-    const walk = [196.0, 220.0, 196.0, 246.94, 196.0, 220.0, 185.0, 246.94];
-    if (pos === 0 || pos === 4) return roots[bar] ?? 0;
-    if (pos === 2 || pos === 6) return walk[bar] ?? 0;
-    return 0;
-  }
-
-  private chipTone(
-    time: number,
-    freq: number,
-    duration: number,
-    wave: Wave,
-    volume: number,
-    musicGain: GainNode,
-  ): void {
-    const ctx = this.ctx;
-    if (!ctx) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = wave;
-    osc.frequency.setValueAtTime(freq, time);
-    gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume), time + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
-    osc.connect(gain);
-    gain.connect(musicGain);
-    osc.start(time);
-    osc.stop(time + duration + 0.02);
-  }
+  // ============================================================================
+  // SFX — raw Web Audio API (fast, fire-and-forget)
+  // ============================================================================
 
   playMenuStart(): void {
     const t = this.now();
     if (t === null) return;
-    // A short, recognizable chord.
     this.tone(t, 523.25, 0.07, 0.12, 'square');
     this.tone(t + 0.02, 659.25, 0.07, 0.12, 'square');
     this.tone(t + 0.04, 783.99, 0.07, 0.12, 'square');
@@ -309,7 +586,6 @@ export class GameAudio {
     this.tone(t + 0.03, 840, 0.04, 0.06, 'triangle');
   }
 
-  /** Phase ability — short whoosh + bright blip */
   playPhase(): void {
     const t = this.now();
     if (t === null) return;
@@ -318,7 +594,6 @@ export class GameAudio {
     this.tone(t + 0.07, 1800, 0.03, 0.05, 'triangle');
   }
 
-  /** Phase failed — no valid obstacle ahead */
   playPhaseDenied(): void {
     const t = this.now();
     if (t === null) return;
@@ -387,22 +662,22 @@ export class GameAudio {
     }
   }
 
-  private ensureContext(): AudioContext | null {
-    if (typeof window === 'undefined' || !('AudioContext' in window)) {
-      this.enabled = false;
-      return null;
-    }
-    if (!this.ctx) {
-      this.ctx = new AudioContext();
-    }
-    return this.ctx;
-  }
+  // ============================================================================
+  // SFX internals
+  // ============================================================================
 
   private now(): number | null {
     if (!this.enabled) return null;
-    const ctx = this.ensureContext();
-    if (!ctx) return null;
-    return ctx.currentTime;
+    if (!this.ctx) {
+      // Before Tone.js unlocks, try a raw context for SFX only
+      if (typeof window === 'undefined' || !('AudioContext' in window)) {
+        this.enabled = false;
+        return null;
+      }
+      this.ctx = new AudioContext();
+    }
+    if (this.ctx.state === 'suspended') void this.ctx.resume();
+    return this.ctx.currentTime;
   }
 
   private tone(start: number, freq: number, duration: number, volume: number, wave: Wave): void {
@@ -420,12 +695,8 @@ export class GameAudio {
   }
 
   private slide(
-    start: number,
-    fromHz: number,
-    toHz: number,
-    duration: number,
-    volume: number,
-    wave: Wave,
+    start: number, fromHz: number, toHz: number,
+    duration: number, volume: number, wave: Wave,
   ): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -450,7 +721,6 @@ export class GameAudio {
     for (let i = 0; i < len; i++) {
       data[i] = (Math.random() * 2 - 1) * (1 - i / len);
     }
-
     const src = ctx.createBufferSource();
     src.buffer = buf;
     const gain = ctx.createGain();
